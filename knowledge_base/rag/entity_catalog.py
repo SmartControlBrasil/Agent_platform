@@ -108,6 +108,7 @@ def extract_document_metadata(*, file_name: str, mime_type: str = "", relative_p
     return {
         "source_document_id": "",
         "file_name": str(file_name or ""),
+        "relative_path": str(relative_path or ""),
         "document_title": title or None,
         "document_type": doc_type or None,
         "document_scope": document_scope,
@@ -144,6 +145,8 @@ def build_chunk_metadata(*, document_metadata: dict | None, text: str, start_cha
         "section": heading,
         "heading": heading,
         "page_number": _page_number_hint(str(text or "")),
+        "relative_path": base.get("relative_path") or "",
+        "source_document_id": base.get("source_document_id") or "",
     })
     return base
 
@@ -155,7 +158,7 @@ def entity_catalog_for_tenant(tenant) -> list[KnowledgeEntity]:
         tenant=tenant,
         is_active=True,
     ).exclude(
-        status__in=["failed", "removed", "unavailable", "skipped_unsupported"]
+        status__in=["failed", "removed", "unavailable", "skipped_unsupported", "skipped_temporary_artifact"]
     ).order_by("id")
     grouped: dict[str, dict] = {}
     for manifest in docs:

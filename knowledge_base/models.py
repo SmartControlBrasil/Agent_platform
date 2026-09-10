@@ -159,6 +159,7 @@ class TenantRagDriveFileManifest(models.Model):
         UPDATED = "updated", "Updated"
         UNCHANGED = "unchanged", "Unchanged"
         SKIPPED_UNSUPPORTED = "skipped_unsupported", "Skipped unsupported"
+        SKIPPED_TEMPORARY_ARTIFACT = "skipped_temporary_artifact", "Skipped temporary artifact"
         FAILED = "failed", "Failed"
         REMOVED = "removed", "Removed"
         UNAVAILABLE = "unavailable", "Unavailable"

@@ -25,6 +25,7 @@ from knowledge_base.rag.google_drive_inventory import (
     normalize_text_for_rag,
     sanitize_external_error_message,
 )
+from knowledge_base.rag.ingestion_accounting import is_office_temporary_artifact
 from tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ SUPPORTED_EXPORT_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "text/plain",
     "text/markdown",
+    "text/html",
 }
 
 
@@ -353,6 +355,13 @@ def _process_inventory_item(
         counters["skipped"] += 1
         return counters
 
+    if is_office_temporary_artifact(file_record.name):
+        manifest.status = TenantRagDriveFileManifest.Status.SKIPPED_TEMPORARY_ARTIFACT
+        manifest.last_error = "Microsoft Office temporary lock file."
+        manifest.save(update_fields=["status", "last_error", "updated_at"])
+        counters["skipped"] += 1
+        return counters
+
     if file_record.mime_type not in SUPPORTED_EXPORT_MIME_TYPES:
         manifest.status = TenantRagDriveFileManifest.Status.SKIPPED_UNSUPPORTED
         manifest.last_error = ""
@@ -390,11 +399,13 @@ def _process_inventory_item(
         decoded = decode_google_text_payload(exported_payload)
         normalized = normalize_text_for_rag(decoded)
         text_hash = compute_text_sha256(normalized)
+        extraction_meta = getattr(drive_service, "last_extraction_metadata", None) or {}
         _persist_exported_document(
             manifest=manifest,
             normalized_text=normalized,
             text_hash=text_hash,
             exported_at=seen_at,
+            extraction_metadata=extraction_meta,
         )
     except Exception as exc:
         safe_error = sanitize_external_error_message(str(exc))
@@ -413,7 +424,14 @@ def _process_inventory_item(
     return counters
 
 
-def _persist_exported_document(*, manifest: TenantRagDriveFileManifest, normalized_text: str, text_hash: str, exported_at):
+def _persist_exported_document(
+    *,
+    manifest: TenantRagDriveFileManifest,
+    normalized_text: str,
+    text_hash: str,
+    exported_at,
+    extraction_metadata: dict | None = None,
+):
     document_metadata = extract_document_metadata(
         file_name=manifest.name,
         mime_type=manifest.mime_type,
@@ -422,6 +440,8 @@ def _persist_exported_document(*, manifest: TenantRagDriveFileManifest, normaliz
         source_modified_time=manifest.drive_modified_time,
     )
     document_metadata["source_document_id"] = manifest.drive_file_id
+    if extraction_metadata:
+        document_metadata["extraction"] = extraction_metadata
     with transaction.atomic():
         locked = TenantRagDriveFileManifest.objects.select_for_update().get(pk=manifest.pk)
         staging, _ = TenantRagDriveTextStaging.objects.select_for_update().get_or_create(

@@ -11,6 +11,9 @@ from typing import Any
 
 from django.conf import settings
 
+from knowledge_base.rag.html_extraction import extract_html_for_rag
+from knowledge_base.rag.pdf_extraction import extract_pdf_text_with_fallback
+
 logger = logging.getLogger(__name__)
 
 GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
@@ -114,6 +117,7 @@ def build_google_drive_readonly_service():
 class GoogleDriveInventoryService:
     def __init__(self, service: Any):
         self.service = service
+        self.last_extraction_metadata: dict[str, object] = {}
 
     def inventory_approved_folder(self, approved_folder_id: str) -> InventorySummary:
         root_folder_id = validate_drive_folder_id(approved_folder_id)
@@ -224,6 +228,7 @@ class GoogleDriveInventoryService:
         return self.export_file_text(file_id, "application/vnd.google-apps.document")
 
     def export_file_text(self, file_id: str, mime_type: str) -> bytes:
+        self.last_extraction_metadata = {}
         mime = str(mime_type or "").strip()
         if mime == "application/vnd.google-apps.document":
             try:
@@ -256,9 +261,24 @@ class GoogleDriveInventoryService:
         if mime in {
             "application/pdf",
         }:
-            return _extract_pdf_text_bytes(raw)
+            try:
+                result = extract_pdf_text_with_fallback(raw)
+            except RuntimeError as exc:
+                raise GoogleDriveApiError(str(exc)) from exc
+            self.last_extraction_metadata = {
+                "extraction_method": result.method,
+                "pdf_empty_cause": result.empty_cause or None,
+                "ocr_pages": result.ocr_pages or None,
+            }
+            return result.text_bytes
         if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
             return _extract_docx_text_bytes(raw)
+        if mime in {"text/html", "application/xhtml+xml"}:
+            text, html_meta = extract_html_for_rag(raw)
+            if not text.strip():
+                raise GoogleDriveApiError("HTML text extraction returned empty content.")
+            self.last_extraction_metadata = {"extraction_method": "html_parser", **html_meta}
+            return text.encode("utf-8")
         if mime in {"text/plain", "text/markdown"}:
             try:
                 return raw.decode("utf-8").encode("utf-8")
@@ -322,29 +342,11 @@ def decode_google_text_payload(payload: bytes) -> str:
 
 
 def _extract_pdf_text_bytes(raw: bytes) -> bytes:
-    import shutil
-    import subprocess
-    import tempfile
-
-    pdftotext = shutil.which("pdftotext")
-    if not pdftotext:
-        raise GoogleDriveApiError("pdftotext is required to extract text from PDF files.")
-    with tempfile.TemporaryDirectory(prefix="livia-pdf-") as tmp:
-        pdf_path = Path(tmp) / "document.pdf"
-        pdf_path.write_bytes(raw)
-        try:
-            completed = subprocess.run(
-                [pdftotext, "-layout", "-enc", "UTF-8", str(pdf_path), "-"],
-                check=True,
-                capture_output=True,
-                timeout=60,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise GoogleDriveApiError("Could not extract text from PDF file.") from exc
-    text = completed.stdout.decode("utf-8", errors="ignore").strip()
-    if not text:
-        raise GoogleDriveApiError("PDF text extraction returned empty content.")
-    return text.encode("utf-8")
+    try:
+        result = extract_pdf_text_with_fallback(raw)
+    except RuntimeError as exc:
+        raise GoogleDriveApiError(str(exc)) from exc
+    return result.text_bytes
 
 
 def _extract_docx_text_bytes(raw: bytes) -> bytes:
