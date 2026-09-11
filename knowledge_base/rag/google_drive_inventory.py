@@ -20,6 +20,22 @@ GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GOOGLE_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_DRIVE_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 FOLDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,120}$")
+MARKDOWN_EXTENSIONS = (".md", ".markdown")
+
+
+def is_markdown_filename(filename: str) -> bool:
+    lowered = str(filename or "").lower()
+    return lowered.endswith(MARKDOWN_EXTENSIONS)
+
+
+def resolve_drive_export_mime(*, mime_type: str, filename: str, supported_mimes: set[str]) -> str:
+    """Resolve export MIME, treating Markdown file extensions as text/markdown when needed."""
+    mime = str(mime_type or "").strip()
+    if mime in supported_mimes:
+        return mime
+    if is_markdown_filename(filename):
+        return "text/markdown"
+    return mime
 
 
 class GoogleDriveError(Exception):
@@ -227,7 +243,7 @@ class GoogleDriveInventoryService:
     def export_google_doc_text(self, file_id: str) -> bytes:
         return self.export_file_text(file_id, "application/vnd.google-apps.document")
 
-    def export_file_text(self, file_id: str, mime_type: str) -> bytes:
+    def export_file_text(self, file_id: str, mime_type: str, *, filename: str = "") -> bytes:
         self.last_extraction_metadata = {}
         mime = str(mime_type or "").strip()
         if mime == "application/vnd.google-apps.document":
@@ -281,9 +297,14 @@ class GoogleDriveInventoryService:
             return text.encode("utf-8")
         if mime in {"text/plain", "text/markdown"}:
             try:
-                return raw.decode("utf-8").encode("utf-8")
+                text_bytes = raw.decode("utf-8").encode("utf-8")
             except UnicodeDecodeError:
-                return raw.decode("latin-1", errors="ignore").encode("utf-8")
+                text_bytes = raw.decode("latin-1", errors="ignore").encode("utf-8")
+            is_markdown = mime == "text/markdown" or is_markdown_filename(filename)
+            self.last_extraction_metadata = {
+                "extraction_method": "markdown_utf8" if is_markdown else "plain_utf8",
+            }
+            return text_bytes
         raise GoogleDriveApiError(f"Unsupported export mime type: {mime}")
 
     def _raise_api_error(self, exc: Exception, *, fallback_message: str) -> None:

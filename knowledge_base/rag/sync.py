@@ -23,6 +23,7 @@ from knowledge_base.rag.google_drive_inventory import (
     compute_text_sha256,
     decode_google_text_payload,
     normalize_text_for_rag,
+    resolve_drive_export_mime,
     sanitize_external_error_message,
 )
 from knowledge_base.rag.ingestion_accounting import is_office_temporary_artifact
@@ -362,7 +363,12 @@ def _process_inventory_item(
         counters["skipped"] += 1
         return counters
 
-    if file_record.mime_type not in SUPPORTED_EXPORT_MIME_TYPES:
+    export_mime = resolve_drive_export_mime(
+        mime_type=file_record.mime_type,
+        filename=file_record.name,
+        supported_mimes=SUPPORTED_EXPORT_MIME_TYPES,
+    )
+    if export_mime not in SUPPORTED_EXPORT_MIME_TYPES:
         manifest.status = TenantRagDriveFileManifest.Status.SKIPPED_UNSUPPORTED
         manifest.last_error = ""
         manifest.save(update_fields=["status", "last_error", "updated_at"])
@@ -393,7 +399,11 @@ def _process_inventory_item(
 
     existing_sha = previous_sha
     try:
-        exported_payload = drive_service.export_file_text(file_record.file_id, file_record.mime_type)
+        exported_payload = drive_service.export_file_text(
+            file_record.file_id,
+            export_mime,
+            filename=file_record.name,
+        )
         if len(exported_payload) > max_export_bytes:
             raise GoogleDriveApiError("Exported document exceeded maximum allowed bytes.")
         decoded = decode_google_text_payload(exported_payload)

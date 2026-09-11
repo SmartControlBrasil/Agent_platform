@@ -16,6 +16,7 @@ from knowledge_base.rag.chunking import (
 from knowledge_base.rag.google_drive_inventory import (
     GoogleDriveInventoryService,
     normalize_text_for_rag,
+    resolve_drive_export_mime,
 )
 from knowledge_base.rag.html_extraction import extract_html_for_rag
 from knowledge_base.rag.ingestion_accounting import (
@@ -119,6 +120,60 @@ class HtmlExtractionTests(SimpleTestCase):
 
     def test_html_is_supported_mime_after_extractor_exists(self):
         self.assertIn("text/html", SUPPORTED_EXPORT_MIME_TYPES)
+
+
+class MarkdownIngestionTests(SimpleTestCase):
+    def test_markdown_mime_is_supported(self):
+        self.assertIn("text/markdown", SUPPORTED_EXPORT_MIME_TYPES)
+
+    def test_resolve_drive_export_mime_accepts_md_extension_with_text_plain(self):
+        resolved = resolve_drive_export_mime(
+            mime_type="text/plain",
+            filename="Controle e Automacao/unidade-1.md",
+            supported_mimes=SUPPORTED_EXPORT_MIME_TYPES,
+        )
+        self.assertEqual(resolved, "text/plain")
+
+    def test_resolve_drive_export_mime_maps_unknown_mime_with_md_extension(self):
+        resolved = resolve_drive_export_mime(
+            mime_type="application/octet-stream",
+            filename="Gestao/modulo-1.md",
+            supported_mimes=SUPPORTED_EXPORT_MIME_TYPES,
+        )
+        self.assertEqual(resolved, "text/markdown")
+
+    def test_normalize_preserves_markdown_headings(self):
+        raw = "# Controle e Automacao\n\n## Redes Industriais\n\nConteudo util."
+        normalized = normalize_text_for_rag(raw)
+        self.assertIn("# Controle e Automacao", normalized)
+        self.assertIn("## Redes Industriais", normalized)
+
+    @override_settings(
+        LIVIA_RAG_CHUNK_SIZE_CHARS=200,
+        LIVIA_RAG_CHUNK_OVERLAP_CHARS=20,
+        LIVIA_RAG_MAX_CHUNKS_PER_DOCUMENT=500,
+        LIVIA_RAG_CHUNK_GUARD_MAX_ITERATIONS=50000,
+    )
+    def test_markdown_chunks_keep_heading_context(self):
+        config = load_chunk_config()
+        text = normalize_text_for_rag("# Manutencao\n\nTexto sobre TPM e confiabilidade.")
+        chunks = build_deterministic_chunks(text, config)
+        self.assertGreaterEqual(len(chunks), 1)
+        joined = " ".join(chunk.text for chunk in chunks)
+        self.assertIn("# Manutencao", joined)
+
+    def test_export_file_text_markdown_records_metadata(self):
+        service = GoogleDriveInventoryService(service=object())
+        payload = b"# Inteligencia Artificial\n\nConteudo sobre ML."
+        with patch.object(service, "service") as drive:
+            drive.files.return_value.get_media.return_value.execute.return_value = payload
+            exported = service.export_file_text(
+                "file-md",
+                "text/markdown",
+                filename="IA/introducao.md",
+            )
+        self.assertIn(b"# Inteligencia Artificial", exported)
+        self.assertEqual(service.last_extraction_metadata["extraction_method"], "markdown_utf8")
 
 
 class TemporaryArtifactTests(SimpleTestCase):
