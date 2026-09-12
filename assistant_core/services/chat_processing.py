@@ -387,6 +387,7 @@ def _refine_response_with_ai_if_enabled(
         )
         if continuity_action != "offered":
             final_reply = reply
+        _clear_preempted_relational_name_flag(deterministic_result, final_reply)
         return _apply_refined_reply(
             deterministic_result,
             final_reply,
@@ -423,6 +424,20 @@ def _refine_response_with_ai_if_enabled(
             "ai_skip_reason": ai_result.skip_reason,
         },
     )
+
+
+def _clear_preempted_relational_name_flag(deterministic_result: _DeterministicChatResult, final_reply: str) -> None:
+    from assistant_core.relational_collection import build_relational_name_prompt, clear_relational_name_asked
+
+    prompt = build_relational_name_prompt().lower()
+    original_reply = str((deterministic_result.response_payload or {}).get("reply", "") or "").lower()
+    if prompt not in original_reply or prompt in str(final_reply or "").lower():
+        return
+    try:
+        lead = deterministic_result.conversation.lead_draft
+    except Exception:
+        return
+    clear_relational_name_asked(lead)
 
 
 def _mark_ai_fallback_observability(response_payload: dict, ai_observability: dict | None = None) -> dict:

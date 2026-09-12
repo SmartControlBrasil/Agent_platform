@@ -29,6 +29,16 @@ OPERATIONAL_COLLECTION_REPLY_PHRASES = frozenset(
     }
 )
 
+GENERIC_FOLLOWUP_PATTERNS = (
+    r"\bquer(?:\s+que\s+eu)?\s+(?:que\s+eu\s+)?(?:detalhe|explic(?:o|ar)|saber\s+mais|ver\s+mais|aprofundar)",
+    r"\bposso\s+(?:te\s+)?(?:ajudar\s+a\s+)?(?:detalhar|explicar|esclarecer|montar|aprofundar|ajudar)",
+    r"\bcomo\s+posso\s+(?:te\s+)?ajudar(?:\s+mais)?",
+    r"\btem\s+mais\s+alguma\s+d[úu]vida",
+    r"\balguma\s+d[úu]vida",
+    r"\bquer\s+que\s+eu\s+monte",
+    r"\bqual\s+equipamento\s+ou\s+processo\s+voce\s+precisa\s+automatizar",
+)
+
 
 def is_operational_collection_reply(message: str) -> bool:
     return normalize_text(message).strip(" .!?;") in OPERATIONAL_COLLECTION_REPLY_PHRASES
@@ -84,6 +94,70 @@ def concrete_need(text):
     return project or fault
 
 
+def is_generic_followup_question(question: str) -> bool:
+    """Pergunta opcional de conversa, sem valor diagnóstico para o projeto."""
+    normalized = normalize_text(question)
+    if "?" not in str(question or ""):
+        return False
+    return any(re.search(pattern, normalized) for pattern in GENERIC_FOLLOWUP_PATTERNS)
+
+
+def has_diagnostic_question(reply: str) -> bool:
+    """True quando há pergunta que pede dado técnico/operacional real."""
+    questions = _question_segments(reply)
+    if not questions:
+        return False
+    return any(not is_generic_followup_question(question) for question in questions)
+
+
+def strip_generic_followup_questions(reply: str) -> str:
+    """Remove perguntas genéricas para que a oferta determinística possa ocupar o turno."""
+    text = str(reply or "").strip()
+    if not text or "?" not in text:
+        return text
+    kept: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+|\n+", text):
+        part = part.strip()
+        if not part:
+            continue
+        if "?" in part and is_generic_followup_question(part):
+            continue
+        kept.append(part)
+    cleaned = " ".join(kept).strip()
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def strip_incompatible_diagnostic_questions(reply: str, need: str) -> str:
+    """Remove pergunta de domínio antigo quando a necessidade atual já mudou."""
+    normalized_need = normalize_text(need)
+    if not (
+        re.search(r"\b(camaras?|temperatura|frigorific|frigorífic|clp|ihm)\b", normalized_need)
+        and re.search(r"\b(automatizar|controle|monitorar|acompanhar)\b", normalized_need)
+    ):
+        return str(reply or "").strip()
+    kept: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+|\n+", str(reply or "").strip()):
+        part = part.strip()
+        if not part:
+            continue
+        normalized = normalize_text(part)
+        if "?" in part and re.search(r"\b(piso|limpeza|galpao|galpão)\b", normalized):
+            continue
+        kept.append(part)
+    return re.sub(r"\s{2,}", " ", " ".join(kept)).strip()
+
+
+def _question_segments(reply: str) -> list[str]:
+    text = str(reply or "").strip()
+    if "?" not in text:
+        return []
+    return [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|\n+", text)
+        if "?" in part and part.strip()
+    ]
+
+
 def _need_for_offer(message, history):
     if concrete_need(message):
         return message
@@ -99,7 +173,34 @@ def _need_for_offer(message, history):
         candidate = f"{previous.rstrip('.')}. {message}"
         if concrete_need(candidate):
             return candidate
+    accumulated = _accumulated_technical_need(message, history)
+    if accumulated:
+        return accumulated
     return ""
+
+
+def _accumulated_technical_need(message: str, history) -> str:
+    user_parts = [
+        str(item.get("content") or "").strip()
+        for item in list(history or [])[-6:]
+        if item.get("role") == "user" and str(item.get("content") or "").strip()
+    ]
+    user_parts.append(str(message or "").strip())
+    if len([part for part in user_parts if part]) < 3:
+        return ""
+    candidate = " ".join(part for part in user_parts if part).strip()
+    normalized = normalize_text(candidate)
+    if not candidate or re.search(r"\b(pesquisa\s+academica|pesquisa\s+acadêmica|trabalho\s+escolar|curiosidade)\b", normalized):
+        return ""
+    if not re.search(r"\b(camaras?|câmaras?)\b", normalized):
+        return ""
+    if not re.search(r"\b(temperatura|frigorific|frigorífic|refrigeracao|refrigeração)\b", normalized):
+        return ""
+    if not re.search(r"\b(automatizar|controle|controlar|monitorar|acompanhar|supervisorio|supervisório)\b", normalized):
+        return ""
+    if not re.search(r"\b(clp|ihm|sensor(?:es)?|historico|histórico|alarme(?:s)?|painel|alertas?|remotos?)\b", normalized):
+        return ""
+    return candidate[:500]
 
 
 def offer_after_guidance(*, conversation, message, history, reply, knowledge_context, handoff=False):
@@ -120,8 +221,15 @@ def offer_after_guidance(*, conversation, message, history, reply, knowledge_con
         return reply, ""
     if re.search(r"nao (?:encontrei|tenho|ha).*?(?:informacao|evidencia)", normalize_text(reply)):
         return reply, ""
-    if "?" in reply and not (need and concrete_need(need)):
-        return reply, ""
+    if "?" in reply and need:
+        reply = strip_incompatible_diagnostic_questions(reply, need)
+    if "?" in reply:
+        if has_diagnostic_question(reply):
+            return reply, ""
+        if need and is_valid_need_summary(need):
+            reply = strip_generic_followup_questions(reply)
+        else:
+            return reply, ""
     if not need:
         return reply, ""
     if data.get(STATUS_KEY):

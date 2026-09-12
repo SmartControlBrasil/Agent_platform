@@ -183,6 +183,8 @@ def should_offer_relational_name(
         return False
     if is_generic_fallback_reply(reply) or len(str(reply or "").strip()) < 12:
         return False
+    if "?" in str(reply or ""):
+        return False
     if _consultative_exchange_count(history) < 2:
         return False
     if not _has_ongoing_topic(lead=lead, history=history, message=message):
@@ -197,6 +199,17 @@ def mark_relational_name_asked(lead) -> None:
         return
     data = dict(getattr(lead, "qualification_data", None) or {})
     data[RELATIONAL_NAME_ASKED_KEY] = True
+    lead.qualification_data = data
+    lead.save(update_fields=["qualification_data", "updated_at"])
+
+
+def clear_relational_name_asked(lead) -> None:
+    if lead is None:
+        return
+    data = dict(getattr(lead, "qualification_data", None) or {})
+    if not data.get(RELATIONAL_NAME_ASKED_KEY):
+        return
+    data[RELATIONAL_NAME_ASKED_KEY] = False
     lead.qualification_data = data
     lead.save(update_fields=["qualification_data", "updated_at"])
 
