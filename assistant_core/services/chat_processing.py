@@ -161,6 +161,10 @@ def _persist_chat_processing_state(
         )
 
         assistant_reply = str(decision.reply or "").strip()
+        from assistant_core.continuity_policy import OFFER
+        continuity_action = getattr(decision, "continuity_action", "")
+        if continuity_action == "offered":
+            assistant_reply = assistant_reply.removesuffix(OFFER).rstrip()
         human_handoff_payload = None
         if decision.handoff_request_id and decision.handoff_reason == HandoffRequest.Reason.EXPLICIT_REQUEST:
             handoff = HandoffRequest.objects.filter(
@@ -186,7 +190,7 @@ def _persist_chat_processing_state(
             ai_primary = _will_use_openai_primary(assistant_profile)
             # Não reescrever prompts de coleta (nome/telefone) com síntese determinística.
             # Com OpenAI primária, a LLM gera linguagem após commit; gate determinístico fica como fallback.
-            if not collection_active and not ai_primary:
+            if not collection_active and not ai_primary and continuity_action != "declined":
                 assistant_reply, gate_diagnostics = apply_response_quality_gate(
                     reply=assistant_reply,
                     knowledge_context=knowledge_context,
@@ -200,6 +204,8 @@ def _persist_chat_processing_state(
                 persist_dialogue_memory(lead, dialogue_memory)
 
         assistant_reply = str(assistant_reply or "").strip()
+        if continuity_action == "offered":
+            assistant_reply = f"{assistant_reply}\n\n{OFFER}"
         if not assistant_reply:
             # Fail-closed: sucesso HTTP nunca devolve reply vazia.
             assistant_reply = DEFAULT_REPLY
@@ -309,6 +315,8 @@ def _refine_response_with_ai_if_enabled(
     knowledge_context: str = "",
 ) -> dict:
     if not _can_refine_with_ai(deterministic_result.assistant_profile):
+        return deterministic_result.response_payload
+    if getattr(deterministic_result.decision, "continuity_action", ""):
         return deterministic_result.response_payload
     if deterministic_result.response_payload.get("human_handoff", {}).get("active"):
         return deterministic_result.response_payload

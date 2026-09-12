@@ -54,6 +54,7 @@ class LiviaReply:
     reply: str
     handoff_request_id: int | None = None
     handoff_reason: str = ""
+    continuity_action: str = ""
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,23 @@ class LiviaDecisionService:
             ) if tenant is not None else ""
         else:
             knowledge_context = str(knowledge_context or "")
+        if conversation is not None:
+            from assistant_core.continuity_policy import resolve_offer_response, DECLINE_REPLY
+            from assistant_core.consultative_policy import is_explicit_collection_trigger
+
+            offer_response = resolve_offer_response(
+                conversation=conversation, message=current_message, history=history,
+            )
+            if offer_response == "declined":
+                return LiviaReply(intent=intent, reply=DECLINE_REPLY, continuity_action="declined")
+            if offer_response == "accepted" and not is_explicit_collection_trigger(current_message):
+                decision = self._handle_qualification(
+                    intent="commercial_interest", history=history, current_message="",
+                    conversation=conversation, discovery=discovery, assistant_profile=assistant_profile,
+                    knowledge_context=knowledge_context, activate_collection=True,
+                    collection_reason="continuity_offer_accepted",
+                )
+                return replace(decision, continuity_action="accepted")
         has_commercial_interest = bool(discovery.has_commercial_interest)
         has_quote_request = bool(discovery.has_quote_request)
         has_support_request = bool(discovery.has_support_request)
@@ -567,7 +585,14 @@ class LiviaDecisionService:
         knowledge_context: str,
     ) -> LiviaReply:
         if not self._inline_openai_in_generate_reply_enabled(assistant_profile):
-            return decision
+            from assistant_core.continuity_policy import offer_after_guidance
+
+            reply, action = offer_after_guidance(
+                conversation=conversation, message=current_message, history=history,
+                reply=decision.reply, knowledge_context=knowledge_context,
+                handoff=bool(decision.handoff_request_id),
+            )
+            return replace(decision, reply=reply, continuity_action=action)
         tenant = getattr(conversation, "tenant", None)
         lead_state = str(getattr(conversation, "lead_state", "") or "")
         try:

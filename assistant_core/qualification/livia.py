@@ -175,6 +175,7 @@ NEED_CONTEXT_KEYWORDS = (
     "falha",
     "automação",
     "automacao",
+    "automatizar",
     "sistema",
     "plataforma",
     "suporte",

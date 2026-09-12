@@ -58,6 +58,7 @@ def build_openai_conversation_prompt(
             "REGRAS COMERCIAIS (imutáveis — decididas pelo sistema):",
             "- Você NÃO altera lead_state, collection_active, handoff, tenant ou qualificação.",
             "- Você gera linguagem; o sistema decide estado comercial.",
+            "- Não ofereça registrar ou encaminhar atendimento por iniciativa própria; a oferta de continuidade é decidida pelo sistema.",
             f"- collection_active: {commercial.get('collection_active', False)}",
             "- Quando collection_active=false: NÃO peça nome, telefone, e-mail ou empresa.",
             "- Quando collection_active=false: converse, esclareça e qualifique consultivamente.",
