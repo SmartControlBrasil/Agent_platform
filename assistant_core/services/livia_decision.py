@@ -686,6 +686,9 @@ class LiviaDecisionService:
             return decision
         confirmation = self._handoff_confirmation(result.handoff, current_message=current_message)
         if is_explicit_human_handoff(current_message):
+            has_contact = bool(result.handoff.visitor_phone or result.handoff.visitor_email)
+            if decision.collection_prompt and str(decision.reply or "").strip() and not has_contact:
+                return decision
             return replace(decision, reply=confirmation)
         if confirmation.lower() in decision.reply.lower():
             return decision
@@ -701,7 +704,7 @@ class LiviaDecisionService:
                 return f"Perfeito, {name}. Registrei o pedido de contato para a equipe retornar com o contexto da conversa."
             return "Perfeito. Registrei o pedido de contato para a equipe retornar com o contexto da conversa."
         if is_explicit_human_handoff(current_message):
-            return "Claro. Qual telefone ou e-mail prefere usar para o contato?"
+            return "Claro. Como posso te chamar?"
         return "Claro. Vou registrar seu pedido para atendimento humano. Para agilizar, me informe seu nome e um telefone ou e-mail de contato."
 
     def _locked_lead_reply(self, intent: str) -> LiviaReply:
@@ -1112,7 +1115,11 @@ class LiviaDecisionService:
         from assistant_core.consultative_policy import is_explicit_human_handoff
 
         if is_explicit_human_handoff(current_message):
-            reply = self._human_handoff_collection_reply(result.lead_draft, result.missing_fields)
+            reply = self._human_handoff_collection_reply(
+                result.lead_draft,
+                result.missing_fields,
+                history=history,
+            )
         else:
             reply = self.lead_capture_service.build_next_prompt(
                 result.lead_draft,
@@ -1130,14 +1137,31 @@ class LiviaDecisionService:
         decision = self._finalize_handoff(decision, conversation, result.lead_draft, discovery, current_message)
         return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
 
-    def _human_handoff_collection_reply(self, lead_draft, missing_fields: list[str]) -> str:
-        missing_fields = list(missing_fields or [])
-        has_contact = self.lead_capture_service._has_phone_or_email(lead_draft)
-        if not has_contact:
-            return ""
-        if "name" in missing_fields:
-            return "Ótimo. Para eu dar sequência, qual é o seu nome ou o nome da empresa?"
-        return ""
+    def _human_handoff_collection_reply(
+        self,
+        lead_draft,
+        missing_fields: list[str],
+        *,
+        history=None,
+    ) -> str:
+        from assistant_core.relational_collection import (
+            build_contact_collection_prompt,
+            mark_contact_reason_shown,
+            pending_collection_fields,
+        )
+
+        pending = pending_collection_fields(lead=lead_draft, history=history)
+        if pending:
+            field = pending[0]
+            prompt = build_contact_collection_prompt(lead=lead_draft, field=field)
+            if field == "phone" and not (lead_draft.qualification_data or {}).get("contact_reason_shown"):
+                mark_contact_reason_shown(lead_draft)
+            return prompt
+        return self.lead_capture_service.build_next_prompt(
+            lead_draft,
+            missing_fields,
+            intent="commercial_interest",
+        )
 
     def _should_answer_informatively_from_knowledge(self, discovery, knowledge_context: str) -> bool:
         return has_semantic_knowledge_block(knowledge_context) and is_informational_knowledge_query(discovery)

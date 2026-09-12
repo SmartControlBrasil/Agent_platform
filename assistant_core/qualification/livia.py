@@ -335,6 +335,39 @@ def is_valid_name(value) -> bool:
     return bool(re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'-]{1,119}", cleaned))
 
 
+ORGANIZATION_NAME_MARKERS = (
+    "brasil",
+    "ltda",
+    "s.a",
+    " sa ",
+    " me ",
+    " epp ",
+    "industria",
+    "indústria",
+    "group",
+    "grupo",
+    "control",
+    "tech",
+    "systems",
+    "servicos",
+    "serviços",
+    "comercio",
+    "comércio",
+    "hospital",
+    "escola",
+    "loja",
+    "fabrica",
+    "fábrica",
+    "marmore",
+    "mármore",
+)
+
+
+def looks_like_organization_name(value) -> bool:
+    normalized = normalize_text(value)
+    return any(marker in normalized for marker in ORGANIZATION_NAME_MARKERS)
+
+
 def is_valid_company(value) -> bool:
     cleaned = strip_repetition_noise(value)
     normalized = normalize_text(cleaned)
@@ -518,7 +551,7 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
         company_from_pattern = _normalize_company_candidate(text)
         if company_from_pattern and is_valid_company(company_from_pattern):
             return {"company": company_from_pattern}
-        if is_valid_name(name_candidate) and 1 <= len(name_candidate.split()) <= 2:
+        if is_valid_name(name_candidate) and 1 <= len(name_candidate.split()) <= 4:
             return {"name": name_candidate}
         if (
             is_valid_company(company_candidate)
@@ -528,8 +561,8 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
             return {"company": company_candidate}
         if is_valid_company(bare) and len(bare.split()) >= 3:
             return {"company": bare[:120]}
-        if is_valid_name(name_candidate) and 1 <= len(name_candidate.split()) <= 4:
-            return {"name": name_candidate}
+        if is_valid_name(bare) and 1 <= len(bare.split()) <= 4:
+            return {"name": bare}
         if is_valid_company(bare) and 1 <= len(bare.split()) <= 6:
             return {"company": bare[:120]}
         return {}
@@ -574,19 +607,26 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
                 company_from_text = _extract_company(text) or _normalize_company_candidate(text)
                 if company_from_text and is_valid_company(company_from_text):
                     result = {"company": company_from_text[:120]}
-                    if pending == "name" and is_valid_name(company_from_text):
-                        result["name"] = company_from_text[:120]
+                    name_value = (explicit_name or bare).strip(" .,-")
+                    if name_value:
+                        affiliation = re.search(
+                            rf"\b(?:da|de|do)\s+{re.escape(company_from_text)}\s*$",
+                            name_value,
+                            re.IGNORECASE,
+                        )
+                        if affiliation:
+                            name_value = name_value[: affiliation.start()].strip(" .,-")
+                        elif explicit_name:
+                            name_value = explicit_name.split()[0]
+                        if is_valid_name(name_value):
+                            result["name"] = name_value[:120]
                     return result
                 if (
-                    not explicit_name
-                    and not any(marker in normalized for marker in name_intro_markers)
-                    and len(bare.split()) >= 3
+                    len(bare.split()) >= 3
+                    and looks_like_organization_name(bare)
                     and is_valid_company(bare)
                 ):
-                    result = {"company": bare[:120]}
-                    if pending == "name" and is_valid_name(bare):
-                        result["name"] = bare[:120]
-                    return result
+                    return {"company": bare[:120]}
             if any(marker in normalized for marker in reject_markers):
                 return {}
         if pending == "phone" and not message_is_plausible_phone_candidate(text):
@@ -610,9 +650,8 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
         if field_name in {"name", "company"} and any(marker in normalize_text(candidate) for marker in reject_markers):
             return {}
         if candidate and validators[field_name](candidate):
-            if pending == "name" and field_name == "name" and not _extract_name(text):
-                if len(candidate.split()) >= 3 and is_valid_company(candidate):
-                    return {"company": candidate[:120]}
+            if pending == "name" and looks_like_organization_name(candidate) and is_valid_company(candidate):
+                return {"company": candidate[:120]}
             return {field_name: candidate}
     return {}
 
@@ -754,22 +793,24 @@ def _extract_name(text: str) -> str:
 
 
 def _extract_company(text: str) -> str:
-    match = re.search(r"(?:empresa|companhia)\s*(?:é|e|:)?\s+([^,;]+)", text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
     match = re.search(
         r"\b(?:da|de|do)\s+(?!um\b|uma\b|uns\b|umas\b|o\b|a\b)([A-ZÀ-Ý][A-Za-zÀ-ÿ0-9 .&'-]{1,60})",
         text,
     )
-    if not match:
-        return ""
-    candidate = match.group(1).strip()
-    if re.match(r"^\d", candidate):
-        return ""
-    words = candidate.split()
-    if len(words) > 6:
-        candidate = " ".join(words[:6])
-    return candidate
+    if match:
+        candidate = match.group(1).strip()
+        if not re.match(r"^\d", candidate):
+            words = candidate.split()
+            if len(words) > 6:
+                candidate = " ".join(words[:6])
+            return candidate
+    match = re.search(r"(?:minha empresa|nossa empresa|a empresa)\s*(?:é|e|:)\s+([^,;]+)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"(?:empresa|companhia)\s*(?:é|e|:)\s+([^,;]+)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
 
 
 def _extract_city(text: str) -> str:

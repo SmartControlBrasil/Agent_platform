@@ -367,7 +367,7 @@ class ChatApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["human_handoff"], {"active": False})
-        self.assertIn("telefone", response.json()["reply"].lower())
+        self.assertIn("chamar", response.json()["reply"].lower())
 
     def test_chat_api_creates_conversation_and_messages(self):
         payload = {
@@ -1039,8 +1039,7 @@ class LiviaHandoffWorkflowTests(TestCase):
         handoff = HandoffRequest.objects.get(conversation=conversation)
         self.assertEqual(handoff.reason, HandoffRequest.Reason.EXPLICIT_REQUEST)
         self.assertEqual(handoff.status, HandoffRequest.Status.PENDING)
-        self.assertIn("telefone", decision.reply.lower())
-        self.assertIn("contato", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     def test_call_me_request_with_phone_creates_handoff_with_contact(self):
         conversation = Conversation.objects.create(tenant=self.tenant, session_id="handoff-call")
@@ -1252,7 +1251,7 @@ class LiviaOptionalAIResponseTests(TestCase):
         decision = service.generate_reply([], "quero falar com um vendedor", conversation=conversation, assistant_profile=self.profile)
 
         self.assertTrue(HandoffRequest.objects.filter(conversation=conversation).exists())
-        self.assertIn("contato", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="key-test")
     def test_knowledge_context_and_profile_enter_prompt(self):

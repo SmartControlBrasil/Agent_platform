@@ -374,9 +374,22 @@ def _refine_response_with_ai_if_enabled(
         )
         if not reply.strip():
             return _mark_ai_fallback_observability(deterministic_result.response_payload)
+        from assistant_core.continuity_policy import offer_after_guidance
+
+        handoff = bool(getattr(deterministic_result.decision, "handoff_request_id", None))
+        final_reply, continuity_action = offer_after_guidance(
+            conversation=deterministic_result.conversation,
+            message=deterministic_result.user_message,
+            history=deterministic_result.history,
+            reply=reply,
+            knowledge_context=context,
+            handoff=handoff,
+        )
+        if continuity_action != "offered":
+            final_reply = reply
         return _apply_refined_reply(
             deterministic_result,
-            reply,
+            final_reply,
             ai_mode="openai_conversation",
             ai_observability={
                 "ai_provider": "openai",
@@ -388,6 +401,7 @@ def _refine_response_with_ai_if_enabled(
                 "ai_grounded": ai_result.grounded,
                 "ai_fallback_used": False,
                 "ai_rag_docs": ai_result.metadata.get("rag_docs", []),
+                "continuity_action": continuity_action,
                 **gate_diagnostics,
             },
         )

@@ -179,7 +179,7 @@ class MultiTurnCommercialConversationTests(TestCase):
         self._assert_no_generic_fallback(handoff["reply"])
         lowered = handoff["reply"].lower()
         self.assertTrue(
-            any(token in lowered for token in ("atendimento", "especialista", "nome", "telefone", "contato", "equipe")),
+            any(token in lowered for token in ("atendimento", "especialista", "chamar", "nome", "telefone", "contato", "equipe")),
             handoff["reply"],
         )
 

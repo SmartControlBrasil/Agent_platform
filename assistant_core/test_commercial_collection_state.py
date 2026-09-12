@@ -184,13 +184,14 @@ class CommercialCollectionStateTests(TestCase):
         phrase = "Gostaria que alguem entrasse em contato comigo"
         self.assertFalse(is_need_enrichment(phrase))
 
-    def test_human_handoff_missing_contact_asks_only_contact(self):
+    def test_human_handoff_missing_contact_asks_name_first(self):
         conversation, decisions = self._run_duno_smoke(self._conversation(session_id="handoff-contact-only"))
         last = decisions[-1]
         self.assertIsNotNone(last.handoff_request_id)
         lowered = last.reply.lower()
-        self.assertIn("telefone", lowered)
-        self.assertIn("e-mail", lowered)
+        self.assertIn("chamar", lowered)
+        self.assertNotIn("telefone", lowered)
+        self.assertNotIn("e-mail", lowered)
         self.assertNotIn("ambiente", lowered)
         self.assertNotIn("piso", lowered)
 
@@ -395,5 +396,5 @@ class CommercialCollectionStateTests(TestCase):
         self.assertTrue(is_valid_need_summary(lead.need_summary))
         self.assertNotIn("necessidade principal", decisions[2].reply.lower())
         self.assertIsNotNone(decisions[3].handoff_request_id)
-        self.assertIn("telefone", decisions[3].reply.lower())
+        self.assertIn("chamar", decisions[3].reply.lower())
         self.assertEqual(HandoffRequest.objects.filter(conversation=conversation).count(), 1)
