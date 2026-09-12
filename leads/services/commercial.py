@@ -166,8 +166,8 @@ class QualificationFieldSpec:
 @dataclass(frozen=True)
 class QualificationPolicy:
     slug: str = "default"
-    desired_fields: tuple[str, ...] = ("need_summary", "name_or_company", "phone_or_email", "city")
-    required_fields: tuple[str, ...] = ("need_summary", "name_or_company", "phone_or_email")
+    desired_fields: tuple[str, ...] = ("name", "phone", "email", "company", "need_summary", "city")
+    required_fields: tuple[str, ...] = ("name", "phone", "email", "need_summary")
     custom_fields: tuple[QualificationFieldSpec, ...] = field(default_factory=tuple)
     allow_early_handoff: bool = True
 
@@ -216,7 +216,8 @@ def normalize_email(value: str) -> str:
 
 
 def normalize_name(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip())[:120]
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    return cleaned.strip(" .,-")[:120]
 
 
 def normalize_city(value: str) -> str:
@@ -272,6 +273,10 @@ class QualificationService:
 
         pending = self.missing_fields(lead, policy=policy)
         collection_active = bool((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        from assistant_core.qualification.livia import is_company_not_applicable
+        if collection_active and pending and pending[0] == "company" and is_company_not_applicable(message):
+            lead.qualification_data = {**(lead.qualification_data or {}), "company_not_applicable": True}
+            changed = True
         if pending and collection_active:
             allow_infer = pending[0] == "need_summary" or not is_consultative_context_answer(message)
             if allow_infer:
@@ -332,16 +337,23 @@ class QualificationService:
                 lead.qualification_data = data
                 changed = True
 
-        if name_or_company_satisfied(lead):
-            invalid_fields = [field for field in invalid_fields if field not in {"name", "company"}]
+        if is_valid_name(lead.name):
+            invalid_fields = [field for field in invalid_fields if field != "name"]
+        if is_valid_company(lead.company) or (lead.qualification_data or {}).get("company_not_applicable"):
+            invalid_fields = [field for field in invalid_fields if field != "company"]
 
         changed |= self._merge_custom_fields(lead, policy=policy, message=message)
         lead.qualification_policy = policy.slug
         missing = self.missing_fields(lead, policy=policy)
-        lead.qualification_status = LeadDraft.QualificationStatus.QUALIFIED if not missing else LeadDraft.QualificationStatus.IN_PROGRESS
+        missing_required = self.missing_required_fields(lead, policy=policy)
+        lead.qualification_status = (
+            LeadDraft.QualificationStatus.QUALIFIED
+            if not missing_required
+            else LeadDraft.QualificationStatus.IN_PROGRESS
+        )
         if lead.status not in {LeadDraft.Status.SENT_TO_CRM, LeadDraft.Status.FAILED}:
-            lead.status = LeadDraft.Status.QUALIFIED if not missing else LeadDraft.Status.DRAFT
-        if not missing and lead.handoff_status == LeadDraft.HandoffStatus.NOT_REQUESTED:
+            lead.status = LeadDraft.Status.QUALIFIED if not missing_required else LeadDraft.Status.DRAFT
+        if not missing_required and lead.handoff_status == LeadDraft.HandoffStatus.NOT_REQUESTED:
             lead.handoff_status = LeadDraft.HandoffStatus.READY
         if lead.dispatch_status == LeadDraft.DispatchStatus.NOT_QUEUED and lead.status == LeadDraft.Status.QUALIFIED:
             lead.dispatch_status = LeadDraft.DispatchStatus.PENDING
@@ -358,7 +370,7 @@ class QualificationService:
             is_qualified=lead.qualification_status == LeadDraft.QualificationStatus.QUALIFIED,
             can_request_handoff=self.can_request_handoff(lead, policy=policy),
             next_action="handoff_ready" if not missing else f"collect:{missing[0]}",
-            handoff_reason=HandoffRequest.Reason.QUALIFIED_LEAD if not missing else "",
+            handoff_reason=HandoffRequest.Reason.QUALIFIED_LEAD if not missing_required else "",
         )
 
     def _get_or_create_locked_lead(self, conversation: Conversation) -> tuple[LeadDraft, bool]:
@@ -370,10 +382,16 @@ class QualificationService:
             return lead, False
         return LeadDraft.objects.create(tenant=conversation.tenant, conversation=conversation), True
 
-    def missing_fields(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None) -> list[str]:
+    def missing_required_fields(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None) -> list[str]:
+        """Campos obrigatórios para qualificação material do lead (company não entra aqui)."""
         policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
         missing = []
         for field_name in policy.required_fields:
+            validator = {"name": is_valid_name, "phone": is_valid_phone, "email": is_valid_email}.get(field_name)
+            if validator:
+                if not validator(getattr(lead, field_name, "")):
+                    missing.append(field_name)
+                continue
             if field_name == "name_or_company" and not ((lead.name and is_valid_name(lead.name)) or (lead.company and is_valid_company(lead.company))):
                 missing.append(field_name)
             elif field_name == "phone_or_email" and not ((lead.phone and is_valid_phone(lead.phone)) or (lead.email and is_valid_email(lead.email))):
@@ -386,6 +404,15 @@ class QualificationService:
                     missing.append(field_name)
             elif field_name in COMMON_FIELDS and not str(getattr(lead, field_name, "") or "").strip():
                 missing.append(field_name)
+        return missing
+
+    def missing_fields(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None) -> list[str]:
+        policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
+        missing = list(self.missing_required_fields(lead, policy=policy))
+        if ("company" in policy.desired_fields and not is_valid_company(lead.company)
+                and not (lead.qualification_data or {}).get("company_not_applicable")):
+            index = missing.index("need_summary") if "need_summary" in missing else len(missing)
+            missing.insert(index, "company")
         return missing
 
     def collected_fields(self, lead: LeadDraft) -> dict[str, str]:
@@ -401,7 +428,7 @@ class QualificationService:
 
     def can_request_handoff(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None, explicit_request: bool = False) -> bool:
         policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
-        return explicit_request and policy.allow_early_handoff or not self.missing_fields(lead, policy=policy)
+        return explicit_request and policy.allow_early_handoff or not self.missing_required_fields(lead, policy=policy)
 
     def _merge_common(self, lead, field_name, value, normalizer, validator, invalid_fields) -> bool:
         candidate = normalizer(value)

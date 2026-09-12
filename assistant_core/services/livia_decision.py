@@ -55,6 +55,7 @@ class LiviaReply:
     handoff_request_id: int | None = None
     handoff_reason: str = ""
     continuity_action: str = ""
+    collection_prompt: bool = False
 
 
 @dataclass(frozen=True)
@@ -585,6 +586,14 @@ class LiviaDecisionService:
         knowledge_context: str,
     ) -> LiviaReply:
         if not self._inline_openai_in_generate_reply_enabled(assistant_profile):
+            from leads.services.commercial import resolve_lead_draft
+            lead = resolve_lead_draft(conversation)
+            if lead is not None and (lead.qualification_data or {}).get("collection_active"):
+                if not (lead.qualification_data or {}).get("privacy_notice_shown"):
+                    lead.qualification_data = {**lead.qualification_data, "privacy_notice_shown": True}
+                    lead.save(update_fields=["qualification_data", "updated_at"])
+                    decision = replace(decision, reply="Vou usar esses dados apenas para o retorno da nossa equipe. " + decision.reply,
+                                       collection_prompt=True)
             from assistant_core.continuity_policy import offer_after_guidance
 
             reply, action = offer_after_guidance(
@@ -936,9 +945,14 @@ class LiviaDecisionService:
             and not bool(getattr(discovery, "should_collect_lead", False))
         )
         if conversation is not None:
-            if lead_draft is None:
-                lead_draft = resolve_lead_draft(conversation)
-            if not pure_consultative and not knowledge_during_collection:
+            if collection_already_active(conversation, lead_draft):
+                result = self.lead_capture_service.capture_from_message(
+                    conversation=conversation,
+                    message=current_message,
+                    history=history,
+                )
+                lead_draft = result.lead_draft
+            elif not pure_consultative and not knowledge_during_collection:
                 result = self.lead_capture_service.capture_from_message(
                     conversation=conversation,
                     message=current_message,
@@ -1076,9 +1090,9 @@ class LiviaDecisionService:
                 intent=intent,
                 invalid_fields=result.invalid_fields,
             )
-        if result.is_qualified:
+        if result.is_qualified and not result.missing_fields:
             reply = build_contextual_reply(intent=intent, missing_fields=[])
-        decision = LiviaReply(intent=intent, reply=reply)
+        decision = LiviaReply(intent=intent, reply=reply, collection_prompt=True)
         decision = self._finalize_handoff(decision, conversation, result.lead_draft, discovery, current_message)
         return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
 
@@ -1087,7 +1101,7 @@ class LiviaDecisionService:
         has_contact = self.lead_capture_service._has_phone_or_email(lead_draft)
         if not has_contact:
             return ""
-        if "name_or_company" in missing_fields and not self.lead_capture_service._has_name_or_company(lead_draft):
+        if "name" in missing_fields:
             return "Ótimo. Para eu dar sequência, qual é o seu nome ou o nome da empresa?"
         return ""
 

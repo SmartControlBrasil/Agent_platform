@@ -391,6 +391,8 @@ def message_fills_pending_slot(message: str, pending_field: str) -> bool:
     pending = str(pending_field or "").strip()
     if not pending:
         return False
+    if pending == "company" and is_company_not_applicable(message):
+        return True
     inferred = infer_pending_field_values(message, pending)
     if inferred:
         return True
@@ -417,19 +419,22 @@ def message_fills_pending_slot(message: str, pending_field: str) -> bool:
 
 
 def minimum_lead_data_met(lead_draft) -> bool:
-    has_name_or_company = bool(
-        (str(getattr(lead_draft, "name", "") or "").strip() and is_valid_name(getattr(lead_draft, "name", "")))
-        or (str(getattr(lead_draft, "company", "") or "").strip() and is_valid_company(getattr(lead_draft, "company", "")))
-    )
-    has_contact = bool(
-        (str(getattr(lead_draft, "phone", "") or "").strip() and is_valid_phone(getattr(lead_draft, "phone", "")))
-        or (str(getattr(lead_draft, "email", "") or "").strip() and is_valid_email(getattr(lead_draft, "email", "")))
-    )
-    return has_name_or_company and has_contact and is_valid_need_summary(getattr(lead_draft, "need_summary", ""))
+    return all(validator(getattr(lead_draft, field, "")) for field, validator in (
+        ("name", is_valid_name), ("phone", is_valid_phone),
+        ("email", is_valid_email), ("need_summary", is_valid_need_summary),
+    ))
+
+
+def is_company_not_applicable(message: str) -> bool:
+    return normalize_text(message).strip(" .!;") in {
+        "nao", "nao tenho empresa", "sou pessoa fisica", "e particular", "nao se aplica",
+    }
 
 
 def extract_contact_snapshot(text: str) -> ContactSnapshot:
     normalized = str(text or "").strip()
+    if is_company_not_applicable(normalized):
+        return ContactSnapshot()
     return ContactSnapshot(
         name=_extract_name(normalized),
         company=_extract_company(normalized),
@@ -549,6 +554,31 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
         return {}
 
     if pending in {"name", "company", "email", "phone", "city"}:
+        from assistant_core.services.decision_outcome import is_consultative_knowledge_message
+        from leads.services.commercial import is_collection_deferral_phrase
+        if is_consultative_knowledge_message(text) or is_collection_deferral_phrase(text) or is_consultative_context_answer(text):
+            return {}
+        if pending in {"name", "company"}:
+            if is_company_not_applicable(text) or _extract_email(text) or _extract_phone(text):
+                return {}
+            if pending == "name":
+                bare = text.strip(" .,-")
+                name_intro_markers = ("meu nome e", "meu nome é", "me chamo", "sou o", "sou a")
+                explicit_name = _extract_name(text)
+                company_from_text = _extract_company(text) or _normalize_company_candidate(text)
+                if company_from_text and is_valid_company(company_from_text):
+                    return {"company": company_from_text[:120]}
+                if (
+                    not explicit_name
+                    and not any(marker in normalized for marker in name_intro_markers)
+                    and len(bare.split()) >= 3
+                    and is_valid_company(bare)
+                ):
+                    return {"company": bare[:120]}
+            if any(marker in normalized for marker in reject_markers):
+                return {}
+        if pending == "phone" and not message_is_plausible_phone_candidate(text):
+            return {}
         mapped = {
             "name": ("name", _extract_name(text) or text),
             "company": ("company", _extract_company(text) or text),
@@ -568,6 +598,9 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
         if field_name in {"name", "company"} and any(marker in normalize_text(candidate) for marker in reject_markers):
             return {}
         if candidate and validators[field_name](candidate):
+            if pending == "name" and field_name == "name" and not _extract_name(text):
+                if len(candidate.split()) >= 3 and is_valid_company(candidate):
+                    return {"company": candidate[:120]}
             return {field_name: candidate}
     return {}
 

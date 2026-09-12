@@ -268,7 +268,7 @@ def _message_fits_contact_slot_pattern(message: str, *, expected_slot: str = "")
         return False
 
     slots = [expected_slot] if expected_slot else []
-    for slot in ("name_or_company", "phone_or_email", "need_summary"):
+    for slot in ("name", "phone", "email", "company", "need_summary"):
         if slot and slot not in slots:
             slots.append(slot)
     for slot in slots:

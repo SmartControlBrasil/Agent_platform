@@ -45,7 +45,7 @@ class LeadCaptureResult:
 
 
 class LeadCaptureService:
-    REQUIRED_FIELDS = ("name_or_company", "phone_or_email", "need_summary")
+    REQUIRED_FIELDS = ("name", "phone", "email", "need_summary")
     GENERIC_NEED_PHRASES = (
         "quero orcamento",
         "quero orçamento",
@@ -148,6 +148,22 @@ class LeadCaptureService:
         invalid_fields: list[str] | None = None,
     ) -> str:
         invalid_fields = invalid_fields or []
+        prompts = {
+            "name": "Qual é o seu nome?",
+            "phone": "Qual é o melhor telefone ou WhatsApp para contato?",
+            "email": "Qual é o seu e-mail?",
+            "company": "Qual empresa você representa, se for o caso?",
+            "need_summary": "Em uma frase, o que você precisa ou qual problema está enfrentando?",
+        }
+        if missing_fields and missing_fields[0] in prompts:
+            field = missing_fields[0]
+            if field == "name" and "name" in invalid_fields:
+                return "Pode me informar seu nome real?"
+            if field == "email" and "email" in invalid_fields:
+                return "Esse e-mail parece incompleto. Pode me enviar novamente?"
+            if field == "phone" and "phone" in invalid_fields:
+                return "Esse telefone ficou incompleto. Pode enviar o telefone com DDD?"
+            return prompts[field]
         missing_fields = skip_name_prompt_fields(missing_fields, lead_draft)
         if name_or_company_satisfied(lead_draft):
             invalid_fields = [field for field in invalid_fields if field not in {"name", "company"}]

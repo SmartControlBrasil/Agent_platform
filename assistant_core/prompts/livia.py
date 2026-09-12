@@ -106,6 +106,14 @@ def _reply_for_missing_fields(missing_fields: list[str]) -> str:
     first_missing = missing_fields[0]
     if first_missing == "need_summary":
         return ask_need_summary_reply()
+    granular_prompts = {
+        "name": "Qual é o seu nome?",
+        "phone": "Qual é o melhor telefone ou WhatsApp para contato?",
+        "email": "Qual é o seu e-mail?",
+        "company": "Qual empresa você representa, se for o caso?",
+    }
+    if first_missing in granular_prompts:
+        return granular_prompts[first_missing]
     if first_missing == "name_or_company":
         return ask_name_or_company_reply()
     if first_missing == "phone_or_email":

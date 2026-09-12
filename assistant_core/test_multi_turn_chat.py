@@ -123,15 +123,15 @@ class MultiTurnCommercialConversationTests(TestCase):
 
         name_turn = self._chat("Maria Silva")
         self.assertNotIn("qual é o seu nome", name_turn["reply"].lower())
-        self._chat("Ferragens Silva")
         self._chat("11999998888")
         self._chat("maria@ferragens.example")
+        self._chat("Ferragens Silva")
         lead = LeadDraft.objects.get()
         need = lead.need_summary.lower()
         self.assertTrue("loja" in need or "site" in need or "virtual" in need)
         self.assertTrue("ferragem" in need or "ferramenta" in need or "serralheria" in need)
-        self.assertTrue(lead.name or lead.company)
-        self.assertTrue(lead.phone or lead.email)
+        self.assertTrue(lead.name)
+        self.assertTrue(lead.phone and lead.email)
         self.assertIn(lead.status, {LeadDraft.Status.QUALIFIED, LeadDraft.Status.SENT_TO_CRM})
 
     def test_smart_control_ecommerce_conversation_keeps_context(self):

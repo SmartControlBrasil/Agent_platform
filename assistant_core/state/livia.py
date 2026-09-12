@@ -123,22 +123,15 @@ def next_state_after_message(conversation, lead_draft, intent: str = "", extract
         return LeadStateSnapshot(state=get_current_state(conversation))
     if getattr(lead_draft, "status", "") in {"sent_to_crm", "qualified"} or getattr(conversation, "is_qualified", False):
         return LeadStateSnapshot(state=LeadState.QUALIFIED, is_terminal=True)
-    if not str(getattr(lead_draft, "need_summary", "") or "").strip():
-        if _commercial_capture_active(conversation, lead_draft, intent):
-            return LeadStateSnapshot(state=LeadState.COLLECT_NEED, next_field="need_summary")
-        return LeadStateSnapshot(state=LeadState.DISCOVERY)
     if not _commercial_capture_active(conversation, lead_draft, intent):
         return LeadStateSnapshot(state=LeadState.DISCOVERY)
-    if not (
-        str(getattr(lead_draft, "name", "") or "").strip()
-        or str(getattr(lead_draft, "company", "") or "").strip()
-    ):
-        return LeadStateSnapshot(state=LeadState.COLLECT_NAME_COMPANY, next_field="name_or_company")
-    if not (
-        str(getattr(lead_draft, "phone", "") or "").strip()
-        or str(getattr(lead_draft, "email", "") or "").strip()
-    ):
-        return LeadStateSnapshot(state=LeadState.COLLECT_CONTACT, next_field="phone_or_email")
+    from leads.services.commercial import QualificationService
+    missing = QualificationService().missing_fields(lead_draft)
+    if missing:
+        field = missing[0]
+        state = (LeadState.COLLECT_NEED if field == "need_summary" else
+                 LeadState.COLLECT_NAME_COMPANY if field in {"name", "company"} else LeadState.COLLECT_CONTACT)
+        return LeadStateSnapshot(state=state, next_field=field)
     if intent in {"quote_request", "commercial_interest", "contact_data"}:
         return LeadStateSnapshot(state=LeadState.OFFER_HANDOFF)
     return LeadStateSnapshot(state=LeadState.DISCOVERY)

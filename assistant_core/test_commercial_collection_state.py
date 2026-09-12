@@ -113,7 +113,7 @@ class CommercialCollectionStateTests(TestCase):
         )
         lead = self._lead(conversation)
         self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
-        self.assertIn("necessidade principal", decision.reply.lower())
+        self.assertIn("qual é o seu nome", decision.reply.lower())
 
     def test_limpar_galpao_fills_need_summary(self):
         conversation = self._conversation(session_id="need-galpao")
@@ -305,7 +305,7 @@ class CommercialCollectionStateTests(TestCase):
         lead = self._lead(conversation)
         missing = self.qualification.missing_fields(lead)
         self.assertNotIn("need_summary", missing)
-        self.assertIn("name_or_company", missing)
+        self.assertIn("name", missing)
 
     def test_reply_does_not_concatenate_incompatible_templates(self):
         conversation, decisions = self._run_duno_smoke(self._conversation(session_id="no-hybrid"))
@@ -337,7 +337,7 @@ class CommercialCollectionStateTests(TestCase):
         decision = self.service.generate_reply([], "quero um orçamento", conversation=new)
         new_lead = self._lead(new)
         self.assertEqual(new_lead.need_summary, "")
-        self.assertIn("necessidade principal", decision.reply.lower())
+        self.assertIn("qual é o seu nome", decision.reply.lower())
 
     def test_field_sources_set_for_need_summary(self):
         conversation = self._conversation(session_id="field-sources")

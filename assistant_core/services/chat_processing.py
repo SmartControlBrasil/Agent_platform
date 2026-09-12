@@ -318,6 +318,8 @@ def _refine_response_with_ai_if_enabled(
         return deterministic_result.response_payload
     if getattr(deterministic_result.decision, "continuity_action", ""):
         return deterministic_result.response_payload
+    if getattr(deterministic_result.decision, "collection_prompt", False):
+        return deterministic_result.response_payload
     if deterministic_result.response_payload.get("human_handoff", {}).get("active"):
         return deterministic_result.response_payload
 

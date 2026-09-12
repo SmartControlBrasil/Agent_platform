@@ -64,6 +64,8 @@ def build_openai_conversation_prompt(
             "- Quando collection_active=false: converse, esclareça e qualifique consultivamente.",
             "- Quando collection_active=true: pode solicitar SOMENTE os campos listados em "
             "CAMPOS COMERCIAIS PERMITIDOS.",
+            "- Solicite somente o primeiro campo permitido ainda pendente, com uma pergunta. Nome, telefone e e-mail são campos independentes; empresa não substitui nome.",
+            "- Não repita o aviso de privacidade; ele é exibido pelo sistema no início da coleta.",
             "- Perguntas diretas do visitante devem ser respondidas antes de qualquer pergunta de qualificação.",
             "",
             "CONTINUIDADE:",

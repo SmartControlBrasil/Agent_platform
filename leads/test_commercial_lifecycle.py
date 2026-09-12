@@ -42,7 +42,7 @@ class CommercialLifecycleTests(TestCase):
         )
         second = self.service.qualify_from_message(
             conversation=self.conversation,
-            message="Sou Maria da ACME e meu telefone é 11999998888",
+            message="Sou Maria da ACME e meu telefone é 11999998888, email maria@exemplo.com",
             history=[{"role": "user", "content": "Quero um site com IA e dashboard comercial."}],
         )
 
@@ -55,7 +55,7 @@ class CommercialLifecycleTests(TestCase):
         self.assertEqual(second.lead_draft.handoff_status, LeadDraft.HandoffStatus.READY)
 
     def test_retry_same_qualified_message_does_not_duplicate_lead_or_outbox(self):
-        message = "Sou Maria da ACME, telefone 11999998888 e preciso de automação industrial para uma linha."
+        message = "Sou Maria da ACME, email maria@exemplo.com, telefone 11999998888 e preciso de automação industrial para uma linha."
 
         first = self.service.qualify_from_message(conversation=self.conversation, message=message, history=[])
         enqueue_lead_qualified(first.lead_draft)
@@ -81,7 +81,7 @@ class CommercialLifecycleTests(TestCase):
         )
 
         self.assertEqual(outcome.lead_draft.phone, "")
-        self.assertIn("phone_or_email", outcome.missing_fields)
+        self.assertIn("phone", outcome.missing_fields)
 
     def test_email_and_phone_are_explicitly_collected_and_normalized(self):
         outcome = self.service.qualify_from_message(
@@ -98,20 +98,20 @@ class CommercialLifecycleTests(TestCase):
     def test_custom_tenant_specific_policy_controls_allowed_data_and_qualification(self):
         policy = QualificationPolicy(
             slug="stone-policy",
-            required_fields=("need_summary", "name_or_company", "phone_or_email", "custom:material"),
+            required_fields=("name", "phone", "email", "need_summary", "custom:material"),
             custom_fields=(QualificationFieldSpec(key="material", label="material", required=True),),
         )
 
         incomplete = self.service.qualify_from_message(
             conversation=self.conversation,
-            message="Sou Maria, telefone 11999998888 e quero um site com IA para cozinha.",
+            message="Sou Maria da ACME, email maria@exemplo.com, telefone 11999998888 e quero um site com IA para cozinha.",
             history=[],
             policy=policy,
         )
         complete = self.service.qualify_from_message(
             conversation=self.conversation,
             message="O material é granito",
-            history=[{"role": "user", "content": "Sou Maria, telefone 11999998888 e quero um site com IA para cozinha."}],
+            history=[{"role": "user", "content": "Sou Maria da ACME, email maria@exemplo.com, telefone 11999998888 e quero um site com IA para cozinha."}],
             policy=policy,
         )
 
@@ -220,7 +220,7 @@ class CommercialChatIdempotencyTests(TestCase):
             "tenant": self.tenant.slug,
             "session_id": "chat-retry",
             "request_id": request_id,
-            "message": "Sou Maria, telefone 11999998888 e preciso de automação industrial.",
+            "message": "Sou Maria da ACME, email maria@exemplo.com, telefone 11999998888 e preciso de automação industrial.",
         }
 
         first = self.client.post("/api/chat/", data=json.dumps(payload), content_type="application/json")

@@ -345,6 +345,11 @@ def decide_collection(*, current_message: str, conversation=None, lead_draft=Non
 
         if trigger != CollectionTrigger.NONE:
             return CollectionDecision(True, trigger=trigger, reason="collection_already_active")
+        from leads.services.commercial import resolve_lead_draft
+        active_lead = resolve_lead_draft(conversation, lead_draft)
+        if (active_lead is not None and "need_summary" in QualificationService().missing_fields(active_lead)
+                and _is_direct_need_slot_answer(current_message, active_lead)):
+            return CollectionDecision(True, trigger=CollectionTrigger.BUDGET, reason="collection_need_enrichment")
         from assistant_core.conversation_turns import is_direct_question, is_need_enrichment
         from assistant_core.services.decision_outcome import (
             is_consultative_knowledge_message,

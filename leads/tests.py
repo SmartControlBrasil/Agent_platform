@@ -70,7 +70,7 @@ class LeadCaptureServiceTests(TestCase):
 
         reply = self.service.build_next_prompt(result.lead_draft, result.missing_fields)
 
-        self.assertIn("necessidade principal", reply.lower())
+        self.assertIn("telefone", reply.lower())
         self.assertNotIn("nome", reply.lower())
 
     def test_prompt_asks_next_missing_field(self):
@@ -82,13 +82,13 @@ class LeadCaptureServiceTests(TestCase):
 
         reply = self.service.build_next_prompt(result.lead_draft, result.missing_fields)
 
-        self.assertIn("telefone/WhatsApp ou e-mail", reply)
+        self.assertIn("telefone ou WhatsApp", reply)
         self.assertNotIn("nome", reply.lower())
 
     def test_marks_qualified_with_minimum_data(self):
         result = self.service.capture_from_message(
             conversation=self.conversation,
-            message="Sou Maria da ACME, meu telefone é 11999998888 e preciso de automação industrial.",
+            message="Sou Maria da ACME, meu telefone é 11999998888, meu email é maria@exemplo.com e preciso de automação industrial.",
             history=[],
         )
 
@@ -117,8 +117,9 @@ class LeadCaptureServiceTests(TestCase):
 
         self.assertFalse(result.is_qualified)
         self.assertIn("need_summary", result.missing_fields)
-        self.assertIn("name_or_company", result.missing_fields)
-        self.assertIn("phone_or_email", result.missing_fields)
+        self.assertIn("name", result.missing_fields)
+        self.assertIn("phone", result.missing_fields)
+        self.assertIn("email", result.missing_fields)
 
     def test_conversation_initial_state_is_discovery(self):
         self.assertEqual(self.conversation.lead_state, LeadState.DISCOVERY)
@@ -157,6 +158,9 @@ class LeadCaptureServiceTests(TestCase):
         self.assertIn("company", result.invalid_fields)
 
     def test_rejects_short_phone(self):
+        lead = self.service.get_or_create_lead_draft(self.conversation)
+        lead.name = "Maria"
+        lead.save(update_fields=["name"])
         result = self.service.capture_from_message(
             conversation=self.conversation,
             message="999",
@@ -206,7 +210,7 @@ class LeadCaptureServiceTests(TestCase):
     def test_marks_conversation_qualified_and_state_qualified(self):
         result = self.service.capture_from_message(
             conversation=self.conversation,
-            message="Sou Maria da ACME, meu telefone é 11999998888 e preciso de automação industrial para atendimento.",
+            message="Sou Maria da ACME, meu telefone é 11999998888, meu email é maria@exemplo.com e preciso de automação industrial para atendimento.",
             history=[],
         )
 
