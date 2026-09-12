@@ -157,6 +157,63 @@ class QuestionArbitrationTests(TestCase):
         self.assertIn("chamar", accepted.reply.lower())
         self.assertTrue(self.lead().qualification_data.get("collection_active"))
 
+    def test_i2_accumulated_need_policy_is_multi_domain(self):
+        scenarios = (
+            {
+                "slug": "winder",
+                "messages": [
+                    "Tenho uma bobinadora manual.",
+                    "Quero aumentar produtividade e padronizar qualidade.",
+                ],
+                "reply": "A automação pode reduzir variação operacional e organizar repetibilidade no processo.",
+                "kb": "[KNOWLEDGE_BASE]\nBobinadora manual com produtividade e qualidade padronizada por solução técnica.\n[/KNOWLEDGE_BASE]",
+            },
+            {
+                "slug": "cleaning-robot",
+                "messages": [
+                    "Preciso de um robô para um galpão.",
+                    "São 3000 m² e piso de concreto.",
+                ],
+                "reply": "Para esse ambiente, a análise considera área útil, piso, circulação e rotina operacional.",
+                "kb": "[KNOWLEDGE_BASE]\nRobô para galpão de 3000 m² com piso de concreto depende de área útil e rotina.\n[/KNOWLEDGE_BASE]",
+            },
+            {
+                "slug": "website",
+                "messages": [
+                    "Quero modernizar meu site.",
+                    "Preciso gerar mais contatos comerciais.",
+                ],
+                "reply": "Um site comercial pode organizar proposta, páginas de serviço e conversões para contato.",
+                "kb": "[KNOWLEDGE_BASE]\nSite moderno para gerar contatos comerciais com páginas de serviço e conversão.\n[/KNOWLEDGE_BASE]",
+            },
+            {
+                "slug": "chambers",
+                "messages": [
+                    "Tenho três câmaras.",
+                    "Quero histórico, alarmes e monitoramento.",
+                ],
+                "reply": "A solução pode organizar monitoramento, histórico operacional e alarmes para acompanhamento.",
+                "kb": "[KNOWLEDGE_BASE]\nTrês câmaras com histórico, alarmes e monitoramento exigem solução operacional adequada.\n[/KNOWLEDGE_BASE]",
+            },
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario["slug"]):
+                conversation = Conversation.objects.create(tenant=self.tenant, session_id=scenario["slug"])
+                history = [{"role": "user", "content": scenario["messages"][0]}]
+                reply, action = offer_after_guidance(
+                    conversation=conversation,
+                    message=scenario["messages"][1],
+                    history=history,
+                    reply=scenario["reply"] + " Posso ajudar a montar essa solução?",
+                    knowledge_context=scenario["kb"],
+                )
+                lead = LeadDraft.objects.get(conversation=conversation)
+                self.assertEqual(action, "offered")
+                self.assertIn(OFFER, reply)
+                self.assertLessEqual(question_count(reply), 1)
+                self.assertEqual(lead.qualification_data.get(STATUS_KEY), "pending")
+                self.assertFalse(lead.qualification_data.get("collection_active"))
+
     def test_j_decline_continuity_does_not_activate_collection(self):
         self.turn(NEED)
         declined = self.turn("Não precisa.")

@@ -140,7 +140,7 @@ class LiviaDecisionService:
             )
             if offer_response == "declined":
                 return LiviaReply(intent=intent, reply=DECLINE_REPLY, continuity_action="declined")
-            if offer_response == "accepted" and not is_explicit_collection_trigger(current_message):
+            if offer_response == "accepted":
                 decision = self._handle_qualification(
                     intent="commercial_interest", history=history, current_message="",
                     conversation=conversation, discovery=discovery, assistant_profile=assistant_profile,

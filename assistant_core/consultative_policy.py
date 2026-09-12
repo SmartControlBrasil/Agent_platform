@@ -30,6 +30,8 @@ BUDGET_TRIGGERS = (
     "preciso de uma cotacao",
     "preciso de uma proposta",
     "pode preparar uma proposta",
+    "pode registrar",
+    "pode encaminhar",
     "pode mandar um orcamento",
     "pode enviar um orcamento",
     "quero saber quanto ficaria",

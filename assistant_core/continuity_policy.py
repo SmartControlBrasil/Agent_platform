@@ -36,7 +36,7 @@ GENERIC_FOLLOWUP_PATTERNS = (
     r"\btem\s+mais\s+alguma\s+d[úu]vida",
     r"\balguma\s+d[úu]vida",
     r"\bquer\s+que\s+eu\s+monte",
-    r"\bqual\s+equipamento\s+ou\s+processo\s+voce\s+precisa\s+automatizar",
+    r"\bqual\b.*\b(?:voce|você)\b.*\b(?:precisa|quer|busca|procura|objetivo)\b",
 )
 
 
@@ -127,26 +127,6 @@ def strip_generic_followup_questions(reply: str) -> str:
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
-def strip_incompatible_diagnostic_questions(reply: str, need: str) -> str:
-    """Remove pergunta de domínio antigo quando a necessidade atual já mudou."""
-    normalized_need = normalize_text(need)
-    if not (
-        re.search(r"\b(camaras?|temperatura|frigorific|frigorífic|clp|ihm)\b", normalized_need)
-        and re.search(r"\b(automatizar|controle|monitorar|acompanhar)\b", normalized_need)
-    ):
-        return str(reply or "").strip()
-    kept: list[str] = []
-    for part in re.split(r"(?<=[.!?])\s+|\n+", str(reply or "").strip()):
-        part = part.strip()
-        if not part:
-            continue
-        normalized = normalize_text(part)
-        if "?" in part and re.search(r"\b(piso|limpeza|galpao|galpão)\b", normalized):
-            continue
-        kept.append(part)
-    return re.sub(r"\s{2,}", " ", " ".join(kept)).strip()
-
-
 def _question_segments(reply: str) -> list[str]:
     text = str(reply or "").strip()
     if "?" not in text:
@@ -158,12 +138,14 @@ def _question_segments(reply: str) -> list[str]:
     ]
 
 
-def _need_for_offer(message, history):
+def _need_for_offer(message, history, lead=None):
+    existing_need = str(getattr(lead, "need_summary", "") or "").strip()
+    if is_valid_need_summary(existing_need):
+        if _needs_more_turns(existing_need, history, message):
+            return ""
+        return existing_need
     if concrete_need(message):
         return message
-    text = normalize_text(message)
-    if is_direct_question(message) or not re.search(r"\b(\d+|dois|duas|tres|quatro|cinco)\b", text):
-        return ""
     for item in reversed(list(history or [])[-6:]):
         previous = item.get("content", "")
         if item.get("role") != "user" or is_explicit_collection_trigger(previous):
@@ -173,34 +155,84 @@ def _need_for_offer(message, history):
         candidate = f"{previous.rstrip('.')}. {message}"
         if concrete_need(candidate):
             return candidate
-    accumulated = _accumulated_technical_need(message, history)
+    accumulated = _accumulated_need(message, history)
     if accumulated:
         return accumulated
     return ""
 
 
-def _accumulated_technical_need(message: str, history) -> str:
+def _accumulated_need(message: str, history) -> str:
     user_parts = [
         str(item.get("content") or "").strip()
         for item in list(history or [])[-6:]
         if item.get("role") == "user" and str(item.get("content") or "").strip()
     ]
     user_parts.append(str(message or "").strip())
-    if len([part for part in user_parts if part]) < 3:
+    part_count = len([part for part in user_parts if part])
+    if part_count < 2:
         return ""
     candidate = " ".join(part for part in user_parts if part).strip()
     normalized = normalize_text(candidate)
-    if not candidate or re.search(r"\b(pesquisa\s+academica|pesquisa\s+acadêmica|trabalho\s+escolar|curiosidade)\b", normalized):
+    current = normalize_text(message)
+    if not candidate or not _is_offerable_need(candidate):
         return ""
-    if not re.search(r"\b(camaras?|câmaras?)\b", normalized):
+    if _needs_more_turns(candidate, history, message):
         return ""
-    if not re.search(r"\b(temperatura|frigorific|frigorífic|refrigeracao|refrigeração)\b", normalized):
+    if re.search(r"\b(pesquisa|academico|academica|curiosidade|trabalho escolar|conceito|significa|comparacao|diferenca)\b", normalized):
         return ""
-    if not re.search(r"\b(automatizar|controle|controlar|monitorar|acompanhar|supervisorio|supervisório)\b", normalized):
+    if is_direct_question(message) and not _message_adds_requirement(current):
         return ""
-    if not re.search(r"\b(clp|ihm|sensor(?:es)?|historico|histórico|alarme(?:s)?|painel|alertas?|remotos?)\b", normalized):
+    if not (_has_project_intent(normalized) and _has_concrete_requirement(normalized) and _message_adds_requirement(current)):
         return ""
     return candidate[:500]
+
+
+def _is_offerable_need(text: str) -> bool:
+    if is_valid_need_summary(text):
+        return True
+    normalized = normalize_text(text)
+    if re.search(r"\b(pesquisa|academico|academica|curiosidade|trabalho escolar|conceito|significa|comparacao|diferenca)\b", normalized):
+        return False
+    content_words = set(re.findall(r"\b[a-z0-9]{4,}\b", normalized))
+    content_words -= {"preciso", "quero", "gostaria", "tenho", "temos", "para", "com", "sem", "mais", "menos"}
+    return len(content_words) >= 4
+
+
+def _needs_more_turns(need: str, history, message: str) -> bool:
+    normalized = normalize_text(need)
+    if not re.search(r"\b(estudando|pesquisando|avaliando|entendendo)\b", normalized):
+        return False
+    user_turns = [
+        item for item in list(history or []) if item.get("role") == "user" and str(item.get("content") or "").strip()
+    ]
+    if str(message or "").strip():
+        user_turns.append({"role": "user", "content": message})
+    return len(user_turns) < 3
+
+
+def _has_project_intent(normalized: str) -> bool:
+    return bool(
+        re.search(r"\b(preciso|quero|gostaria|busco|procuro|tenho|temos|melhorar|aumentar|reduzir|modernizar|padronizar)\b", normalized)
+    )
+
+
+def _has_concrete_requirement(normalized: str) -> bool:
+    content_words = re.findall(r"\b[a-z0-9]{4,}\b", normalized)
+    if len(set(content_words)) < 6:
+        return False
+    if len(set(content_words)) >= 7:
+        return True
+    return bool(
+        re.search(r"\b(para|com|sem|em|no|na|nos|nas|por|mais|menos|melhor|cada|todo|toda|todos|todas)\b", normalized)
+        or re.search(r"\b\d+(?:[.,]\d+)?\b", normalized)
+    )
+
+
+def _message_adds_requirement(normalized: str) -> bool:
+    return bool(
+        re.search(r"\b(preciso|quero|gostaria|busco|procuro|tenho|temos|deve|deveria|pode|sem|com|para|mais|menos|melhor|aumentar|reduzir|modernizar|padronizar|gerar|acompanhar|visualizar|receber)\b", normalized)
+        or re.search(r"\b\d+(?:[.,]\d+)?\b", normalized)
+    )
 
 
 def offer_after_guidance(*, conversation, message, history, reply, knowledge_context, handoff=False):
@@ -212,8 +244,8 @@ def offer_after_guidance(*, conversation, message, history, reply, knowledge_con
             or data.get("contact_collection_deferred") or data.get("collection_paused")
             or conversation.lead_state in {"qualified", "closed"}):
         return reply, ""
-    need = _need_for_offer(message, history)
-    if need and is_valid_need_summary(need) and knowledge_context.strip():
+    need = _need_for_offer(message, history, lead=lead)
+    if need and _is_offerable_need(need) and knowledge_context.strip():
         # A concrete need already answers the generic discovery prompt.
         reply = reply.removesuffix("Claro. Pode me contar um pouco mais sobre o que você precisa fazer ou resolver?").rstrip()
     # Diagnostic questions and insufficient evidence must be resolved before offering.
@@ -221,12 +253,10 @@ def offer_after_guidance(*, conversation, message, history, reply, knowledge_con
         return reply, ""
     if re.search(r"nao (?:encontrei|tenho|ha).*?(?:informacao|evidencia)", normalize_text(reply)):
         return reply, ""
-    if "?" in reply and need:
-        reply = strip_incompatible_diagnostic_questions(reply, need)
     if "?" in reply:
         if has_diagnostic_question(reply):
             return reply, ""
-        if need and is_valid_need_summary(need):
+        if need and _is_offerable_need(need):
             reply = strip_generic_followup_questions(reply)
         else:
             return reply, ""
@@ -241,7 +271,7 @@ def offer_after_guidance(*, conversation, message, history, reply, knowledge_con
     words -= {"preciso", "nosso", "nossa", "problema", "quero", "minha", "depois", "outro", "tenho", "ajuda"}
     if len(words & set(re.findall(r"\b[a-z]{5,}\b", normalize_text(knowledge_context)))) < 2:
         return reply, ""
-    if not is_valid_need_summary(need):
+    if not _is_offerable_need(need):
         return reply, ""
     from leads.services.lead_capture import LeadCaptureService
     lead = lead or LeadCaptureService().get_or_create_lead_draft(conversation)
