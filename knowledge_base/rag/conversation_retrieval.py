@@ -503,7 +503,11 @@ def _dedupe_and_limit(
         if not classification.is_answerable:
             policy_filtered += 1
             continue
-        if requested_robotics_family and not robotics_families_compatible(requested_robotics_family, blob):
+        current_blob = f"{source_name} {source_reference} {text[:400]}".lower()
+        if requested_robotics_family and not robotics_families_compatible(
+            requested_robotics_family,
+            current_blob,
+        ):
             coherence_filtered += 1
             continue
         if active_domain and not domains_compatible(active_domain, classification.domain):

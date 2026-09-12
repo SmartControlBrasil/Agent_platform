@@ -163,6 +163,10 @@ def entity_catalog_for_tenant(tenant) -> list[KnowledgeEntity]:
     grouped: dict[str, dict] = {}
     for manifest in docs:
         meta = dict(getattr(manifest, "document_metadata", None) or {})
+        # Conhecimento geral não deve povoar o catálogo de produtos.
+        # Manifests legados sem scope continuam aceitos por compatibilidade.
+        if str(meta.get("document_scope") or "") == "general":
+            continue
         manifest_specificity = document_specificity_score(
             document_metadata=meta,
             file_name=str(getattr(manifest, "name", "") or ""),
@@ -366,6 +370,13 @@ def _looks_like_product_name(value: str) -> bool:
     raw = str(value or "").strip()
     if not n or n in _GENERIC_TITLE_WORDS or n in _STOP_UPPER_PHRASES:
         return False
+    if re.fullmatch(
+        r"(?:pagina|page|unidade|capitulo|chapter|figura|figure)\s+\d+(?:[.\-]\d+)?",
+        n,
+    ):
+        return False
+    if n in {"e book", "ebook", "e book apostila", "apostila"}:
+        return False
     if _is_catalog_orientation_line(raw):
         return False
     if ":" in raw and not _OFFICIAL_NAME_RE.match(raw):
@@ -434,17 +445,60 @@ def _product_name_from_heading(title: str) -> str:
     return ""
 
 
+def _has_strong_model_token(value: str) -> bool:
+    for token in re.findall(r"[A-Za-z0-9-]+", str(value or "")):
+        if re.search(r"[A-Za-z]", token) and re.search(r"\d", token):
+            return True
+    return False
+
+
 def _document_scope(*, file_name: str, relative_path: str, text: str, product_names: list[str]) -> str:
-    blob = normalize_entity_text(f"{file_name} {relative_path} {str(text or '')[:800]}")
+    raw_text = str(text or "")
+    blob = normalize_entity_text(f"{file_name} {relative_path} {raw_text[:1200]}")
+
+    # Overview de catálogo exige evidência catalogal explícita.
     if any(token in blob for token in (
-        "visao geral", "visão geral", "produtos oficiais", "orientacao rapida",
-        "orientação rápida", "linha xyron", "nomenclatura institucional",
+        "produtos oficiais",
+        "orientacao rapida",
+        "linha xyron",
+        "nomenclatura institucional",
+        "catalogo de produtos",
+        "catalogo oficial",
     )):
         return "catalog_overview"
-    if len(product_names) >= 4:
-        return "catalog_overview"
-    if product_names and len(product_names) <= 2:
+
+    # Documento dedicado exige identidade explícita de produto/modelo.
+    if re.search(r"(?im)^\s*nome oficial\s*:", raw_text):
         return "product_dedicated"
+
+    for line in raw_text.splitlines()[:20]:
+        stripped = line.strip().strip("# ").strip()
+        if stripped and _product_name_from_heading(stripped):
+            return "product_dedicated"
+
+    title = _document_title(
+        file_name=file_name,
+        relative_path=relative_path,
+        text=raw_text,
+    )
+    commercial_blob = normalize_entity_text(
+        f"{file_name} {relative_path} {raw_text[:600]}"
+    )
+    has_commercial_identity = any(token in commercial_blob for token in (
+        "manual",
+        "robo",
+        "equipamento",
+        "produto",
+        "autonomia nominal",
+        "ficha tecnica",
+    ))
+    if (
+        _has_strong_model_token(title)
+        and _looks_like_product_name(title)
+        and has_commercial_identity
+    ):
+        return "product_dedicated"
+
     return "general"
 
 
