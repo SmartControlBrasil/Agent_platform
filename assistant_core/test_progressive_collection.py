@@ -54,7 +54,7 @@ class ProgressiveCollectionTests(TestCase):
         self.start()
         self.assertIn("telefone", self.turn("Marcelo Silva").lower())
         self.assertIn("e-mail", self.turn("11999999999").lower())
-        self.assertIn("empresa", self.turn("marcelo@example.com").lower())
+        self.assertIn("continuidade", self.turn("marcelo@example.com").lower())
 
     def pf_contacts(self):
         self.start(PF_NEED, knowledge=PF_KB)
@@ -90,7 +90,7 @@ class ProgressiveCollectionTests(TestCase):
         self.start()
         reply = self.turn("Meu nome é Marcelo Silva, meu telefone é 11999999999 e meu e-mail é marcelo@example.com")
         self.assertEqual(self.pending(), [])
-        self.assertIn("empresa", reply)
+        self.assertIn("continuidade", reply)
         self.assertEqual(self.lead().name, "Marcelo Silva")
 
     def test_spontaneous_company_resolves_optional_slot(self):

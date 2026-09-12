@@ -12,6 +12,7 @@ from conversations.models import Conversation, HandoffRequest, Message
 from integrations.models import OutboxEvent
 from integrations.outbox.handlers import LeadQualifiedHandler
 from integrations.outbox.payloads import SCHEMA_VERSION
+from assistant_core.consultative_policy import mark_collection_active
 from leads.models import LeadDraft
 from leads.services.lead_notification import LeadNotificationService
 from tenants.models import Tenant
@@ -256,6 +257,7 @@ class LeadReportAndNotificationTests(TestCase):
             need_summary="loja virtual para ferragens e ferramentas",
             status=LeadDraft.Status.QUALIFIED,
         )
+        mark_collection_active(self.lead, reason="explicit_quote")
 
     def test_report_contains_transcript_and_need(self):
         body = build_lead_notification_body(self.lead, timestamp="02/09/2026 12:00")
@@ -266,7 +268,8 @@ class LeadReportAndNotificationTests(TestCase):
         self.assertIn("maria", body.lower())
         self.assertIn("smart-control-brasil", body.lower())
         self.assertIn("https://www.smartcontrolbrasil.com.br/", body)
-        self.assertIn("Histórico da conversa:", body)
+        self.assertIn("HISTÓRICO DA CONVERSA", body)
+        self.assertIn("RESUMO DO ATENDIMENTO", body)
 
     @override_settings(LIVIA_LEAD_NOTIFICATIONS_ENABLED=True, LIVIA_LEAD_NOTIFICATIONS_DRY_RUN=True)
     def test_lead_notification_is_idempotent(self):
@@ -276,7 +279,8 @@ class LeadReportAndNotificationTests(TestCase):
         self.assertFalse(first.skipped)
         self.assertTrue(second.skipped)
         self.lead.refresh_from_db()
-        self.assertIn("lead_notification_sent_at", self.lead.qualification_data)
+        self.assertFalse(self.lead.qualification_data.get("lead_notification_sent_at"))
+        self.assertTrue(self.lead.qualification_data.get("lead_notification_dry_run_at"))
 
     @override_settings(
         LIVIA_LEAD_NOTIFICATIONS_ENABLED=True,
@@ -303,8 +307,9 @@ class LeadReportAndNotificationTests(TestCase):
         second = LeadQualifiedHandler().process(event)
         self.assertEqual(first.status, "succeeded")
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("Novo lead da Lívia", mail.outbox[0].subject)
+        self.assertIn("[Lívia] Novo atendimento", mail.outbox[0].subject)
         self.assertIn("Cliente:", mail.outbox[0].body)
+        self.assertIn("DADOS DO CONTATO", mail.outbox[0].body)
         self.lead.refresh_from_db()
         self.assertTrue(self.lead.qualification_data.get("lead_notification_sent_at"))
         self.assertEqual(second.metadata["email"]["skipped"], True)

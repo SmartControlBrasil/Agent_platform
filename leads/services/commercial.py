@@ -252,6 +252,10 @@ def max_source(left: str, right: str) -> str:
     return left if SOURCE_STRENGTH.get(left, 0) >= SOURCE_STRENGTH.get(right, 0) else right
 
 
+def is_ready_for_commercial_notification(lead: LeadDraft | None, *, policy: QualificationPolicy | None = None) -> bool:
+    return QualificationService().is_ready_for_commercial_notification(lead, policy=policy)
+
+
 class QualificationService:
     def __init__(self, policy: QualificationPolicy | None = None):
         self.policy = policy
@@ -373,6 +377,12 @@ class QualificationService:
             lead.handoff_status = LeadDraft.HandoffStatus.READY
         if lead.dispatch_status == LeadDraft.DispatchStatus.NOT_QUEUED and lead.status == LeadDraft.Status.QUALIFIED:
             lead.dispatch_status = LeadDraft.DispatchStatus.PENDING
+        if self.is_ready_for_commercial_notification(lead, policy=policy):
+            if lead.commercial_status in {
+                LeadDraft.CommercialStatus.NEW,
+                LeadDraft.CommercialStatus.CONTACT_PENDING,
+            }:
+                lead.commercial_status = LeadDraft.CommercialStatus.QUALIFIED
         lead.save()
         self._sync_conversation(conversation, lead)
         after = self._state_snapshot(lead)
@@ -461,6 +471,32 @@ class QualificationService:
         if not (lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY):
             return []
         return pending_collection_fields(lead=lead, history=history, message=message)
+
+    def is_ready_for_commercial_notification(
+        self,
+        lead: LeadDraft,
+        *,
+        policy: QualificationPolicy | None = None,
+    ) -> bool:
+        """Lead completo com coleta comercial ativa e intenção válida — pronto para notificar."""
+        if lead is None:
+            return False
+        qd = dict(getattr(lead, "qualification_data", None) or {})
+        if not qd.get(COLLECTION_ACTIVE_KEY):
+            return False
+        if self.missing_required_fields(lead, policy=policy):
+            return False
+        return self._has_commercial_notification_intent(lead)
+
+    def _has_commercial_notification_intent(self, lead: LeadDraft) -> bool:
+        qd = dict(getattr(lead, "qualification_data", None) or {})
+        if qd.get("continuity_offer_status") == "accepted":
+            return True
+        if str(qd.get("collection_trigger_reason") or "").strip():
+            return True
+        if qd.get(COMMERCIAL_INTENT_KEY):
+            return True
+        return False
 
     def collected_fields(self, lead: LeadDraft) -> dict[str, str]:
         data = {}

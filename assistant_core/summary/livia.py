@@ -88,6 +88,15 @@ def format_conversation_summary_notes(summary: ConversationSummary) -> str:
 
 MAX_TRANSCRIPT_CHARS = 14000
 MAX_TRANSCRIPT_TURNS = 80
+NOTIFICATION_TOPIC_PATTERNS = (
+    (re.compile(r"rob[oô]", re.IGNORECASE), "Robô de limpeza"),
+    (re.compile(r"ar[- ]?condicionado", re.IGNORECASE), "Ar-condicionado"),
+    (re.compile(r"automa", re.IGNORECASE), "Automação"),
+    (re.compile(r"\bclp\b", re.IGNORECASE), "Automação"),
+    (re.compile(r"site|loja virtual|e-?commerce", re.IGNORECASE), "Site / loja virtual"),
+    (re.compile(r"c[âa]mara|frigor", re.IGNORECASE), "Câmaras frigoríficas"),
+    (re.compile(r"limpeza|galp", re.IGNORECASE), "Limpeza industrial"),
+)
 INTERNAL_CONTENT_MARKERS = (
     "correlation_id",
     "traceback",
@@ -129,42 +138,102 @@ def build_conversation_transcript(conversation, *, lead_draft=None) -> str:
     return "\n".join(lines) if lines else "Sem histórico registrado nesta conversa."
 
 
+def build_lead_notification_subject(lead_draft) -> str:
+    name = str(getattr(lead_draft, "name", "") or "").strip() or "Lead sem identificação"
+    topic = _notification_subject_topic(lead_draft)
+    if topic:
+        return f"[Lívia] Novo atendimento — {name} — {topic}"
+    return f"[Lívia] Novo atendimento — {name}"
+
+
+def build_lead_notification_summary_text(conversation, *, lead_draft=None) -> str:
+    summary = build_conversation_summary(conversation, lead_draft=lead_draft)
+    lines: list[str] = []
+    if summary.need_summary:
+        lines.append(f"Necessidade: {summary.need_summary}")
+    if summary.conversation_notes:
+        lines.append("Contexto relevante:")
+        lines.extend(f"- {note}" for note in summary.conversation_notes[:4])
+    if summary.recommended_next_step:
+        lines.append(f"Continuidade: {summary.recommended_next_step}")
+    return "\n".join(lines).strip() or (summary.need_summary or "Não informado.")
+
+
+def get_transcript_truncation_notice(conversation) -> str:
+    messages = _conversation_messages(conversation)
+    notices: list[str] = []
+    if len(messages) > MAX_TRANSCRIPT_TURNS:
+        notices.append(f"[Histórico limitado aos últimos {MAX_TRANSCRIPT_TURNS} turnos]")
+    return " ".join(notices)
+
+
 def build_lead_notification_body(lead_draft, *, timestamp: str = "") -> str:
     conversation = getattr(lead_draft, "conversation", None)
     summary = build_conversation_summary(conversation, lead_draft=lead_draft)
     transcript = build_conversation_transcript(conversation, lead_draft=lead_draft)
-    origin = summary.source_page or "livia-platform"
-    return "\n".join(
+    summary_text = build_lead_notification_summary_text(conversation, lead_draft=lead_draft)
+    truncation = get_transcript_truncation_notice(conversation)
+    tenant_slug = summary.tenant_slug or str(getattr(getattr(lead_draft, "tenant", None), "slug", "") or "")
+    conversation_id = getattr(conversation, "pk", "") or ""
+    lead_id = getattr(lead_draft, "pk", "") or ""
+    source_page = summary.source_page or str(getattr(conversation, "source_page", "") or "").strip()
+
+    lines = [
+        "NOVO ATENDIMENTO — LÍVIA",
+        "",
+        "DADOS DO CONTATO",
+        "",
+        f"Nome: {getattr(lead_draft, 'name', '') or 'Não informado'}",
+        f"Telefone/WhatsApp: {getattr(lead_draft, 'phone', '') or 'Não informado'}",
+        f"E-mail: {getattr(lead_draft, 'email', '') or 'Não informado'}",
+    ]
+    company = str(getattr(lead_draft, "company", "") or "").strip()
+    if company:
+        lines.append(f"Empresa: {company}")
+    lines.extend(
         [
-            "Novo lead qualificado pela Lívia",
             "",
-            f"Tenant: {summary.tenant_slug or getattr(getattr(lead_draft, 'tenant', None), 'slug', '')}",
-            f"Data/hora: {timestamp or 'não informada'}",
-            f"Origem: {origin}",
+            "ASSUNTO",
             "",
-            f"Nome: {getattr(lead_draft, 'name', '') or 'Não informado'}",
-            f"Empresa: {getattr(lead_draft, 'company', '') or 'Não informado'}",
-            f"Telefone: {getattr(lead_draft, 'phone', '') or 'Não informado'}",
-            f"E-mail: {getattr(lead_draft, 'email', '') or 'Não informado'}",
-            f"Cidade: {getattr(lead_draft, 'city', '') or 'Não informada'}",
+            summary.need_summary or str(getattr(lead_draft, "need_summary", "") or "").strip() or "Não informado",
             "",
-            "Necessidade principal:",
-            summary.need_summary or "Não informada",
+            "RESUMO DO ATENDIMENTO",
             "",
-            "Resumo executivo:",
-            f"Interesse em {AREA_LABELS.get(summary.service_area, summary.service_area or 'indefinido')}; "
-            f"urgência {summary.urgency}; próximo passo: {summary.recommended_next_step}",
+            summary_text,
             "",
-            "Pontos importantes:",
-            *[f"- {note}" for note in (summary.conversation_notes or ("Não identificado.",))],
+            "HISTÓRICO DA CONVERSA",
             "",
-            "Próxima ação sugerida:",
-            summary.recommended_next_step,
-            "",
-            "Histórico da conversa:",
-            transcript,
         ]
     )
+    if truncation:
+        lines.append(truncation)
+        lines.append("")
+    lines.append(transcript)
+    lines.extend(
+        [
+            "",
+            "INFORMAÇÕES INTERNAS",
+            "",
+            f"Tenant: {tenant_slug or 'não informado'}",
+            f"Conversation ID: {conversation_id or 'não informado'}",
+            f"Lead ID: {lead_id or 'não informado'}",
+            f"Data/hora: {timestamp or 'não informada'}",
+        ]
+    )
+    if source_page:
+        lines.append(f"Origem/página: {source_page}")
+    return "\n".join(lines)
+
+
+def _notification_subject_topic(lead_draft) -> str:
+    need = str(getattr(lead_draft, "need_summary", "") or "").strip()
+    if not need:
+        return ""
+    normalized = _normalize(need)
+    for pattern, label in NOTIFICATION_TOPIC_PATTERNS:
+        if pattern.search(normalized):
+            return label
+    return ""
 
 
 def build_handoff_notification_body(handoff, *, timestamp: str = "") -> str:

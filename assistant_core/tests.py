@@ -632,7 +632,7 @@ class ChatApiTests(TestCase):
         self.assertEqual(OutboxEvent.objects.filter(event_type=OutboxEvent.EventType.LEAD_QUALIFIED, aggregate_id=str(lead_draft.pk)).count(), 1)
         self.assertFalse(lead_draft.crm_external_id)
         self.assertIsNone(lead_draft.sent_to_crm_at)
-        self.assertIn("encaminhar", response.json()["reply"].lower())
+        self.assertIn("continuidade", response.json()["reply"].lower())
 
     def test_chat_api_does_not_create_lead_draft_on_technical_question(self):
         payload = {

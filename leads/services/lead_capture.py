@@ -105,7 +105,7 @@ class LeadCaptureService:
             policy=policy,
         )
 
-        if outcome.is_qualified:
+        if outcome.is_qualified and self._should_enqueue_commercial_notification(outcome.lead_draft):
             self._dispatch_webhook_lead_qualified(outcome.lead_draft)
 
         state_snapshot = next_state_after_message(
@@ -124,6 +124,11 @@ class LeadCaptureService:
             invalid_fields=outcome.invalid_fields,
             state=state_snapshot.state,
         )
+
+    def _should_enqueue_commercial_notification(self, lead_draft: LeadDraft) -> bool:
+        from leads.services.commercial import is_ready_for_commercial_notification
+
+        return is_ready_for_commercial_notification(lead_draft)
 
     def _dispatch_webhook_lead_qualified(self, lead_draft: LeadDraft) -> None:
         from integrations.outbox.service import enqueue_lead_qualified

@@ -9,6 +9,7 @@ from conversations.models import HandoffRequest
 from integrations.models import OutboxEvent
 from integrations.outbox.handlers import LeadQualifiedHandler
 from integrations.outbox.service import enqueue_lead_qualified
+from assistant_core.consultative_policy import mark_collection_active
 from leads.models import LeadDraft
 from leads.services.commercial import (
     CommercialReadinessService,
@@ -58,6 +59,7 @@ class CommercialLifecycleTests(TestCase):
         message = "Sou Maria da ACME, email maria@exemplo.com, telefone 11999998888 e preciso de automação industrial para uma linha."
 
         first = self.service.qualify_from_message(conversation=self.conversation, message=message, history=[])
+        mark_collection_active(first.lead_draft, reason="explicit_quote")
         enqueue_lead_qualified(first.lead_draft)
         second = self.service.qualify_from_message(conversation=self.conversation, message=message, history=[])
         enqueue_lead_qualified(second.lead_draft)

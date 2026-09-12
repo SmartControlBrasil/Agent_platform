@@ -79,11 +79,18 @@ class LeadQualifiedHandler(BaseOutboxHandler):
             "success": notification_result.success,
             "dry_run": notification_result.dry_run,
             "skipped": notification_result.skipped,
+            "message": notification_result.message,
         }
         if crm_result.retryable or webhook_result.retryable:
             return retryable_failure(
                 "delivery_retryable",
                 "One or more lead deliveries failed temporarily.",
+                {"smart360": crm_result.metadata, "webhooks": webhook_result.metadata, "email": notification_meta},
+            )
+        if not notification_result.success and not notification_result.skipped:
+            return retryable_failure(
+                "email_delivery_failed",
+                notification_result.message or "Lead notification email failed.",
                 {"smart360": crm_result.metadata, "webhooks": webhook_result.metadata, "email": notification_meta},
             )
         if crm_result.status == "permanent_failure" or webhook_result.status == "permanent_failure":

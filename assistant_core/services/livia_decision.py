@@ -663,6 +663,7 @@ class LiviaDecisionService:
     def _finalize_handoff(self, decision: LiviaReply, conversation, lead_draft, discovery, current_message: str) -> LiviaReply:
         from assistant_core.consultative_policy import is_explicit_human_handoff
         from assistant_core.dialogue_memory import is_contact_deferred, wants_consultative_continue
+        from leads.services.commercial import is_ready_for_commercial_notification
 
         if is_contact_deferred(current_message) or wants_consultative_continue(current_message):
             return decision
@@ -680,6 +681,8 @@ class LiviaDecisionService:
             handoff_reason=result.handoff.reason,
         )
         if not result.created:
+            return decision
+        if is_ready_for_commercial_notification(lead_draft):
             return decision
         confirmation = self._handoff_confirmation(result.handoff, current_message=current_message)
         if is_explicit_human_handoff(current_message):
@@ -1117,7 +1120,11 @@ class LiviaDecisionService:
                 intent=intent,
                 invalid_fields=result.invalid_fields,
             )
-        if result.is_qualified and not result.missing_fields:
+        from leads.services.commercial import is_ready_for_commercial_notification
+
+        if is_ready_for_commercial_notification(result.lead_draft) or (
+            result.is_qualified and not result.missing_fields
+        ):
             reply = build_contextual_reply(intent=intent, missing_fields=[])
         decision = LiviaReply(intent=intent, reply=reply, collection_prompt=True)
         decision = self._finalize_handoff(decision, conversation, result.lead_draft, discovery, current_message)

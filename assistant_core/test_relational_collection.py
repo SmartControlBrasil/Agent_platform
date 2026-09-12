@@ -111,7 +111,7 @@ class RelationalCollectionTests(TestCase):
         self.turn("Marcelo Silva")
         self.turn("11999999999")
         reply = self.turn("marcelo@example.com")
-        self.assertIn("empresa", reply.reply.lower())
+        self.assertIn("continuidade", reply.reply.lower())
         self.assertEqual(self.promptable(), ["company"])
 
     def test_i_personal_flow_does_not_ask_company(self):

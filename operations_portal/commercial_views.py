@@ -41,10 +41,10 @@ def _can_see_full_pii(access) -> bool:
 
 def _notification_label_for_lead(lead: LeadDraft) -> str:
     data = dict(lead.qualification_data or {})
-    if data.get("lead_notification_dry_run"):
-        return "dry-run"
     if data.get("lead_notification_sent_at"):
         return "sent"
+    if data.get("lead_notification_dry_run_at") or data.get("lead_notification_dry_run"):
+        return "dry-run"
     if lead.dispatch_status == LeadDraft.DispatchStatus.FAILED:
         return "failed"
     if lead.dispatch_status == LeadDraft.DispatchStatus.DRY_RUN:
