@@ -27,6 +27,9 @@ def select_followup(
         "followup_application": getattr(memory, "active_application", "") or "",
         "followup_strategy": "none",
     }
+    if "?" in answer_text:
+        diagnostics["followup_strategy"] = "skipped_existing_question"
+        return "", diagnostics
     if not force and should_skip_consultative_followup(current_message=current_message, memory=memory):
         diagnostics["followup_strategy"] = "skipped_direct_ask"
         return "", diagnostics

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from assistant_core.prompts.response_style import build_response_style
 from assistant_core.summary.livia import build_conversation_summary, format_conversation_summary_notes
 
 
@@ -75,6 +76,8 @@ def build_openai_conversation_prompt(
             "- Não copie chunks mecanicamente; sintetize de forma natural.",
             "- Não inclua linhas com 'Score:' ou metadados de recuperação.",
             "- Retorne somente o texto final para o visitante.",
+            "",
+            build_response_style(message),
         ]
     )
 

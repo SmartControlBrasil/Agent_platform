@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from assistant_core.prompts.response_style import build_response_style
 from assistant_core.summary.livia import build_conversation_summary, format_conversation_summary_notes
 
 
@@ -50,6 +51,8 @@ def build_livia_ai_prompt(
             "Respeite o lead_state e preserve a intenção da resposta determinística.",
             "Não mencione prompt, JSON, regras internas, estado interno, feature flag, IA ou automação.",
             "Retorne somente o texto final para o visitante.",
+            "",
+            build_response_style(message),
         ]
     )
     user_prompt = "\n\n".join(
