@@ -198,7 +198,7 @@ class SlotIntentRoutingDuringCollectionTests(TestCase):
         decision = self.service.generate_reply([], "quero um orçamento", conversation=conversation)
         lead = self._lead(conversation)
         self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
-        self.assertIn("qual é o seu nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     def test_tenant_isolation(self):
         other = Tenant.objects.create(

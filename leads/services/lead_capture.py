@@ -148,11 +148,29 @@ class LeadCaptureService:
         invalid_fields: list[str] | None = None,
     ) -> str:
         invalid_fields = invalid_fields or []
+        from assistant_core.relational_collection import (
+            build_contact_collection_prompt,
+            mark_contact_reason_shown,
+            pending_collection_fields,
+        )
+
+        if (lead_draft.qualification_data or {}).get("collection_active"):
+            pending = pending_collection_fields(lead=lead_draft) or list(missing_fields or [])
+            if pending:
+                field = pending[0]
+                prompt = build_contact_collection_prompt(
+                    lead=lead_draft,
+                    field=field,
+                    invalid_fields=invalid_fields,
+                )
+                if field == "phone" and not (lead_draft.qualification_data or {}).get("contact_reason_shown"):
+                    mark_contact_reason_shown(lead_draft)
+                return prompt
         prompts = {
-            "name": "Qual é o seu nome?",
-            "phone": "Qual é o melhor telefone ou WhatsApp para contato?",
+            "name": "Certo. Como posso te chamar?",
+            "phone": "Qual é o melhor telefone ou WhatsApp?",
             "email": "Qual é o seu e-mail?",
-            "company": "Qual empresa você representa, se for o caso?",
+            "company": "Qual é o nome da empresa ou instituição?",
             "need_summary": "Em uma frase, o que você precisa ou qual problema está enfrentando?",
         }
         if missing_fields and missing_fields[0] in prompts:

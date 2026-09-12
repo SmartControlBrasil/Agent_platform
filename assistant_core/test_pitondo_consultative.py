@@ -98,7 +98,7 @@ class PitondoConsultativeFlowTests(TestCase):
         budget = self._chat("quero um orçamento")
         lowered = budget["reply"].lower()
         self.assertTrue(
-            any(token in lowered for token in ("nome", "telefone", "e-mail", "email", "whatsapp")),
+            any(token in lowered for token in ("chamar", "nome", "telefone", "e-mail", "email", "whatsapp")),
             budget["reply"],
         )
 
@@ -117,7 +117,7 @@ class PitondoConsultativeFlowTests(TestCase):
         self._assert_no_collection(conceptual["reply"])
         explicit = self._chat("pode fazer um orçamento para mim", session_id="bath")
         self.assertTrue(
-            any(token in explicit["reply"].lower() for token in ("nome", "telefone", "whatsapp", "e-mail", "email"))
+            any(token in explicit["reply"].lower() for token in ("chamar", "nome", "telefone", "whatsapp", "e-mail", "email"))
         )
 
     def test_human_handoff_from_gourmet_context(self):
@@ -125,7 +125,7 @@ class PitondoConsultativeFlowTests(TestCase):
         self._chat("quero bancada para churrasqueira", session_id="gourmet")
         handoff = self._chat("quero falar com alguém", session_id="gourmet")
         lowered = handoff["reply"].lower()
-        self.assertTrue(any(token in lowered for token in ("atendimento", "humano", "nome", "telefone", "contato")))
+        self.assertTrue(any(token in lowered for token in ("atendimento", "humano", "chamar", "nome", "telefone", "contato")))
         self.assertTrue(HandoffRequest.objects.filter(conversation__session_id="gourmet").exists())
 
     def test_notification_email_is_pitondo_not_smart_control(self):

@@ -170,7 +170,7 @@ class ConsultativeCleaningRobotRegressionTests(TestCase):
         budget = self._chat("quero um orçamento")
         lowered = budget["reply"].lower()
         self.assertTrue(
-            any(token in lowered for token in ("nome", "empresa", "telefone", "e-mail", "email", "whatsapp")),
+            any(token in lowered for token in ("chamar", "nome", "empresa", "telefone", "e-mail", "email", "whatsapp")),
             budget["reply"],
         )
         lead = LeadDraft.objects.get(conversation__session_id=self.session_id)
@@ -184,6 +184,7 @@ class ConsultativeCleaningRobotRegressionTests(TestCase):
         self.assertNotIn("grupomecanismo", lowered)
         lead = LeadDraft.objects.get(conversation__session_id=self.session_id)
         self.assertEqual(lead.company, "Grupo Mecanismo")
+        self.assertEqual(lead.name, "Grupo Mecanismo")
         self.assertTrue(
             "telefone" in lowered or "whatsapp" in lowered or "e-mail" in lowered or "email" in lowered,
             company["reply"],

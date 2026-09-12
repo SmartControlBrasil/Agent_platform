@@ -168,7 +168,7 @@ class DunoConversationalQualityTests(TestCase):
         budget = self._chat("quero um orçamento desse robô")
         budget_lower = budget["reply"].lower()
         self.assertTrue(
-            any(token in budget_lower for token in ("nome", "telefone", "e-mail", "email", "whatsapp", "empresa")),
+            any(token in budget_lower for token in ("chamar", "nome", "telefone", "e-mail", "email", "whatsapp", "empresa")),
             budget["reply"],
         )
 

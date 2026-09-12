@@ -207,7 +207,7 @@ def build_collection_slot_context(*, conversation=None, lead_draft=None, message
 
     from leads.services.commercial import QualificationService
 
-    pending = QualificationService().missing_fields(lead)
+    pending = QualificationService().promptable_fields(lead, message=message)
     expected_slot = str(pending[0] if pending else "")
     if is_explicit_knowledge_subject_change(message):
         return SlotCollectionContext(

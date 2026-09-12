@@ -129,6 +129,11 @@ OPERATIONAL_QUALIFICATION_KEYS = frozenset(
         ACTIVE_NEED_KEY,
         "name_deferred",
         "collection_trigger_reason",
+        "relational_name_asked",
+        "relational_name_captured",
+        "contact_reason_shown",
+        "privacy_notice_shown",
+        "company_not_applicable",
     }
 )
 
@@ -271,8 +276,13 @@ class QualificationService:
         changed |= self._merge_common(lead, "phone", snapshot.phone, normalize_phone, is_valid_phone, invalid_fields)
         changed |= self._merge_common(lead, "city", snapshot.city, normalize_city, is_valid_city, invalid_fields)
 
-        pending = self.missing_fields(lead, policy=policy)
         collection_active = bool((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        pending = self.promptable_fields(
+            lead,
+            history=history,
+            message=message,
+            policy=policy,
+        )
         from assistant_core.qualification.livia import is_company_not_applicable
         if collection_active and pending and pending[0] == "company" and is_company_not_applicable(message):
             lead.qualification_data = {**(lead.qualification_data or {}), "company_not_applicable": True}
@@ -346,6 +356,12 @@ class QualificationService:
         lead.qualification_policy = policy.slug
         missing = self.missing_fields(lead, policy=policy)
         missing_required = self.missing_required_fields(lead, policy=policy)
+        promptable = self.promptable_fields(
+            lead,
+            history=history,
+            message=message,
+            policy=policy,
+        )
         lead.qualification_status = (
             LeadDraft.QualificationStatus.QUALIFIED
             if not missing_required
@@ -365,7 +381,7 @@ class QualificationService:
             lead_draft=lead,
             state=lead.qualification_status,
             collected_fields=self.collected_fields(lead),
-            missing_fields=missing,
+            missing_fields=promptable if collection_active else missing,
             invalid_fields=invalid_fields,
             is_qualified=lead.qualification_status == LeadDraft.QualificationStatus.QUALIFIED,
             can_request_handoff=self.can_request_handoff(lead, policy=policy),
@@ -407,13 +423,44 @@ class QualificationService:
         return missing
 
     def missing_fields(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None) -> list[str]:
+        """Campos materialmente ausentes para qualificação (company não entra aqui)."""
         policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
-        missing = list(self.missing_required_fields(lead, policy=policy))
-        if ("company" in policy.desired_fields and not is_valid_company(lead.company)
-                and not (lead.qualification_data or {}).get("company_not_applicable")):
-            index = missing.index("need_summary") if "need_summary" in missing else len(missing)
-            missing.insert(index, "company")
-        return missing
+        return list(self.missing_required_fields(lead, policy=policy))
+
+    def possible_enrichment_fields(
+        self,
+        lead: LeadDraft,
+        *,
+        history=None,
+        message: str = "",
+        policy: QualificationPolicy | None = None,
+    ) -> list[str]:
+        """Campos opcionais que podem ser perguntados quando o contexto justifica."""
+        policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
+        if "company" not in policy.desired_fields:
+            return []
+        if is_valid_company(lead.company) or (lead.qualification_data or {}).get("company_not_applicable"):
+            return []
+        from assistant_core.relational_collection import has_b2b_context
+
+        if has_b2b_context(lead=lead, history=history, message=message):
+            return ["company"]
+        return []
+
+    def promptable_fields(
+        self,
+        lead: LeadDraft,
+        *,
+        history=None,
+        message: str = "",
+        policy: QualificationPolicy | None = None,
+    ) -> list[str]:
+        """Campos a perguntar agora — somente com coleta comercial ativa."""
+        from assistant_core.relational_collection import pending_collection_fields
+
+        if not (lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY):
+            return []
+        return pending_collection_fields(lead=lead, history=history, message=message)
 
     def collected_fields(self, lead: LeadDraft) -> dict[str, str]:
         data = {}

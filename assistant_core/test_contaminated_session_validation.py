@@ -237,7 +237,8 @@ class ContaminatedSessionValidationTests(TestCase):
 
         resume = self._chat("quero um orçamento", session_id=session_id)
         self.assertTrue(
-            "nome" in resume["reply"].lower()
+            "chamar" in resume["reply"].lower()
+            or "nome" in resume["reply"].lower()
             or "empresa" in resume["reply"].lower()
             or "telefone" in resume["reply"].lower(),
             resume["reply"],
@@ -330,11 +331,13 @@ class ContaminatedSessionValidationTests(TestCase):
             ("11974587458", {"has_phone": True}),
         ]
         handoffs_mid = 0
+        lead = None
+        conversation = None
         for idx, (message, expectations) in enumerate(steps, start=1):
             payload = self._chat(message, session_id=session_id)
             snap = self._snapshot(session_id)
-            lead = LeadDraft.objects.get(conversation__session_id=session_id)
             conversation = Conversation.objects.get(session_id=session_id)
+            lead = LeadDraft.objects.filter(conversation__session_id=session_id).first()
             if idx <= 4:
                 handoffs_mid = HandoffRequest.objects.filter(conversation=conversation).count()
 
@@ -344,14 +347,18 @@ class ContaminatedSessionValidationTests(TestCase):
                 self.assertNotIn("educacional", payload["reply"].lower(), message)
             if expectations.get("starts_collection"):
                 self.assertTrue(snap["collection_active"], message)
+                self.assertIsNotNone(lead, message)
             if expectations.get("company"):
+                self.assertIsNotNone(lead, message)
                 lead.refresh_from_db()
                 self.assertEqual(lead.company, expectations["company"], message)
             if expectations.get("has_phone"):
+                self.assertIsNotNone(lead, message)
                 lead.refresh_from_db()
                 self.assertTrue(lead.phone, message)
 
         self.assertEqual(handoffs_mid, 0)
+        self.assertIsNotNone(lead)
         lead.refresh_from_db()
         self.assertTrue(lead.phone)
         self.assertGreaterEqual(conversation.messages.count(), 16)

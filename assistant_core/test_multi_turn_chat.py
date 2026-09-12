@@ -89,7 +89,7 @@ class MultiTurnCommercialConversationTests(TestCase):
         third = self._chat("quero um orçamento", session_id="site-three-turn")
         lowered = third["reply"].lower()
         self.assertTrue(
-            any(token in lowered for token in ("nome", "empresa", "telefone", "e-mail", "email")),
+            any(token in lowered for token in ("chamar", "nome", "empresa", "telefone", "e-mail", "email")),
             third["reply"],
         )
         lead = LeadDraft.objects.get(conversation__session_id="site-three-turn")
@@ -117,7 +117,7 @@ class MultiTurnCommercialConversationTests(TestCase):
         budget = self._chat("quero um orçamento para essa loja")
         self.assertIn(budget["intent"], {"quote_request", "commercial_interest"})
         self.assertTrue(
-            any(token in budget["reply"].lower() for token in ("nome", "empresa", "telefone", "e-mail", "email")),
+            any(token in budget["reply"].lower() for token in ("chamar", "nome", "empresa", "telefone", "e-mail", "email")),
             budget["reply"],
         )
 
@@ -167,7 +167,7 @@ class MultiTurnCommercialConversationTests(TestCase):
         budget = self._chat("quero um orçamento para meu site", session_id="price-q")
         lowered = budget["reply"].lower()
         self.assertTrue(
-            any(token in lowered for token in ("nome", "empresa", "telefone", "e-mail", "email", "necessidade", "precisa")),
+            any(token in lowered for token in ("chamar", "nome", "empresa", "telefone", "e-mail", "email", "necessidade", "precisa")),
             budget["reply"],
         )
 

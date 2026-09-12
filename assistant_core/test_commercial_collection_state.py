@@ -113,7 +113,7 @@ class CommercialCollectionStateTests(TestCase):
         )
         lead = self._lead(conversation)
         self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
-        self.assertIn("qual é o seu nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     def test_limpar_galpao_fills_need_summary(self):
         conversation = self._conversation(session_id="need-galpao")
@@ -146,7 +146,7 @@ class CommercialCollectionStateTests(TestCase):
             conversation=conversation,
         )
         lowered = decision.reply.lower()
-        self.assertTrue(any(token in lowered for token in ("nome", "empresa")))
+        self.assertTrue(any(token in lowered for token in ("chamar", "nome", "empresa")))
 
     def test_um_galpao_not_name(self):
         self.assertFalse(is_valid_name("um galpão"))
@@ -337,7 +337,7 @@ class CommercialCollectionStateTests(TestCase):
         decision = self.service.generate_reply([], "quero um orçamento", conversation=new)
         new_lead = self._lead(new)
         self.assertEqual(new_lead.need_summary, "")
-        self.assertIn("qual é o seu nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     def test_field_sources_set_for_need_summary(self):
         conversation = self._conversation(session_id="field-sources")

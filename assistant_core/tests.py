@@ -420,7 +420,7 @@ class ChatApiTests(TestCase):
         self.assertEqual(lead_draft.conversation.session_id, "session-456")
         self.assertIn("orçamento", lead_draft.need_summary.lower())
         self.assertEqual(lead_draft.status, LeadDraft.Status.DRAFT)
-        self.assertIn("nome", response.json()["reply"].lower())
+        self.assertIn("chamar", response.json()["reply"].lower())
 
     def test_chat_api_vague_budget_asks_area_before_contact(self):
         AssistantProfile.objects.create(
@@ -443,7 +443,7 @@ class ChatApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         # Orçamento explícito inicia qualificação; se a necessidade ainda estiver vaga, pede detalhe.
         reply = response.json()["reply"].lower()
-        self.assertTrue(any(token in reply for token in ("necessidade", "precisa", "contexto", "nome")))
+        self.assertTrue(any(token in reply for token in ("necessidade", "precisa", "contexto", "chamar", "nome")))
         conversation = Conversation.objects.get(session_id="session-discovery-budget")
         self.assertIn(conversation.lead_state, {LeadState.COLLECT_NEED, LeadState.COLLECT_NAME_COMPANY})
 
@@ -466,7 +466,7 @@ class ChatApiTests(TestCase):
         self.assertEqual(LeadDraft.objects.count(), 1)
         lead_draft = LeadDraft.objects.get()
         self.assertIn("clp", lead_draft.need_summary.lower())
-        self.assertIn("nome", response.json()["reply"].lower())
+        self.assertIn("chamar", response.json()["reply"].lower())
         conversation = Conversation.objects.get(session_id="session-clp")
         self.assertEqual(conversation.lead_state, LeadState.COLLECT_NAME_COMPANY)
 
@@ -604,7 +604,7 @@ class ChatApiTests(TestCase):
         # Telefone isolado não dispara coleta comercial sem gatilho explícito.
         self.assertEqual(LeadDraft.objects.count(), 0)
         reply = response.json()["reply"].lower()
-        self.assertTrue(any(token in reply for token in ("contato", "completar", "nome", "telefone", "e-mail", "email")))
+        self.assertTrue(any(token in reply for token in ("contato", "completar", "chamar", "nome", "telefone", "e-mail", "email")))
 
     @override_settings(
         SMART360_LEAD_DISPATCH_ENABLED=False,
@@ -614,7 +614,7 @@ class ChatApiTests(TestCase):
         payload = {
             "tenant": self.tenant.slug,
             "session_id": "session-458",
-            "message": "Sou Maria da ACME, meu telefone é 11999998888 e preciso de automação industrial.",
+            "message": "Sou Maria da ACME, meu telefone é 11999998888, meu e-mail é maria@example.com e preciso de automação industrial.",
             "source_page": "https://example.com/pagina",
         }
 
@@ -714,7 +714,7 @@ class ChatApiTests(TestCase):
         first_payload = {
             "tenant": self.tenant.slug,
             "session_id": "session-no-duplicate",
-            "message": "Sou Maria da ACME, meu telefone é 11999998888 e quero orçamento para automação industrial de atendimento.",
+            "message": "Sou Maria da ACME, meu telefone é 11999998888, meu e-mail é maria@example.com e quero orçamento para automação industrial de atendimento.",
             "source_page": "https://example.com/pagina",
         }
         first_response = self.client.post(
@@ -793,7 +793,7 @@ class ChatApiTests(TestCase):
         reply = response.json()["reply"].lower()
         self.assertEqual(response.json()["tenant"], "granimarmores-pitondo")
         # Orçamento explícito inicia coleta; o contexto da pia/cozinha permanece na necessidade.
-        self.assertTrue("nome" in reply or "necessidade" in reply or "medidas" in reply or "pia" in reply)
+        self.assertTrue("chamar" in reply or "nome" in reply or "necessidade" in reply or "medidas" in reply or "pia" in reply)
         self.assertNotIn("automação industrial", reply)
         self.assertNotIn("robótica", reply)
         self.assertNotIn("manutenção técnica", reply)
@@ -1056,7 +1056,7 @@ class LiviaHandoffWorkflowTests(TestCase):
     @override_settings(SMART360_LEAD_DISPATCH_ENABLED=False, SMART360_LEAD_DISPATCH_DRY_RUN=True)
     def test_qualified_lead_creates_handoff_without_duplicate(self):
         conversation = Conversation.objects.create(tenant=self.tenant, session_id="handoff-qualified")
-        message = "Sou Maria da ACME, meu telefone é 11999998888 e preciso de automação industrial."
+        message = "Sou Maria da ACME, meu telefone é 11999998888, meu e-mail é maria@example.com e preciso de automação industrial."
 
         self.service.generate_reply([], message, conversation=conversation)
         self.service.generate_reply([], message, conversation=conversation)
@@ -1144,7 +1144,7 @@ class LiviaOptionalAIResponseTests(TestCase):
         decision = service.generate_reply([], "Quero orçamento para um sistema", conversation=conversation, assistant_profile=self.profile)
 
         self.assertEqual(ai_client.calls, [])
-        self.assertIn("nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=True)
     def test_ai_dry_run_keeps_deterministic_reply(self):
@@ -1155,7 +1155,7 @@ class LiviaOptionalAIResponseTests(TestCase):
             decision = service.generate_reply([], "Quero orçamento para um sistema", conversation=conversation, assistant_profile=self.profile)
 
         post_mock.assert_not_called()
-        self.assertIn("nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="")
     def test_without_api_key_keeps_fallback(self):
@@ -1166,7 +1166,7 @@ class LiviaOptionalAIResponseTests(TestCase):
             decision = service.generate_reply([], "Quero orçamento para um sistema", conversation=conversation, assistant_profile=self.profile)
 
         post_mock.assert_not_called()
-        self.assertIn("nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="key-test")
     def test_client_timeout_keeps_fallback(self):
@@ -1175,7 +1175,7 @@ class LiviaOptionalAIResponseTests(TestCase):
 
         decision = service.generate_reply([], "Quero orçamento para um sistema", conversation=conversation, assistant_profile=self.profile)
 
-        self.assertIn("nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="key-test")
     def test_valid_ai_response_replaces_only_reply_text(self):
@@ -1293,7 +1293,7 @@ class LiviaOptionalAIResponseTests(TestCase):
         decision = service.generate_reply([], "Quero orçamento para um sistema", conversation=conversation, assistant_profile=self.profile)
 
         self.assertEqual(ai_client.calls, [])
-        self.assertIn("nome", decision.reply.lower())
+        self.assertIn("chamar", decision.reply.lower())
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="key-test")
     def test_profile_use_ai_true_allows_ai_attempt(self):
@@ -1398,7 +1398,7 @@ class ChatIdempotencyApiTests(TestCase):
         payload = self.payload(
             request_id=request_id,
             session_id="lead-idempotent",
-            message="Sou Maria da ACME, meu telefone é 11999998888 e preciso de automação industrial.",
+            message="Sou Maria da ACME, meu telefone é 11999998888, meu e-mail é maria@example.com e preciso de automação industrial.",
         )
 
         first = self.post_chat(payload)

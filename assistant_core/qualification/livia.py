@@ -313,9 +313,10 @@ def is_valid_phone(value) -> bool:
 def is_valid_name(value) -> bool:
     cleaned = strip_repetition_noise(value)
     normalized = normalize_text(cleaned)
+    from assistant_core.continuity_policy import is_operational_collection_reply
     from leads.services.commercial import is_collection_deferral_phrase
 
-    if is_collection_deferral_phrase(cleaned):
+    if is_collection_deferral_phrase(cleaned) or is_operational_collection_reply(cleaned):
         return False
     if is_generic_value(cleaned):
         return False
@@ -337,10 +338,11 @@ def is_valid_name(value) -> bool:
 def is_valid_company(value) -> bool:
     cleaned = strip_repetition_noise(value)
     normalized = normalize_text(cleaned)
+    from assistant_core.continuity_policy import is_operational_collection_reply
     from assistant_core.conversation_turns import looks_like_environment_answer
     from leads.services.commercial import is_collection_deferral_phrase
 
-    if is_collection_deferral_phrase(cleaned):
+    if is_collection_deferral_phrase(cleaned) or is_operational_collection_reply(cleaned):
         return False
     if looks_like_environment_answer(normalized):
         return False
@@ -457,6 +459,10 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
         return {}
 
     normalized = normalize_text(text)
+    from assistant_core.continuity_policy import is_operational_collection_reply
+
+    if is_operational_collection_reply(text):
+        return {}
     reject_markers = (
         "preciso",
         "quero",
@@ -567,14 +573,20 @@ def infer_pending_field_values(message: str, pending_field: str) -> dict[str, st
                 explicit_name = _extract_name(text)
                 company_from_text = _extract_company(text) or _normalize_company_candidate(text)
                 if company_from_text and is_valid_company(company_from_text):
-                    return {"company": company_from_text[:120]}
+                    result = {"company": company_from_text[:120]}
+                    if pending == "name" and is_valid_name(company_from_text):
+                        result["name"] = company_from_text[:120]
+                    return result
                 if (
                     not explicit_name
                     and not any(marker in normalized for marker in name_intro_markers)
                     and len(bare.split()) >= 3
                     and is_valid_company(bare)
                 ):
-                    return {"company": bare[:120]}
+                    result = {"company": bare[:120]}
+                    if pending == "name" and is_valid_name(bare):
+                        result["name"] = bare[:120]
+                    return result
             if any(marker in normalized for marker in reject_markers):
                 return {}
         if pending == "phone" and not message_is_plausible_phone_candidate(text):

@@ -578,6 +578,6 @@ class ConsultativeFollowupRegressionTests(TestCase):
         self.assertTrue((lead.qualification_data or {}).get("commercial_intent"))
         lowered = budget["reply"].lower()
         self.assertTrue(
-            any(token in lowered for token in ("nome", "empresa", "telefone", "e-mail", "email", "whatsapp")),
+            any(token in lowered for token in ("chamar", "nome", "empresa", "telefone", "e-mail", "email", "whatsapp")),
             budget["reply"],
         )

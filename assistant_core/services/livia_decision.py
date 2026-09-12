@@ -126,6 +126,12 @@ class LiviaDecisionService:
         else:
             knowledge_context = str(knowledge_context or "")
         if conversation is not None:
+            from assistant_core.relational_collection import capture_passive_fields
+            from leads.services.commercial import resolve_lead_draft
+
+            passive_lead = resolve_lead_draft(conversation)
+            if passive_lead is not None and not (passive_lead.qualification_data or {}).get("collection_active"):
+                capture_passive_fields(lead=passive_lead, message=current_message, history=history)
             from assistant_core.continuity_policy import resolve_offer_response, DECLINE_REPLY
             from assistant_core.consultative_policy import is_explicit_collection_trigger
 
@@ -586,21 +592,38 @@ class LiviaDecisionService:
         knowledge_context: str,
     ) -> LiviaReply:
         if not self._inline_openai_in_generate_reply_enabled(assistant_profile):
-            from leads.services.commercial import resolve_lead_draft
-            lead = resolve_lead_draft(conversation)
-            if lead is not None and (lead.qualification_data or {}).get("collection_active"):
-                if not (lead.qualification_data or {}).get("privacy_notice_shown"):
-                    lead.qualification_data = {**lead.qualification_data, "privacy_notice_shown": True}
-                    lead.save(update_fields=["qualification_data", "updated_at"])
-                    decision = replace(decision, reply="Vou usar esses dados apenas para o retorno da nossa equipe. " + decision.reply,
-                                       collection_prompt=True)
             from assistant_core.continuity_policy import offer_after_guidance
+            from assistant_core.relational_collection import (
+                build_relational_name_prompt,
+                mark_relational_name_asked,
+                should_offer_relational_name,
+            )
+            from leads.services.commercial import resolve_lead_draft
 
             reply, action = offer_after_guidance(
                 conversation=conversation, message=current_message, history=history,
                 reply=decision.reply, knowledge_context=knowledge_context,
                 handoff=bool(decision.handoff_request_id),
             )
+            lead = resolve_lead_draft(conversation)
+            if (
+                lead is not None
+                and not decision.collection_prompt
+                and not action
+                and should_offer_relational_name(
+                    conversation=conversation,
+                    lead=lead,
+                    history=history,
+                    message=current_message,
+                    reply=reply,
+                    knowledge_context=knowledge_context,
+                    handoff=bool(decision.handoff_request_id),
+                )
+            ):
+                name_prompt = build_relational_name_prompt()
+                if name_prompt.lower() not in str(reply or "").lower():
+                    reply = f"{reply.rstrip()} {name_prompt}".strip()
+                    mark_relational_name_asked(lead)
             return replace(decision, reply=reply, continuity_action=action)
         tenant = getattr(conversation, "tenant", None)
         lead_state = str(getattr(conversation, "lead_state", "") or "")
@@ -986,7 +1009,11 @@ class LiviaDecisionService:
             if resume_collection and lead_draft is not None:
                 from leads.services.commercial import QualificationService
 
-                pending = QualificationService().missing_fields(lead_draft)
+                pending = QualificationService().promptable_fields(
+                    lead_draft,
+                    history=history,
+                    message=current_message,
+                )
                 if pending and pending[0] != "need_summary":
                     resume = self.lead_capture_service.build_next_prompt(
                         lead_draft,

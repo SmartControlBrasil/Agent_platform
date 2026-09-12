@@ -79,7 +79,7 @@ class ContinuityOfferTests(TestCase):
         self.assertTrue(lead.qualification_data["collection_active"])
         self.assertIn("temperatura", lead.need_summary)
         self.assertEqual(lead.name, "")
-        self.assertIn("nome", reply.reply.lower())
+        self.assertIn("chamar", reply.reply.lower())
         self.assertNotIn("necessidade principal", reply.reply)
         self.assertNotIn(OFFER, reply.reply)
 
@@ -116,7 +116,7 @@ class ContinuityOfferTests(TestCase):
                 self.assertFalse(self.lead().qualification_data.get("collection_active"))
             else:
                 self.assertNotIn(OFFER, reply)
-                self.assertIn("nome", reply.lower())
+                self.assertIn("chamar", reply.lower())
                 self.assertTrue(self.lead().qualification_data["collection_active"])
             self.assertEqual(self.conversation.messages.filter(role="assistant").latest("id").content, reply)
 

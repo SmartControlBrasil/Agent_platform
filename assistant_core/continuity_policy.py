@@ -16,6 +16,23 @@ OFFER = "Se quiser, posso registrar o caso para nossa equipe acompanhar."
 DECLINE_REPLY = "Tudo bem. Se precisar de mais alguma orientação, posso ajudar."
 STATUS_KEY = "continuity_offer_status"
 
+OPERATIONAL_COLLECTION_REPLY_PHRASES = frozenset(
+    {
+        "pode registrar",
+        "pode encaminhar",
+        "pode sim",
+        "pode",
+        "sim",
+        "ok",
+        "claro",
+        "vamos",
+    }
+)
+
+
+def is_operational_collection_reply(message: str) -> bool:
+    return normalize_text(message).strip(" .!?;") in OPERATIONAL_COLLECTION_REPLY_PHRASES
+
 
 def resolve_offer_response(*, conversation, message, history):
     lead = resolve_lead_draft(conversation)
@@ -99,8 +116,11 @@ def offer_after_guidance(*, conversation, message, history, reply, knowledge_con
         # A concrete need already answers the generic discovery prompt.
         reply = reply.removesuffix("Claro. Pode me contar um pouco mais sobre o que você precisa fazer ou resolver?").rstrip()
     # Diagnostic questions and insufficient evidence must be resolved before offering.
-    if (not knowledge_context.strip() or "?" in reply or is_generic_fallback_reply(reply)
-            or len(reply.split()) < 8 or re.search(r"nao (?:encontrei|tenho|ha).*?(?:informacao|evidencia)", normalize_text(reply))):
+    if not knowledge_context.strip() or is_generic_fallback_reply(reply) or len(reply.split()) < 8:
+        return reply, ""
+    if re.search(r"nao (?:encontrei|tenho|ha).*?(?:informacao|evidencia)", normalize_text(reply)):
+        return reply, ""
+    if "?" in reply and not (need and concrete_need(need)):
         return reply, ""
     if not need:
         return reply, ""
