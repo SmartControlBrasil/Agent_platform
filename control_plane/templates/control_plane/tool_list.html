@@ -3,6 +3,6 @@
 {% block content %}
 <div class="ap-page-head"><div><h1 class="ap-title">Tools</h1><p class="ap-muted">Capacidades reutilizáveis disponíveis para agentes.</p></div></div>
 <div class="ap-card">
-<table class="ap-table"><thead><tr><th>Nome</th><th>Categoria</th><th>Runtime</th><th>Status</th></tr></thead><tbody>{% for tool in tools %}<tr><td><a href="{% url 'control_plane:tool_detail' tool.pk %}">{{ tool.name }}</a><br><code>{{ tool.slug }}</code></td><td>{{ tool.category }}</td><td><code>{{ tool.runtime_handler }}</code></td><td>{% if tool.is_active %}<span class="ap-badge">active</span>{% else %}<span class="ap-badge off">inactive</span>{% endif %}</td></tr>{% empty %}<tr><td colspan="4" class="ap-muted">Nenhuma tool cadastrada.</td></tr>{% endfor %}</tbody></table>
+<table class="ap-table"><thead><tr><th>Nome</th><th>Categoria</th><th>Modo</th><th>Runtime</th><th>Status</th></tr></thead><tbody>{% for tool in tools %}<tr><td><a href="{% url 'control_plane:tool_detail' tool.pk %}">{{ tool.name }}</a><br><code>{{ tool.slug }}</code></td><td>{{ tool.category }}</td><td>{{ tool.execution_mode }}</td><td><code>{{ tool.runtime_handler|default:"-" }}</code></td><td>{% if tool.is_active %}<span class="ap-badge">active</span>{% else %}<span class="ap-badge off">inactive</span>{% endif %}</td></tr>{% empty %}<tr><td colspan="5" class="ap-muted">Nenhuma tool cadastrada.</td></tr>{% endfor %}</tbody></table>
 </div>
 {% endblock %}

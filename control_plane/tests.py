@@ -12,7 +12,7 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
-from tools.models import AgentToolBinding, ToolDefinition
+from tools.models import AgentToolBinding, ToolDefinition, ToolExecution
 
 
 class ControlPlaneTestCase(TestCase):
@@ -554,3 +554,46 @@ class ControlPlaneTestCase(TestCase):
         response = self.client.post(reverse("control_plane:tool_binding_disable", args=[binding.pk]))
 
         self.assertEqual(response.status_code, 404)
+
+
+    def test_tool_execution_control_plane_list_and_detail_are_tenant_scoped(self):
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        binding_a = AgentToolBinding.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_installation=self.installation_a,
+            tool_definition=tool,
+        )
+        binding_b = AgentToolBinding.objects.create(
+            tenant=self.tenant_b,
+            project=self.project_b,
+            agent_installation=self.installation_b,
+            tool_definition=tool,
+        )
+        execution_a = ToolExecution.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_installation=self.installation_a,
+            tool_binding=binding_a,
+            tool_definition=tool,
+            execution_mode=tool.execution_mode,
+        )
+        execution_b = ToolExecution.objects.create(
+            tenant=self.tenant_b,
+            project=self.project_b,
+            agent_installation=self.installation_b,
+            tool_binding=binding_b,
+            tool_definition=tool,
+            execution_mode=tool.execution_mode,
+        )
+
+        response = self.client.get(reverse("control_plane:tool_execution_list"))
+        detail_a = self.client.get(reverse("control_plane:tool_execution_detail", args=[execution_a.pk]))
+        detail_b = self.client.get(reverse("control_plane:tool_execution_detail", args=[execution_b.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, str(execution_a.tool_definition.name))
+        self.assertNotContains(response, str(execution_b.pk))
+        self.assertEqual(detail_a.status_code, 200)
+        self.assertContains(detail_a, str(execution_a.pk))
+        self.assertEqual(detail_b.status_code, 404)

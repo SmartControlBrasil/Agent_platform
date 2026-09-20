@@ -62,3 +62,10 @@ O caminho moderno usa a `installation` exata do contexto de execucao. O widget e
 Na Fase 5, ferramentas passam a ser capacidades explicitas de uma instalacao de agente. Uma tool so pode ser executada quando existe um `AgentToolBinding` ativo para a `AgentInstallation` exata, dentro do mesmo tenant e projeto.
 
 A primeira tool e `prospecting.build_search_plan`, usada pelo Prospecting Agent para montar um plano deterministico de consultas de prospeccao. Sem binding ativo, o Prospecting Agent retorna `tool_unavailable` e nao concede acesso automaticamente. A Livia permanece sem dependencia de tools.
+
+
+## Execução delegada de tools
+
+Na Fase 6, `ToolDefinition` passa a declarar `execution_mode`: `LOCAL` ou `DELEGATED`. Tools locais continuam usando `ToolRuntimeRegistry`; tools delegadas criam `ToolExecution` persistente para claim futuro por `ToolExecutor` autorizado.
+
+A prova de infraestrutura é `prospecting.external_search_probe`, uma tool delegada de laboratório sem busca real e sem runtime local.

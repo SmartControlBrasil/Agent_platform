@@ -2,7 +2,7 @@
 {% block title %}{{ tool.name }} | Agent Platform{% endblock %}
 {% block content %}
 <div class="ap-page-head"><div><h1 class="ap-title">{{ tool.name }}</h1><p class="ap-muted"><code>{{ tool.slug }}</code></p></div></div>
-<div class="ap-grid"><div class="ap-card"><div class="ap-muted">Categoria</div><strong>{{ tool.category }}</strong></div><div class="ap-card"><div class="ap-muted">Runtime handler</div><code>{{ tool.runtime_handler }}</code></div><div class="ap-card"><div class="ap-muted">Status</div><strong>{{ tool.is_active|yesno:'active,inactive' }}</strong></div></div>
+<div class="ap-grid"><div class="ap-card"><div class="ap-muted">Categoria</div><strong>{{ tool.category }}</strong></div><div class="ap-card"><div class="ap-muted">Modo</div><strong>{{ tool.execution_mode }}</strong></div><div class="ap-card"><div class="ap-muted">Runtime handler</div><code>{{ tool.runtime_handler|default:"-" }}</code></div><div class="ap-card"><div class="ap-muted">Status</div><strong>{{ tool.is_active|yesno:'active,inactive' }}</strong></div></div>
 <div class="ap-card mt-4"><p>{{ tool.description }}</p></div>
 <h2 class="mt-4">Bindings</h2>
 <div class="ap-card"><table class="ap-table"><thead><tr><th>Tenant</th><th>Instalação</th><th>Status</th></tr></thead><tbody>{% for binding in bindings %}<tr><td>{{ binding.tenant.name }}</td><td><a href="{% url 'control_plane:installation_detail' binding.agent_installation.pk %}">{{ binding.agent_installation.name }}</a></td><td>{{ binding.is_enabled|yesno:'enabled,disabled' }}</td></tr>{% empty %}<tr><td colspan="3" class="ap-muted">Sem bindings acessíveis.</td></tr>{% endfor %}</tbody></table></div>

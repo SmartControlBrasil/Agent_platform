@@ -13,7 +13,7 @@ from agents.application.installations import (
 )
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from tools.forms import AgentToolBindingForm
-from tools.models import AgentToolBinding, ToolDefinition
+from tools.models import AgentToolBinding, ToolDefinition, ToolExecution
 from audit.services import audit_model_snapshot, record_audit_event
 from projects.models import Project
 from tenants.access import (
@@ -74,6 +74,12 @@ def _installation_queryset(user):
 def _tool_binding_queryset(user):
     return AgentToolBinding.objects.filter(tenant_id__in=_tenant_ids(user)).select_related(
         "tenant", "project", "agent_installation", "tool_definition", "agent_installation__agent_definition"
+    )
+
+
+def _tool_execution_queryset(user):
+    return ToolExecution.objects.filter(tenant_id__in=_tenant_ids(user)).select_related(
+        "tenant", "project", "agent_installation", "tool_definition", "executor"
     )
 
 
@@ -444,3 +450,19 @@ def tool_binding_disable(request, pk):
     record_audit_event(action=ACTION_TOOL_DISABLED, actor=request.user, tenant=binding.tenant, obj=binding, request=request)
     messages.success(request, "Tool desabilitada.")
     return redirect("control_plane:installation_detail", pk=binding.agent_installation_id)
+
+
+@login_required(login_url="/admin/login/")
+def tool_execution_list(request):
+    executions = _tool_execution_queryset(request.user).order_by("-created_at")[:200]
+    context = _base_context("tool_executions")
+    context.update({"executions": executions})
+    return render(request, "control_plane/tool_execution_list.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def tool_execution_detail(request, pk):
+    execution = get_object_or_404(_tool_execution_queryset(request.user), pk=pk)
+    context = _base_context("tool_executions")
+    context.update({"execution": execution})
+    return render(request, "control_plane/tool_execution_detail.html", context)

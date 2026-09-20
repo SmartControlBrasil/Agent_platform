@@ -1,0 +1,7 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Tool Execution | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Tool Execution</h1><p class="ap-muted"><code>{{ execution.pk }}</code></p></div></div>
+<div class="ap-grid"><div class="ap-card"><div class="ap-muted">Tool</div><strong>{{ execution.tool_definition.name }}</strong><br><code>{{ execution.tool_definition.slug }}</code></div><div class="ap-card"><div class="ap-muted">Instalação</div><strong>{{ execution.agent_installation.name }}</strong></div><div class="ap-card"><div class="ap-muted">Projeto</div><strong>{{ execution.project.name }}</strong></div><div class="ap-card"><div class="ap-muted">Modo</div><strong>{{ execution.execution_mode }}</strong></div><div class="ap-card"><div class="ap-muted">Status</div><strong>{{ execution.status }}</strong></div><div class="ap-card"><div class="ap-muted">Executor</div><strong>{% if execution.executor %}{{ execution.executor.name }}{% else %}-{% endif %}</strong></div></div>
+<div class="ap-card mt-4"><table class="ap-table"><tbody><tr><th>Criada</th><td>{{ execution.created_at }}</td></tr><tr><th>Iniciada</th><td>{{ execution.started_at|default:'-' }}</td></tr><tr><th>Concluída</th><td>{{ execution.completed_at|default:'-' }}</td></tr><tr><th>Expira em</th><td>{{ execution.expires_at|default:'-' }}</td></tr><tr><th>Erro</th><td>{{ execution.error_code|default:'-' }} {{ execution.error_message }}</td></tr></tbody></table></div>
+{% endblock %}
