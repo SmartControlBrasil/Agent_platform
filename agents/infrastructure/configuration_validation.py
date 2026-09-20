@@ -5,11 +5,13 @@ from typing import Any, Callable
 from django.core.exceptions import ValidationError
 
 from agents.infrastructure.livia_configuration import normalize_livia_configuration
+from agents.infrastructure.prospecting_configuration import normalize_prospecting_configuration
 
 ConfigurationNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
 
 _NORMALIZERS: dict[str, ConfigurationNormalizer] = {
     "livia": normalize_livia_configuration,
+    "prospecting": normalize_prospecting_configuration,
 }
 
 

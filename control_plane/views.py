@@ -227,7 +227,7 @@ def install_agent(request, project_id):
                 messages.success(request, "Agente instalado com sucesso.")
                 return redirect("control_plane:installation_detail", pk=installation.pk)
     else:
-        form = InstallAgentForm(initial={"name": ""})
+        form = InstallAgentForm(initial={"name": "", "agent_definition": request.GET.get("agent_definition", "")})
     context = _base_context("projects")
     context.update({"project": project, "form": form})
     return render(request, "control_plane/install_agent.html", context)

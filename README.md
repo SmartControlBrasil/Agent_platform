@@ -6,9 +6,16 @@ Modelo inicial:
 
 Tenant -> Project -> AgentInstallation -> AgentDefinition + AgentVersion -> Agent Runtime
 
-O primeiro agente registrado e a Livia. A Livia permanece como implementacao legada compativel e e executada por um adapter (`LiviaAgentAdapter`) atras do `AgentRuntimePort`.
+Agentes disponiveis:
 
-Produtos clientes futuros podem consumir a plataforma por HTTP/API/eventos, incluindo `smart_sales`, websites e outros sistemas. O projeto original da Livia continua independente em producao e nao deve ser alterado a partir deste repositorio.
+- Livia
+  - `conversational_sales`
+- Prospecting Agent
+  - `sales_prospecting`
+
+A Livia permanece como implementacao legada compativel e e executada por um adapter (`LiviaAgentAdapter`) atras do `AgentRuntimePort`. O Prospecting Agent e o segundo runtime real da plataforma e valida a extensibilidade do registry sem acoplamento com `smart_sales`.
+
+Produtos clientes futuros podem consumir a plataforma por HTTP/API/eventos, incluindo `smart_sales`, websites e outros sistemas. `smart_sales` e um produto cliente futuro, nao o Prospecting Agent em si. O projeto original da Livia continua independente em producao e nao deve ser alterado a partir deste repositorio.
 
 ## Seguranca local
 

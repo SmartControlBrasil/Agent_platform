@@ -56,6 +56,11 @@ class ControlPlaneTestCase(TestCase):
                 "status": AgentVersion.Status.ACTIVE,
             },
         )
+        self.prospecting_agent = AgentDefinition.objects.get(slug="prospecting")
+        self.prospecting_version = AgentVersion.objects.get(
+            agent_definition=self.prospecting_agent,
+            version="1.0.0",
+        )
         self.installation_a = AgentInstallation.objects.create(
             tenant=self.tenant_a,
             project=self.project_a,
@@ -137,11 +142,18 @@ class ControlPlaneTestCase(TestCase):
         response = self.client.get(reverse("control_plane:agent_list"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Lívia")
+        self.assertContains(response, "Prospecting Agent")
         self.assertContains(response, "Agent Catalog")
         response = self.client.get(reverse("control_plane:agent_detail", args=[self.agent.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "legacy-initial")
         self.assertContains(response, "livia")
+
+    def test_prospecting_agent_detail_is_available(self):
+        response = self.client.get(reverse("control_plane:agent_detail", args=[self.prospecting_agent.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "1.0.0")
+        self.assertContains(response, "prospecting")
 
     def test_install_agent_flow(self):
         response = self.client.post(
@@ -161,6 +173,47 @@ class ControlPlaneTestCase(TestCase):
         self.assertEqual(installation.tenant, self.tenant_a)
         self.assertEqual(installation.configuration["public_name"], "Lívia")
         self.assertTrue(AuditEvent.objects.filter(action="agent.installed", object_id=str(installation.pk)).exists())
+
+    def test_install_prospecting_agent_flow(self):
+        response = self.client.post(
+            reverse("control_plane:install_agent", args=[self.project_a.pk]),
+            {
+                "agent_definition": self.prospecting_agent.pk,
+                "agent_version": self.prospecting_version.pk,
+                "name": "Prospecting A",
+                "target_market": "  hospitais  ",
+                "target_region": " São Paulo ",
+                "target_profile": " hospitais privados ",
+                "objective": " identificar oportunidades ",
+                "max_results": "50",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        installation = AgentInstallation.objects.get(name="Prospecting A")
+        self.assertEqual(installation.agent_definition, self.prospecting_agent)
+        self.assertEqual(
+            installation.configuration,
+            {
+                "target_market": "hospitais",
+                "target_region": "São Paulo",
+                "target_profile": "hospitais privados",
+                "objective": "identificar oportunidades",
+                "max_results": 50,
+            },
+        )
+
+    def test_install_page_switches_configuration_ui_for_prospecting(self):
+        response = self.client.get(
+            reverse("control_plane:install_agent", args=[self.project_a.pk]),
+            {"agent_definition": str(self.prospecting_agent.pk)},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Configuração do Prospecting Agent")
+        self.assertContains(response, "Target market")
+        self.assertContains(response, "Max results")
+        self.assertNotContains(response, "Public name")
 
     def test_install_agent_rejects_inactive_project(self):
         self.project_a.is_active = False
@@ -250,6 +303,23 @@ class ControlPlaneTestCase(TestCase):
         response = self.client.get(reverse("control_plane:installation_detail", args=[self.installation_b.pk]))
         self.assertEqual(response.status_code, 404)
 
+    def test_cross_tenant_prospecting_configuration_update_is_scoped(self):
+        prospecting_installation_b = AgentInstallation.objects.create(
+            tenant=self.tenant_b,
+            project=self.project_b,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting B",
+            configuration={"target_market": "escolas"},
+        )
+
+        response = self.client.post(
+            reverse("control_plane:installation_detail", args=[prospecting_installation_b.pk]),
+            {"target_market": "hospitais"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
     def test_enable_disable_installation(self):
         response = self.client.post(reverse("control_plane:installation_disable", args=[self.installation_a.pk]))
         self.assertEqual(response.status_code, 302)
@@ -303,6 +373,64 @@ class ControlPlaneTestCase(TestCase):
             ["primary_goal", "public_name", "short_description", "tone"],
         )
         self.assertNotIn("Lívia Platform", str(event.metadata))
+
+    def test_prospecting_configuration_update_uses_agent_specific_fields(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting A",
+            configuration={"target_market": "indústria", "max_results": 20},
+        )
+
+        response = self.client.post(
+            reverse("control_plane:installation_detail", args=[installation.pk]),
+            {
+                "target_market": "  hospitais  ",
+                "target_region": " São Paulo ",
+                "target_profile": " hospitais privados ",
+                "objective": " mapear oportunidades ",
+                "max_results": "35",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        installation.refresh_from_db()
+        self.assertEqual(
+            installation.configuration,
+            {
+                "target_market": "hospitais",
+                "target_region": "São Paulo",
+                "target_profile": "hospitais privados",
+                "objective": "mapear oportunidades",
+                "max_results": 35,
+            },
+        )
+        event = AuditEvent.objects.get(action="agent.configuration.updated", object_id=str(installation.pk))
+        self.assertEqual(event.metadata["installation_id"], str(installation.pk))
+        self.assertEqual(
+            sorted(event.metadata["changed_fields"]),
+            ["max_results", "objective", "target_market", "target_profile", "target_region"],
+        )
+        self.assertNotIn("hospitais", str(event.metadata))
+
+    def test_installation_detail_uses_agent_specific_configuration_ui(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting Detail",
+        )
+
+        response = self.client.get(reverse("control_plane:installation_detail", args=[installation.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Configuração do Prospecting Agent")
+        self.assertContains(response, "Target market")
+        self.assertContains(response, "Max results")
+        self.assertNotContains(response, "Public name")
 
     def test_secret_like_configuration_is_rejected_by_model(self):
         self.installation_a.configuration = {"api_key": "secret"}

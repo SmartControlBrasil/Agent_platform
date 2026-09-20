@@ -11,6 +11,12 @@ from agents.application.registry import AgentRuntimeRegistry, UnknownAgentRuntim
 from agents.domain.runtime import AgentExecutionContext, AgentRequest, AgentResponse
 from agents.infrastructure.livia_adapter import LiviaAgentAdapter
 from agents.infrastructure.livia_configuration import LiviaConfigurationResolver, normalize_livia_configuration
+from agents.infrastructure.prospecting_adapter import ProspectingAgentAdapter
+from agents.infrastructure.prospecting_configuration import (
+    ProspectingConfigurationResolver,
+    normalize_prospecting_configuration,
+)
+from agents.infrastructure.registry import build_default_registry
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from tenants.models import AssistantProfile, Tenant, TenantMembership
@@ -116,6 +122,31 @@ class AgentModelTests(TestCase):
         self.assertEqual(installation.name, "Custom")
         self.assertEqual(installation.tenant, self.tenant)
 
+    def test_prospecting_bootstrap_definition_and_version_exist(self):
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+
+        self.assertEqual(definition.name, "Prospecting Agent")
+        self.assertEqual(definition.agent_type, "sales_prospecting")
+        self.assertTrue(definition.is_active)
+        self.assertEqual(version.runtime_handler, "prospecting")
+        self.assertEqual(version.status, AgentVersion.Status.ACTIVE)
+
+    def test_prospecting_installation_rejects_invalid_runtime_configuration(self):
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting",
+            configuration={"max_results": 0},
+        )
+
+        with self.assertRaises(ValidationError):
+            installation.full_clean()
+
 
 class AgentRuntimeRegistryTests(TestCase):
     def test_resolves_registered_runtime(self):
@@ -131,6 +162,14 @@ class AgentRuntimeRegistryTests(TestCase):
 
         with self.assertRaises(UnknownAgentRuntime):
             registry.resolve("missing")
+
+    def test_default_registry_resolves_prospecting_runtime(self):
+        registry = build_default_registry()
+
+        runtime = registry.resolve("prospecting")
+
+        self.assertIsInstance(runtime, ProspectingAgentAdapter)
+        self.assertEqual(registry.registered_handlers(), ("livia", "prospecting"))
 
 
 class LiviaConfigurationResolverTests(TestCase):
@@ -264,6 +303,95 @@ class LiviaConfigurationResolverTests(TestCase):
             normalize_livia_configuration({"tone": {"invalid": True}})
 
 
+class ProspectingConfigurationResolverTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        self.other_tenant = Tenant.objects.create(name="Other", slug="other")
+        self.project = Project.objects.create(tenant=self.tenant, name="smart_sales", slug="smart-sales")
+        self.other_project = Project.objects.create(tenant=self.other_tenant, name="Other", slug="other-project")
+        self.definition = AgentDefinition.objects.get(slug="prospecting")
+        self.version = AgentVersion.objects.get(agent_definition=self.definition, version="1.0.0")
+        self.installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting Agent",
+        )
+        self.resolver = ProspectingConfigurationResolver()
+
+    def test_uses_defaults_when_configuration_is_empty(self):
+        config = self.resolver.resolve(installation=self.installation, tenant=self.tenant)
+
+        self.assertEqual(config.target_market, "")
+        self.assertEqual(config.target_region, "")
+        self.assertEqual(config.target_profile, "")
+        self.assertEqual(config.objective, "")
+        self.assertEqual(config.max_results, 50)
+
+    def test_uses_installation_configuration_when_present(self):
+        self.installation.configuration = {
+            "target_market": " hospitais ",
+            "target_region": " São Paulo ",
+            "target_profile": " hospitais privados ",
+            "objective": " identificar oportunidades ",
+            "max_results": 25,
+        }
+
+        config = self.resolver.resolve(installation=self.installation, tenant=self.tenant)
+
+        self.assertEqual(config.target_market, "hospitais")
+        self.assertEqual(config.target_region, "São Paulo")
+        self.assertEqual(config.target_profile, "hospitais privados")
+        self.assertEqual(config.objective, "identificar oportunidades")
+        self.assertEqual(config.max_results, 25)
+
+    def test_tenant_divergence_is_blocked(self):
+        with self.assertRaises(ValidationError):
+            self.resolver.resolve(installation=self.installation, tenant=self.other_tenant)
+
+    def test_installation_project_divergence_is_blocked(self):
+        divergent = AgentInstallation(
+            tenant=self.tenant,
+            project=self.other_project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Broken",
+        )
+
+        with self.assertRaises(ValidationError):
+            self.resolver.resolve(installation=divergent, tenant=self.tenant)
+
+    def test_normalizes_known_fields_and_rejects_invalid_values(self):
+        config = normalize_prospecting_configuration(
+            {
+                "target_market": "  hospitais  ",
+                "target_region": " São Paulo ",
+                "target_profile": " privados ",
+                "objective": " identificar oportunidades ",
+                "max_results": "25",
+                "future_field": {"ignored": True},
+            }
+        )
+        self.assertEqual(
+            config,
+            {
+                "target_market": "hospitais",
+                "target_region": "São Paulo",
+                "target_profile": "privados",
+                "objective": "identificar oportunidades",
+                "max_results": 25,
+            },
+        )
+
+        with self.assertRaises(ValidationError):
+            normalize_prospecting_configuration({"target_market": {"invalid": True}})
+        with self.assertRaises(ValidationError):
+            normalize_prospecting_configuration({"max_results": "abc"})
+        with self.assertRaises(ValidationError):
+            normalize_prospecting_configuration({"max_results": 700})
+
+
 class LiviaAgentAdapterTests(TestCase):
     def test_adapter_implements_runtime_contract_with_legacy_pipeline(self):
         tenant = Tenant.objects.create(name="Tenant A", slug="tenant-a")
@@ -339,6 +467,71 @@ class LiviaAgentAdapterTests(TestCase):
                 session_id="s1",
             ),
             AgentRequest(input="Oi"),
+        )
+
+        self.assertEqual(response.status, "installation_unavailable")
+
+
+class ProspectingAgentAdapterTests(TestCase):
+    def test_adapter_returns_ready_response_with_isolated_configuration(self):
+        tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        project = Project.objects.create(tenant=tenant, name="smart_sales", slug="smart-sales")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Agent",
+            configuration={
+                "target_market": "hospitais",
+                "target_region": "São Paulo",
+                "target_profile": "hospitais privados",
+                "objective": "identificar oportunidades",
+                "max_results": 50,
+            },
+        )
+
+        response = ProspectingAgentAdapter().execute(
+            AgentExecutionContext(
+                tenant_id=str(tenant.pk),
+                project_id=str(project.pk),
+                installation_id=str(installation.pk),
+            ),
+            AgentRequest(input="prepare prospecting run"),
+        )
+
+        self.assertEqual(response.status, "ready")
+        self.assertIn("Prospecting Agent", response.output)
+        self.assertEqual(response.metadata["agent"], "prospecting")
+        self.assertEqual(response.metadata["project_id"], str(project.pk))
+        self.assertEqual(response.metadata["installation_id"], str(installation.pk))
+        self.assertEqual(response.metadata["configuration"]["target_market"], "hospitais")
+        self.assertEqual(response.metadata["configuration"]["max_results"], 50)
+        self.assertEqual(response.metadata["request_ack"], "prepare prospecting run")
+
+    def test_adapter_blocks_project_divergence_for_same_installation(self):
+        tenant = Tenant.objects.create(name="Tenant A", slug="tenant-a")
+        project = Project.objects.create(tenant=tenant, name="Project A", slug="project-a")
+        other_project = Project.objects.create(tenant=tenant, name="Project B", slug="project-b")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Agent",
+        )
+
+        response = ProspectingAgentAdapter().execute(
+            AgentExecutionContext(
+                tenant_id=str(tenant.pk),
+                project_id=str(other_project.pk),
+                installation_id=str(installation.pk),
+            ),
+            AgentRequest(input="prepare prospecting run"),
         )
 
         self.assertEqual(response.status, "installation_unavailable")
@@ -436,6 +629,27 @@ class AgentApiTests(TestCase):
         self.assertEqual(response.json()["output"], "done")
         runtime.execute.assert_called_once()
 
+    def test_execute_blocks_cross_tenant_prospecting_installation(self):
+        self.login()
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        other_installation = AgentInstallation.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting B",
+            configuration={"target_market": "escolas"},
+        )
+
+        response = self.client.post(
+            f"/api/v1/agent-installations/{other_installation.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
     def test_execute_livia_multi_installation_uses_each_installation_configuration(self):
         self.login()
         project_b = Project.objects.create(tenant=self.tenant, name="Outro projeto", slug="outro-projeto")
@@ -491,3 +705,96 @@ class AgentApiTests(TestCase):
         self.assertEqual(response_b.json()["metadata"]["runtime_configuration"]["public_name"], "Assistente Comercial")
         self.assertEqual(response_a.json()["metadata"]["project_id"], str(self.project.id))
         self.assertEqual(response_b.json()["metadata"]["project_id"], str(project_b.id))
+
+    def test_execute_prospecting_multi_project_uses_each_installation_configuration(self):
+        self.login()
+        project_b = Project.objects.create(tenant=self.tenant, name="Projeto B", slug="project-b")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation_a = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting A",
+            configuration={"target_market": "hospitais", "max_results": 10},
+        )
+        installation_b = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=project_b,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting B",
+            configuration={"target_market": "escolas", "max_results": 20},
+        )
+
+        response_a = self.client.post(
+            f"/api/v1/agent-installations/{installation_a.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+        )
+        response_b = self.client.post(
+            f"/api/v1/agent-installations/{installation_b.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response_a.status_code, 200)
+        self.assertEqual(response_b.status_code, 200)
+        self.assertEqual(response_a.json()["status"], "ready")
+        self.assertEqual(response_b.json()["status"], "ready")
+        self.assertEqual(response_a.json()["metadata"]["agent"], "prospecting")
+        self.assertEqual(response_b.json()["metadata"]["agent"], "prospecting")
+        self.assertEqual(response_a.json()["metadata"]["configuration"]["target_market"], "hospitais")
+        self.assertEqual(response_b.json()["metadata"]["configuration"]["target_market"], "escolas")
+        self.assertEqual(response_a.json()["metadata"]["project_id"], str(self.project.id))
+        self.assertEqual(response_b.json()["metadata"]["project_id"], str(project_b.id))
+
+    def test_execute_same_tenant_different_agents_uses_correct_runtime(self):
+        self.login()
+        livia_definition, _ = AgentDefinition.objects.update_or_create(
+            slug="livia",
+            defaults={"name": "Lívia", "agent_type": "conversational_sales", "is_active": True},
+        )
+        livia_version, _ = AgentVersion.objects.update_or_create(
+            agent_definition=livia_definition,
+            version="legacy-initial",
+            defaults={"runtime_handler": "livia", "status": AgentVersion.Status.ACTIVE},
+        )
+        livia_installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=livia_definition,
+            agent_version=livia_version,
+            name="Lívia",
+            configuration={"public_name": "Lívia"},
+        )
+        prospecting_definition = AgentDefinition.objects.get(slug="prospecting")
+        prospecting_version = AgentVersion.objects.get(agent_definition=prospecting_definition, version="1.0.0")
+        prospecting_installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=prospecting_definition,
+            agent_version=prospecting_version,
+            name="Prospecting",
+            configuration={"target_market": "hospitais", "max_results": 15},
+        )
+
+        with patch("agents.infrastructure.livia_adapter.process_chat_request", return_value={"reply": "Olá"}) as process:
+            livia_response = self.client.post(
+                f"/api/v1/agent-installations/{livia_installation.id}/execute/",
+                data=json.dumps({"input": "Oi", "session_id": "same-tenant"}),
+                content_type="application/json",
+            )
+        prospecting_response = self.client.post(
+            f"/api/v1/agent-installations/{prospecting_installation.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(livia_response.status_code, 200)
+        self.assertEqual(prospecting_response.status_code, 200)
+        self.assertEqual(livia_response.json()["status"], "ok")
+        self.assertEqual(prospecting_response.json()["status"], "ready")
+        process.assert_called_once()
+        self.assertEqual(prospecting_response.json()["metadata"]["agent"], "prospecting")
