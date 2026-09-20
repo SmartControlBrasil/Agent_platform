@@ -1,0 +1,6 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Installations | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Installations</h1><p class="ap-muted">Instalações de agentes nos projects acessíveis.</p></div></div>
+<div class="ap-card">{% if installations %}<table class="ap-table"><thead><tr><th>Name</th><th>Tenant</th><th>Project</th><th>Agent</th><th>Version</th><th>Status</th></tr></thead><tbody>{% for installation in installations %}<tr><td><a href="{% url 'control_plane:installation_detail' installation.pk %}">{{ installation.name }}</a></td><td>{{ installation.tenant.name }}</td><td>{{ installation.project.name }}</td><td>{{ installation.agent_definition.name }}</td><td>{{ installation.agent_version.version }}</td><td>{{ installation.is_enabled|yesno:'enabled,disabled' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="ap-muted">Nenhuma instalação.</p>{% endif %}</div>
+{% endblock %}

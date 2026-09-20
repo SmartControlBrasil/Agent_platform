@@ -1,0 +1,7 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}{{ agent.name }} | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">{{ agent.name }}</h1><p class="ap-muted">{{ agent.slug }} · {{ agent.agent_type }}</p></div></div>
+<div class="ap-card"><p>{{ agent.description|default:'Sem descrição.' }}</p><span class="ap-badge {% if not agent.is_active %}off{% endif %}">{{ agent.is_active|yesno:'ACTIVE,INACTIVE' }}</span></div>
+<h2 class="mt-4">Versions</h2><div class="ap-card"><table class="ap-table"><thead><tr><th>Version</th><th>Status</th><th>Runtime handler</th></tr></thead><tbody>{% for version in agent.versions.all %}<tr><td>{{ version.version }}</td><td>{{ version.status }}</td><td><code>{{ version.runtime_handler }}</code></td></tr>{% empty %}<tr><td colspan="3">Nenhuma versão.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

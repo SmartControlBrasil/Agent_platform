@@ -1,0 +1,6 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Projects | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Projects</h1><p class="ap-muted">Projects tenant-scoped disponíveis para administração.</p></div>{% if can_create %}<a class="btn btn-primary" href="{% url 'control_plane:project_create' %}">Novo project</a>{% endif %}</div>
+<div class="ap-card">{% if projects %}<table class="ap-table"><thead><tr><th>Name</th><th>Tenant</th><th>Slug</th><th>Status</th><th>Installations</th></tr></thead><tbody>{% for project in projects %}<tr><td><a href="{% url 'control_plane:project_detail' project.pk %}">{{ project.name }}</a></td><td>{{ project.tenant.name }}</td><td>{{ project.slug }}</td><td>{{ project.is_active|yesno:'active,inactive' }}</td><td>{{ project.installation_count }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="ap-muted">Nenhum project.</p>{% endif %}</div>
+{% endblock %}

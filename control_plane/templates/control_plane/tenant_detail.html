@@ -1,0 +1,8 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}{{ tenant.name }} | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">{{ tenant.name }}</h1><p class="ap-muted">{{ tenant.slug }} · {{ tenant.domain|default:'sem domínio' }}</p></div></div>
+<div class="ap-grid"><div class="ap-card"><div class="ap-muted">Status</div><strong>{{ tenant.is_active|yesno:'Active,Inactive' }}</strong></div><div class="ap-card"><div class="ap-muted">Projects</div><strong>{{ tenant.project_count }}</strong></div><div class="ap-card"><div class="ap-muted">Installations</div><strong>{{ tenant.installation_count }}</strong></div></div>
+<h2 class="mt-4">Projects</h2><div class="ap-card">{% if projects %}<table class="ap-table"><tbody>{% for project in projects %}<tr><td><a href="{% url 'control_plane:project_detail' project.pk %}">{{ project.name }}</a></td><td>{{ project.slug }}</td><td>{{ project.is_active|yesno:'active,inactive' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="ap-muted">Nenhum project.</p>{% endif %}</div>
+<h2 class="mt-4">Agent Installations</h2><div class="ap-card">{% if installations %}<table class="ap-table"><tbody>{% for installation in installations %}<tr><td><a href="{% url 'control_plane:installation_detail' installation.pk %}">{{ installation.name }}</a></td><td>{{ installation.project.name }}</td><td>{{ installation.agent_definition.name }}</td><td>{{ installation.is_enabled|yesno:'enabled,disabled' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="ap-muted">Nenhuma instalação.</p>{% endif %}</div>
+{% endblock %}

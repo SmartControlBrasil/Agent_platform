@@ -1,0 +1,10 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Tenants | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Tenants</h1><p class="ap-muted">Somente tenants acessíveis ao usuário atual.</p></div></div>
+<div class="ap-card">
+{% if tenants %}<table class="ap-table"><thead><tr><th>Name</th><th>Slug</th><th>Domain</th><th>Active</th><th>Projects</th><th>Installations</th></tr></thead><tbody>
+{% for tenant in tenants %}<tr><td><a href="{% url 'control_plane:tenant_detail' tenant.pk %}">{{ tenant.name }}</a></td><td>{{ tenant.slug }}</td><td>{{ tenant.domain|default:'-' }}</td><td>{{ tenant.is_active|yesno:'yes,no' }}</td><td>{{ tenant.project_count }}</td><td>{{ tenant.installation_count }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p class="ap-muted">Nenhum tenant acessível.</p>{% endif %}
+</div>
+{% endblock %}

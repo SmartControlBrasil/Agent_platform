@@ -1,0 +1,6 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Agent Catalog | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Agent Catalog</h1><p class="ap-muted">Catálogo de AgentDefinition da plataforma.</p></div></div>
+<div class="ap-grid">{% for agent in agents %}<div class="ap-card"><h3>{{ agent.name }}</h3><p class="ap-muted">{{ agent.agent_type }}</p><p>{{ agent.description|default:'Sem descrição.' }}</p><span class="ap-badge {% if not agent.is_active %}off{% endif %}">{{ agent.is_active|yesno:'ACTIVE,INACTIVE' }}</span><p class="mt-3"><a href="{% url 'control_plane:agent_detail' agent.pk %}">Ver agente</a></p></div>{% empty %}<div class="ap-card">Nenhum agente cadastrado.</div>{% endfor %}</div>
+{% endblock %}

@@ -1,0 +1,7 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}{{ project.name }} | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">{{ project.name }}</h1><p class="ap-muted">{{ project.tenant.name }} · {{ project.slug }}</p></div>{% if can_manage and project.is_active and project.tenant.is_active %}<a class="btn btn-primary" href="{% url 'control_plane:install_agent' project.pk %}">Adicionar agente</a>{% endif %}</div>
+<div class="ap-card"><p>{{ project.description|default:'Sem descrição.' }}</p><span class="ap-badge {% if not project.is_active %}off{% endif %}">{{ project.is_active|yesno:'active,inactive' }}</span></div>
+<h2 class="mt-4">Agent Installations</h2><div class="ap-card">{% if installations %}<table class="ap-table"><tbody>{% for installation in installations %}<tr><td><a href="{% url 'control_plane:installation_detail' installation.pk %}">{{ installation.name }}</a></td><td>{{ installation.agent_definition.name }}</td><td>{{ installation.agent_version.version }}</td><td>{{ installation.is_enabled|yesno:'enabled,disabled' }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="ap-muted">Nenhum agente instalado.</p>{% endif %}</div>
+{% endblock %}

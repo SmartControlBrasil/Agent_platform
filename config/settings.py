@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     "tenants",
     "projects",
     "agents",
+    "control_plane",
     "assistant_core",
     "conversations",
     "leads",

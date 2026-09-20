@@ -1,0 +1,54 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Agent Platform{% endblock %}</title>
+  <link href="{% static 'operations_portal/hando/css/app.min.css' %}" rel="stylesheet" type="text/css">
+  <link href="{% static 'operations_portal/hando/css/icons.min.css' %}" rel="stylesheet" type="text/css">
+  <style>
+    body { background: #f6f7fb; }
+    .ap-shell { min-height: 100vh; display: grid; grid-template-columns: 248px 1fr; }
+    .ap-sidebar { background: #111827; color: #e5e7eb; padding: 24px 18px; }
+    .ap-brand { color: #fff; font-size: 20px; font-weight: 700; margin-bottom: 28px; }
+    .ap-nav a { color: #cbd5e1; display: block; padding: 10px 12px; border-radius: 6px; margin-bottom: 4px; }
+    .ap-nav a:hover, .ap-nav a.active { background: #1f2937; color: #fff; }
+    .ap-main { padding: 28px; }
+    .ap-page-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 20px; }
+    .ap-title { margin: 0; color: #111827; }
+    .ap-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(15, 23, 42, .04); }
+    .ap-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .ap-muted { color: #64748b; }
+    .ap-badge { display: inline-block; border-radius: 999px; padding: 3px 9px; font-size: 12px; font-weight: 600; background: #eef2ff; color: #3730a3; }
+    .ap-badge.off { background: #f1f5f9; color: #475569; }
+    .ap-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .ap-table { width: 100%; border-collapse: collapse; }
+    .ap-table th, .ap-table td { border-bottom: 1px solid #e5e7eb; padding: 11px 8px; vertical-align: top; }
+    .ap-table th { color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+    .ap-form { max-width: 760px; }
+    .ap-field { margin-bottom: 14px; }
+    .ap-field label { display: block; font-weight: 600; color: #334155; margin-bottom: 5px; }
+    .ap-field input, .ap-field select, .ap-field textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 9px 10px; }
+    @media (max-width: 760px) { .ap-shell { display: block; } .ap-sidebar { position: static; } .ap-main { padding: 18px; } .ap-page-head { display: block; } }
+  </style>
+</head>
+<body>
+  <div class="ap-shell">
+    <aside class="ap-sidebar">
+      <div class="ap-brand">Agent Platform</div>
+      <nav class="ap-nav">
+        <a href="{% url 'control_plane:dashboard' %}" class="{% if active_section == 'dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="{% url 'control_plane:tenant_list' %}" class="{% if active_section == 'tenants' %}active{% endif %}">Tenants</a>
+        <a href="{% url 'control_plane:project_list' %}" class="{% if active_section == 'projects' %}active{% endif %}">Projects</a>
+        <a href="{% url 'control_plane:agent_list' %}" class="{% if active_section == 'agents' %}active{% endif %}">Agents</a>
+        <a href="{% url 'control_plane:installation_list' %}" class="{% if active_section == 'installations' %}active{% endif %}">Installations</a>
+      </nav>
+    </aside>
+    <main class="ap-main">
+      {% if messages %}{% for message in messages %}<div class="alert alert-{{ message.tags|default:'info' }}">{{ message }}</div>{% endfor %}{% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

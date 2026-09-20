@@ -1,0 +1,14 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Dashboard | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Dashboard</h1><p class="ap-muted">Resumo administrativo dos recursos acessíveis.</p></div></div>
+<div class="ap-grid">
+  <div class="ap-card"><div class="ap-muted">Tenants acessíveis</div><h2>{{ summary.tenants }}</h2></div>
+  <div class="ap-card"><div class="ap-muted">Projects ativos</div><h2>{{ summary.projects }}</h2></div>
+  <div class="ap-card"><div class="ap-muted">Agents disponíveis</div><h2>{{ summary.agents }}</h2></div>
+  <div class="ap-card"><div class="ap-muted">Installations</div><h2>{{ summary.installations }}</h2></div>
+  <div class="ap-card"><div class="ap-muted">Habilitadas</div><h2>{{ summary.enabled_installations }}</h2></div>
+  <div class="ap-card"><div class="ap-muted">Desabilitadas</div><h2>{{ summary.disabled_installations }}</h2></div>
+</div>
+{% if not has_data %}<div class="ap-card mt-3">Nenhum recurso disponível para este usuário.</div>{% endif %}
+{% endblock %}

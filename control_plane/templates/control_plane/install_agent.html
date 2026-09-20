@@ -1,0 +1,6 @@
+{% extends 'control_plane/base.html' %}
+{% block title %}Instalar agente | Agent Platform{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Adicionar agente</h1><p class="ap-muted">{{ project.name }} · {{ project.tenant.name }}</p></div></div>
+<form method="post" class="ap-card ap-form">{% csrf_token %}{{ form.non_field_errors }}{% for field in form %}<div class="ap-field">{{ field.label_tag }}{{ field }}{{ field.errors }}</div>{% endfor %}<button class="btn btn-primary" type="submit">Instalar</button></form>
+{% endblock %}
