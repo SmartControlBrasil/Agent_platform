@@ -5,6 +5,7 @@ Plataforma central multi-tenant para execucao e administracao de agentes.
 Modelo inicial:
 
 Tenant -> Project -> AgentInstallation -> AgentDefinition + AgentVersion -> Agent Runtime
+                              -> AgentToolBinding -> ToolDefinition -> Tool Runtime
 
 Agentes disponiveis:
 
@@ -37,6 +38,9 @@ Nao armazene credenciais reais no repositorio.
 - `GET /api/v1/projects/`
 - `GET /api/v1/agent-installations/`
 - `POST /api/v1/agent-installations/{id}/execute/`
+- `GET /api/v1/tools/`
+- `GET /api/v1/agent-installations/{id}/tools/`
+- `POST /api/v1/tool-bindings/{id}/execute/`
 
 As listas e execucao exigem usuario autenticado e respeitam o escopo de tenant via `TenantMembership`.
 
@@ -51,3 +55,10 @@ Precedencia da configuracao efetiva:
 3. defaults seguros
 
 O caminho moderno usa a `installation` exata do contexto de execucao. O widget e os fluxos legados continuam funcionando via `AssistantProfile`, sem buscar `AgentInstallation` diretamente.
+
+
+## Tools e capacidades
+
+Na Fase 5, ferramentas passam a ser capacidades explicitas de uma instalacao de agente. Uma tool so pode ser executada quando existe um `AgentToolBinding` ativo para a `AgentInstallation` exata, dentro do mesmo tenant e projeto.
+
+A primeira tool e `prospecting.build_search_plan`, usada pelo Prospecting Agent para montar um plano deterministico de consultas de prospeccao. Sem binding ativo, o Prospecting Agent retorna `tool_unavailable` e nao concede acesso automaticamente. A Livia permanece sem dependencia de tools.

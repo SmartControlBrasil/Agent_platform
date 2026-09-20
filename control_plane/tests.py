@@ -12,6 +12,7 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
+from tools.models import AgentToolBinding, ToolDefinition
 
 
 class ControlPlaneTestCase(TestCase):
@@ -447,3 +448,109 @@ class ControlPlaneTestCase(TestCase):
         client.force_login(self.user_a)
         response = client.post(reverse("control_plane:installation_disable", args=[self.installation_a.pk]))
         self.assertEqual(response.status_code, 403)
+
+    def test_tool_catalog_and_detail(self):
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+
+        response = self.client.get(reverse("control_plane:tool_list"))
+        detail = self.client.get(reverse("control_plane:tool_detail", args=[tool.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Build Prospecting Search Plan")
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, "prospecting.build_search_plan")
+
+    def test_installation_detail_shows_tools_section(self):
+        response = self.client.get(reverse("control_plane:installation_detail", args=[self.installation_a.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Tools")
+        self.assertContains(response, "Nenhuma tool vinculada")
+
+    def test_add_tool_flow_is_scoped_and_audited(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting A",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+
+        response = self.client.post(
+            reverse("control_plane:installation_add_tool", args=[installation.pk]),
+            {"tool_definition": tool.pk, "is_enabled": "on", "max_queries": "7"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        binding = AgentToolBinding.objects.get(agent_installation=installation, tool_definition=tool)
+        self.assertEqual(binding.configuration, {"max_queries": 7})
+        self.assertTrue(binding.is_enabled)
+        self.assertTrue(AuditEvent.objects.filter(action="tool.bound", object_id=str(binding.pk)).exists())
+
+    def test_add_tool_is_not_available_for_incompatible_livia_installation(self):
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+
+        response = self.client.post(
+            reverse("control_plane:installation_add_tool", args=[self.installation_a.pk]),
+            {"tool_definition": tool.pk, "is_enabled": "on", "max_queries": "7"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(AgentToolBinding.objects.filter(agent_installation=self.installation_a).exists())
+
+    def test_tool_binding_enable_disable_and_edit_flow(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting A",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        binding = AgentToolBinding.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_installation=installation,
+            tool_definition=tool,
+            configuration={"max_queries": 4},
+        )
+
+        disable = self.client.post(reverse("control_plane:tool_binding_disable", args=[binding.pk]))
+        binding.refresh_from_db()
+        enable = self.client.post(reverse("control_plane:tool_binding_enable", args=[binding.pk]))
+        binding.refresh_from_db()
+        edit = self.client.post(
+            reverse("control_plane:tool_binding_edit", args=[binding.pk]),
+            {"tool_definition": tool.pk, "is_enabled": "on", "max_queries": "9"},
+        )
+        binding.refresh_from_db()
+
+        self.assertEqual(disable.status_code, 302)
+        self.assertEqual(enable.status_code, 302)
+        self.assertEqual(edit.status_code, 302)
+        self.assertTrue(binding.is_enabled)
+        self.assertEqual(binding.configuration, {"max_queries": 9})
+        self.assertTrue(AuditEvent.objects.filter(action="tool.disabled", object_id=str(binding.pk)).exists())
+        self.assertTrue(AuditEvent.objects.filter(action="tool.enabled", object_id=str(binding.pk)).exists())
+        self.assertTrue(AuditEvent.objects.filter(action="tool.configuration.updated", object_id=str(binding.pk)).exists())
+
+    def test_tool_binding_cross_tenant_is_404(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_b,
+            project=self.project_b,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting B",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        binding = AgentToolBinding.objects.create(
+            tenant=self.tenant_b,
+            project=self.project_b,
+            agent_installation=installation,
+            tool_definition=tool,
+        )
+
+        response = self.client.post(reverse("control_plane:tool_binding_disable", args=[binding.pk]))
+
+        self.assertEqual(response.status_code, 404)

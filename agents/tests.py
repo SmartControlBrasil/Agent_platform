@@ -20,6 +20,7 @@ from agents.infrastructure.registry import build_default_registry
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from tenants.models import AssistantProfile, Tenant, TenantMembership
+from tools.models import AgentToolBinding, ToolDefinition
 
 
 TEST_STORAGES = {
@@ -473,7 +474,17 @@ class LiviaAgentAdapterTests(TestCase):
 
 
 class ProspectingAgentAdapterTests(TestCase):
-    def test_adapter_returns_ready_response_with_isolated_configuration(self):
+    def _bind_search_plan_tool(self, installation, max_queries=8):
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        return AgentToolBinding.objects.create(
+            tenant=installation.tenant,
+            project=installation.project,
+            agent_installation=installation,
+            tool_definition=tool,
+            configuration={"max_queries": max_queries},
+        )
+
+    def test_adapter_returns_search_plan_when_tool_is_bound(self):
         tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
         project = Project.objects.create(tenant=tenant, name="smart_sales", slug="smart-sales")
         definition = AgentDefinition.objects.get(slug="prospecting")
@@ -492,6 +503,7 @@ class ProspectingAgentAdapterTests(TestCase):
                 "max_results": 50,
             },
         )
+        self._bind_search_plan_tool(installation, max_queries=4)
 
         response = ProspectingAgentAdapter().execute(
             AgentExecutionContext(
@@ -502,14 +514,42 @@ class ProspectingAgentAdapterTests(TestCase):
             AgentRequest(input="prepare prospecting run"),
         )
 
-        self.assertEqual(response.status, "ready")
-        self.assertIn("Prospecting Agent", response.output)
+        self.assertEqual(response.status, "planned")
+        self.assertEqual(response.output, "Prospecting search plan ready.")
         self.assertEqual(response.metadata["agent"], "prospecting")
         self.assertEqual(response.metadata["project_id"], str(project.pk))
         self.assertEqual(response.metadata["installation_id"], str(installation.pk))
         self.assertEqual(response.metadata["configuration"]["target_market"], "hospitais")
         self.assertEqual(response.metadata["configuration"]["max_results"], 50)
         self.assertEqual(response.metadata["request_ack"], "prepare prospecting run")
+        self.assertEqual(response.metadata["tool"], "prospecting.build_search_plan")
+        self.assertEqual(len(response.metadata["tool_result"]["queries"]), 4)
+
+    def test_adapter_without_tool_binding_fails_controlled(self):
+        tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        project = Project.objects.create(tenant=tenant, name="smart_sales", slug="smart-sales")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Agent",
+        )
+
+        response = ProspectingAgentAdapter().execute(
+            AgentExecutionContext(
+                tenant_id=str(tenant.pk),
+                project_id=str(project.pk),
+                installation_id=str(installation.pk),
+            ),
+            AgentRequest(input="prepare prospecting run"),
+        )
+
+        self.assertEqual(response.status, "tool_unavailable")
+        self.assertEqual(response.metadata["error"], "tool_unavailable")
+        self.assertEqual(response.metadata["tool"], "prospecting.build_search_plan")
 
     def test_adapter_blocks_project_divergence_for_same_installation(self):
         tenant = Tenant.objects.create(name="Tenant A", slug="tenant-a")
@@ -705,7 +745,6 @@ class AgentApiTests(TestCase):
         self.assertEqual(response_b.json()["metadata"]["runtime_configuration"]["public_name"], "Assistente Comercial")
         self.assertEqual(response_a.json()["metadata"]["project_id"], str(self.project.id))
         self.assertEqual(response_b.json()["metadata"]["project_id"], str(project_b.id))
-
     def test_execute_prospecting_multi_project_uses_each_installation_configuration(self):
         self.login()
         project_b = Project.objects.create(tenant=self.tenant, name="Projeto B", slug="project-b")
@@ -728,6 +767,10 @@ class AgentApiTests(TestCase):
             configuration={"target_market": "escolas", "max_results": 20},
         )
 
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        AgentToolBinding.objects.create(tenant=self.tenant, project=self.project, agent_installation=installation_a, tool_definition=tool, configuration={"max_queries": 5})
+        AgentToolBinding.objects.create(tenant=self.tenant, project=project_b, agent_installation=installation_b, tool_definition=tool, configuration={"max_queries": 12})
+
         response_a = self.client.post(
             f"/api/v1/agent-installations/{installation_a.id}/execute/",
             data=json.dumps({"input": "prepare prospecting run"}),
@@ -741,14 +784,16 @@ class AgentApiTests(TestCase):
 
         self.assertEqual(response_a.status_code, 200)
         self.assertEqual(response_b.status_code, 200)
-        self.assertEqual(response_a.json()["status"], "ready")
-        self.assertEqual(response_b.json()["status"], "ready")
+        self.assertEqual(response_a.json()["status"], "planned")
+        self.assertEqual(response_b.json()["status"], "planned")
         self.assertEqual(response_a.json()["metadata"]["agent"], "prospecting")
         self.assertEqual(response_b.json()["metadata"]["agent"], "prospecting")
         self.assertEqual(response_a.json()["metadata"]["configuration"]["target_market"], "hospitais")
         self.assertEqual(response_b.json()["metadata"]["configuration"]["target_market"], "escolas")
         self.assertEqual(response_a.json()["metadata"]["project_id"], str(self.project.id))
         self.assertEqual(response_b.json()["metadata"]["project_id"], str(project_b.id))
+        self.assertEqual(len(response_a.json()["metadata"]["tool_result"]["queries"]), 5)
+        self.assertEqual(len(response_b.json()["metadata"]["tool_result"]["queries"]), 12)
 
     def test_execute_same_tenant_different_agents_uses_correct_runtime(self):
         self.login()
@@ -780,6 +825,9 @@ class AgentApiTests(TestCase):
             configuration={"target_market": "hospitais", "max_results": 15},
         )
 
+        tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        AgentToolBinding.objects.create(tenant=self.tenant, project=self.project, agent_installation=prospecting_installation, tool_definition=tool, configuration={"max_queries": 6})
+
         with patch("agents.infrastructure.livia_adapter.process_chat_request", return_value={"reply": "Olá"}) as process:
             livia_response = self.client.post(
                 f"/api/v1/agent-installations/{livia_installation.id}/execute/",
@@ -795,6 +843,6 @@ class AgentApiTests(TestCase):
         self.assertEqual(livia_response.status_code, 200)
         self.assertEqual(prospecting_response.status_code, 200)
         self.assertEqual(livia_response.json()["status"], "ok")
-        self.assertEqual(prospecting_response.json()["status"], "ready")
+        self.assertEqual(prospecting_response.json()["status"], "planned")
         process.assert_called_once()
         self.assertEqual(prospecting_response.json()["metadata"]["agent"], "prospecting")

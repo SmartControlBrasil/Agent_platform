@@ -12,6 +12,8 @@ from agents.application.installations import (
     update_installation_configuration,
 )
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
+from tools.forms import AgentToolBindingForm
+from tools.models import AgentToolBinding, ToolDefinition
 from audit.services import audit_model_snapshot, record_audit_event
 from projects.models import Project
 from tenants.access import (
@@ -29,6 +31,10 @@ ACTION_AGENT_INSTALLED = "agent.installed"
 ACTION_AGENT_ENABLED = "agent.enabled"
 ACTION_AGENT_DISABLED = "agent.disabled"
 ACTION_AGENT_CONFIGURATION_UPDATED = "agent.configuration.updated"
+ACTION_TOOL_BOUND = "tool.bound"
+ACTION_TOOL_ENABLED = "tool.enabled"
+ACTION_TOOL_DISABLED = "tool.disabled"
+ACTION_TOOL_CONFIGURATION_UPDATED = "tool.configuration.updated"
 
 
 def _accessible_tenants(user):
@@ -62,6 +68,12 @@ def _project_queryset(user):
 def _installation_queryset(user):
     return AgentInstallation.objects.filter(tenant_id__in=_tenant_ids(user)).select_related(
         "tenant", "project", "agent_definition", "agent_version"
+    )
+
+
+def _tool_binding_queryset(user):
+    return AgentToolBinding.objects.filter(tenant_id__in=_tenant_ids(user)).select_related(
+        "tenant", "project", "agent_installation", "tool_definition", "agent_installation__agent_definition"
     )
 
 
@@ -270,8 +282,16 @@ def installation_detail(request, pk):
             return redirect("control_plane:installation_detail", pk=installation.pk)
     else:
         form = InstallationConfigurationForm(instance=installation)
+    tool_bindings = installation.tool_bindings.select_related("tool_definition").order_by("tool_definition__category", "tool_definition__name")
     context = _base_context("installations")
-    context.update({"installation": installation, "form": form, "can_manage": can_manage})
+    context.update(
+        {
+            "installation": installation,
+            "form": form,
+            "can_manage": can_manage,
+            "tool_bindings": tool_bindings,
+        }
+    )
     return render(request, "control_plane/installation_detail.html", context)
 
 
@@ -295,3 +315,132 @@ def installation_disable(request, pk):
     record_audit_event(action=ACTION_AGENT_DISABLED, actor=request.user, tenant=installation.tenant, obj=installation, request=request)
     messages.success(request, "Instalação desabilitada.")
     return redirect("control_plane:installation_detail", pk=installation.pk)
+
+
+@login_required(login_url="/admin/login/")
+def tool_list(request):
+    tools = ToolDefinition.objects.order_by("category", "name")
+    context = _base_context("tools")
+    context.update({"tools": tools})
+    return render(request, "control_plane/tool_list.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def tool_detail(request, pk):
+    tool = get_object_or_404(ToolDefinition.objects.all(), pk=pk)
+    bindings = _tool_binding_queryset(request.user).filter(tool_definition=tool).order_by(
+        "tenant__name", "project__name", "agent_installation__name"
+    )
+    context = _base_context("tools")
+    context.update({"tool": tool, "bindings": bindings})
+    return render(request, "control_plane/tool_detail.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def installation_add_tool(request, installation_id):
+    installation = get_object_or_404(_installation_queryset(request.user), pk=installation_id)
+    _require_manage(request.user, installation.tenant)
+    if request.method == "POST":
+        form = AgentToolBindingForm(request.POST, installation=installation)
+        if form.is_valid():
+            binding = AgentToolBinding(
+                tenant=installation.tenant,
+                project=installation.project,
+                agent_installation=installation,
+                tool_definition=form.cleaned_data["tool_definition"],
+                is_enabled=form.cleaned_data["is_enabled"],
+                configuration=form.configuration(),
+            )
+            try:
+                binding.save()
+            except ValidationError as exc:
+                form.add_error(None, exc)
+            else:
+                record_audit_event(
+                    action=ACTION_TOOL_BOUND,
+                    actor=request.user,
+                    tenant=installation.tenant,
+                    obj=binding,
+                    after_data=audit_model_snapshot(
+                        binding,
+                        fields=["tenant", "project", "agent_installation", "tool_definition", "is_enabled", "configuration"],
+                    ),
+                    request=request,
+                )
+                messages.success(request, "Tool adicionada à instalação.")
+                return redirect("control_plane:installation_detail", pk=installation.pk)
+    else:
+        form = AgentToolBindingForm(installation=installation)
+    context = _base_context("installations")
+    context.update({"installation": installation, "form": form, "mode": "add"})
+    return render(request, "control_plane/tool_binding_form.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def tool_binding_edit(request, pk):
+    binding = get_object_or_404(_tool_binding_queryset(request.user), pk=pk)
+    _require_manage(request.user, binding.tenant)
+    before_config = dict(binding.configuration or {})
+    before_enabled = binding.is_enabled
+    if request.method == "POST":
+        form = AgentToolBindingForm(request.POST, instance=binding)
+        if form.is_valid():
+            binding.configuration = form.configuration()
+            binding.is_enabled = form.cleaned_data["is_enabled"]
+            try:
+                binding.save(update_fields=["configuration", "is_enabled", "updated_at"])
+            except ValidationError as exc:
+                form.add_error(None, exc)
+            else:
+                changed = sorted(
+                    key for key in set(before_config) | set(binding.configuration or {})
+                    if before_config.get(key) != (binding.configuration or {}).get(key)
+                )
+                if changed:
+                    record_audit_event(
+                        action=ACTION_TOOL_CONFIGURATION_UPDATED,
+                        actor=request.user,
+                        tenant=binding.tenant,
+                        obj=binding,
+                        metadata={"binding_id": str(binding.pk), "changed_fields": changed},
+                        request=request,
+                    )
+                if before_enabled != binding.is_enabled:
+                    record_audit_event(
+                        action=ACTION_TOOL_ENABLED if binding.is_enabled else ACTION_TOOL_DISABLED,
+                        actor=request.user,
+                        tenant=binding.tenant,
+                        obj=binding,
+                        request=request,
+                    )
+                messages.success(request, "Tool atualizada.")
+                return redirect("control_plane:installation_detail", pk=binding.agent_installation_id)
+    else:
+        form = AgentToolBindingForm(instance=binding)
+    context = _base_context("installations")
+    context.update({"installation": binding.agent_installation, "binding": binding, "form": form, "mode": "edit"})
+    return render(request, "control_plane/tool_binding_form.html", context)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def tool_binding_enable(request, pk):
+    binding = get_object_or_404(_tool_binding_queryset(request.user), pk=pk)
+    _require_manage(request.user, binding.tenant)
+    binding.is_enabled = True
+    binding.save(update_fields=["is_enabled", "updated_at"])
+    record_audit_event(action=ACTION_TOOL_ENABLED, actor=request.user, tenant=binding.tenant, obj=binding, request=request)
+    messages.success(request, "Tool habilitada.")
+    return redirect("control_plane:installation_detail", pk=binding.agent_installation_id)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def tool_binding_disable(request, pk):
+    binding = get_object_or_404(_tool_binding_queryset(request.user), pk=pk)
+    _require_manage(request.user, binding.tenant)
+    binding.is_enabled = False
+    binding.save(update_fields=["is_enabled", "updated_at"])
+    record_audit_event(action=ACTION_TOOL_DISABLED, actor=request.user, tenant=binding.tenant, obj=binding, request=request)
+    messages.success(request, "Tool desabilitada.")
+    return redirect("control_plane:installation_detail", pk=binding.agent_installation_id)
