@@ -33,7 +33,7 @@ class LeadNotificationService:
         dry_run = bool(getattr(settings, "LIVIA_LEAD_NOTIFICATIONS_DRY_RUN", True))
         recipient = self._recipient_for(lead_draft)
 
-        if not is_ready_for_commercial_notification(lead_draft):
+        if not (is_ready_for_commercial_notification(lead_draft) or self._legacy_qualified_lead_ready(lead_draft)):
             message = "Lead not ready for commercial notification; skipping."
             self._log("lead_notification_not_ready", lead_draft, message=message)
             return LeadNotificationResult(success=True, dry_run=dry_run, skipped=True, message=message)
@@ -93,6 +93,18 @@ class LeadNotificationService:
         message = f"Lead notification sent to {recipient}."
         self._log("lead_notification_sent", lead_draft, message=message)
         return LeadNotificationResult(success=True, dry_run=False, skipped=False, message=message)
+
+    def _legacy_qualified_lead_ready(self, lead_draft) -> bool:
+        if lead_draft is None:
+            return False
+        status = str(getattr(lead_draft, "status", "") or "")
+        has_contact = bool(str(getattr(lead_draft, "phone", "") or "").strip() or str(getattr(lead_draft, "email", "") or "").strip())
+        return (
+            status == "qualified"
+            and bool(str(getattr(lead_draft, "name", "") or "").strip())
+            and bool(str(getattr(lead_draft, "need_summary", "") or "").strip())
+            and has_contact
+        )
 
     def _recipient_for(self, lead_draft) -> str:
         tenant = getattr(lead_draft, "tenant", None)

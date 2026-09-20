@@ -72,8 +72,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # Lívia Platform
+    # Agent Platform
     "tenants",
+    "projects",
+    "agents",
     "assistant_core",
     "conversations",
     "leads",
@@ -177,6 +179,8 @@ STORAGES = {
 }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+SERVICE_NAME = config("SERVICE_NAME", default="agent_platform")
+EXTERNAL_INTEGRATIONS_ENABLED = config("EXTERNAL_INTEGRATIONS_ENABLED", default=False, cast=bool)
 
 # Production security
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -233,7 +237,14 @@ LIVIA_LEAD_NOTIFICATION_EMAIL = config("LIVIA_LEAD_NOTIFICATION_EMAIL", default=
 LIVIA_LEAD_NOTIFICATION_BCC = config("LIVIA_LEAD_NOTIFICATION_BCC", default="")
 
 # SMTP (Django defaults to localhost:25 / webmaster@localhost without these).
-EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default=(
+        "django.core.mail.backends.smtp.EmailBackend"
+        if EXTERNAL_INTEGRATIONS_ENABLED
+        else "django.core.mail.backends.console.EmailBackend"
+    ),
+)
 EMAIL_HOST = config("EMAIL_HOST", default="localhost")
 EMAIL_PORT = config("EMAIL_PORT", default=25, cast=int)
 EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
