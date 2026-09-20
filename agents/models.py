@@ -78,6 +78,7 @@ class AgentInstallation(models.Model):
         ):
             raise ValidationError({"agent_version": "AgentVersion must belong to the selected AgentDefinition."})
         self._validate_configuration_has_no_plaintext_secrets()
+        self._validate_agent_specific_configuration()
 
     def _validate_configuration_has_no_plaintext_secrets(self):
         if not isinstance(self.configuration, dict):
@@ -87,6 +88,13 @@ class AgentInstallation(models.Model):
             normalized = str(key).lower()
             if any(marker in normalized for marker in blocked) and value not in ("", None):
                 raise ValidationError({"configuration": "Configuration must not store plaintext secrets."})
+
+    def _validate_agent_specific_configuration(self):
+        if not self.agent_definition_id:
+            return
+        from agents.infrastructure.configuration_validation import validate_agent_configuration
+
+        validate_agent_configuration(agent_slug=self.agent_definition.slug, configuration=self.configuration)
 
     def save(self, *args, **kwargs):
         self.full_clean()

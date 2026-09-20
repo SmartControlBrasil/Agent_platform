@@ -37,7 +37,7 @@ class _DeterministicChatResult:
     knowledge_result: KnowledgeContextResult | None = None
 
 
-def process_chat_request(*, chat_request, tenant, session_id: str, user_message: str, source_page: str = "") -> dict:
+def process_chat_request(*, chat_request, tenant, session_id: str, user_message: str, source_page: str = "", assistant_profile_override=None) -> dict:
     from assistant_core.consultative_policy import detect_collection_trigger, CollectionTrigger
     from assistant_core.dialogue_memory import (
         build_collection_slot_context,
@@ -74,7 +74,7 @@ def process_chat_request(*, chat_request, tenant, session_id: str, user_message:
     memory.retrieval_query_original = original_query
     memory.retrieval_query_contextual = contextual_query
 
-    assistant_profile_preview = _active_assistant_profile(tenant)
+    assistant_profile_preview = assistant_profile_override or _active_assistant_profile(tenant)
     rag_limit = _rag_retrieval_limit(assistant_profile_preview)
 
     # Recuperação semântica pode chamar provider externo: permanece fora da transação de negócio.
@@ -105,6 +105,7 @@ def process_chat_request(*, chat_request, tenant, session_id: str, user_message:
         knowledge_context=knowledge_context,
         knowledge_result=knowledge_result,
         dialogue_memory=memory,
+        assistant_profile_override=assistant_profile_override,
     )
     return _refine_response_with_ai_if_enabled(
         deterministic_result=deterministic_result,
@@ -134,13 +135,14 @@ def _persist_chat_processing_state(
     knowledge_context: str = "",
     knowledge_result: KnowledgeContextResult | None = None,
     dialogue_memory=None,
+    assistant_profile_override=None,
 ) -> _DeterministicChatResult:
     from assistant_core.dialogue_memory import persist_dialogue_memory, should_skip_consultative_followup
     from assistant_core.services.response_quality_gate import apply_response_quality_gate
 
     with transaction.atomic():
         conversation = _get_or_create_locked_conversation(tenant=tenant, session_id=session_id, source_page=source_page)
-        assistant_profile = _active_assistant_profile(tenant)
+        assistant_profile = assistant_profile_override or _active_assistant_profile(tenant)
         history = list(conversation.messages.values("role", "content").order_by("created_at", "id"))
 
         # Mantém decisão determinística no bloco atômico e adia IA externa para fora da transação.

@@ -196,6 +196,28 @@ class ControlPlaneTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(AgentInstallation.objects.filter(name="Draft Agent").exists())
 
+    def test_install_agent_rejects_version_from_another_definition(self):
+        other_agent = AgentDefinition.objects.create(slug="other", name="Other", agent_type="test", is_active=True)
+        other_version = AgentVersion.objects.create(
+            agent_definition=other_agent,
+            version="1.0.0",
+            runtime_handler="other",
+            status=AgentVersion.Status.ACTIVE,
+        )
+
+        response = self.client.post(
+            reverse("control_plane:install_agent", args=[self.project_a.pk]),
+            {
+                "agent_definition": self.agent.pk,
+                "agent_version": other_version.pk,
+                "name": "Incompatível",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Selecione uma versão do agente escolhido.")
+        self.assertFalse(AgentInstallation.objects.filter(name="Incompatível").exists())
+
     def test_install_service_rejects_inactive_tenant(self):
         self.tenant_a.is_active = False
         self.tenant_a.save(update_fields=["is_active"])
@@ -260,23 +282,35 @@ class ControlPlaneTestCase(TestCase):
         response = self.client.post(
             reverse("control_plane:installation_detail", args=[self.installation_a.pk]),
             {
-                "public_name": "Lívia Platform",
-                "tone": "objetivo",
-                "primary_goal": "atender",
-                "short_description": "Configuração segura",
+                "public_name": "  Lívia   Platform  ",
+                "tone": " objetivo ",
+                "primary_goal": " atender ",
+                "short_description": "  Configuração   segura  ",
                 "api_key": "should-not-be-saved",
             },
         )
         self.assertEqual(response.status_code, 302)
         self.installation_a.refresh_from_db()
         self.assertEqual(self.installation_a.configuration["public_name"], "Lívia Platform")
+        self.assertEqual(self.installation_a.configuration["tone"], "objetivo")
+        self.assertEqual(self.installation_a.configuration["primary_goal"], "atender")
+        self.assertEqual(self.installation_a.configuration["short_description"], "Configuração segura")
         self.assertNotIn("api_key", self.installation_a.configuration)
-        self.assertTrue(
-            AuditEvent.objects.filter(action="agent.configuration.updated", object_id=str(self.installation_a.pk)).exists()
+        event = AuditEvent.objects.get(action="agent.configuration.updated", object_id=str(self.installation_a.pk))
+        self.assertEqual(event.metadata["installation_id"], str(self.installation_a.pk))
+        self.assertEqual(
+            sorted(event.metadata["changed_fields"]),
+            ["primary_goal", "public_name", "short_description", "tone"],
         )
+        self.assertNotIn("Lívia Platform", str(event.metadata))
 
     def test_secret_like_configuration_is_rejected_by_model(self):
         self.installation_a.configuration = {"api_key": "secret"}
+        with self.assertRaises(ValidationError):
+            self.installation_a.full_clean()
+
+    def test_invalid_livia_configuration_is_rejected_by_model(self):
+        self.installation_a.configuration = {"tone": {"invalid": True}}
         with self.assertRaises(ValidationError):
             self.installation_a.full_clean()
 

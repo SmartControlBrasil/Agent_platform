@@ -12,7 +12,7 @@ from agents.application.installations import (
     update_installation_configuration,
 )
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
-from audit.services import audit_model_snapshot, changed_fields, record_audit_event
+from audit.services import audit_model_snapshot, record_audit_event
 from projects.models import Project
 from tenants.access import (
     CAPABILITY_TENANT_MANAGE,
@@ -249,16 +249,21 @@ def installation_detail(request, pk):
         _require_manage(request.user, installation.tenant)
         form = InstallationConfigurationForm(request.POST, instance=installation)
         if form.is_valid():
-            before = audit_model_snapshot(installation, fields=["configuration"])
+            before_config = dict(installation.configuration or {})
             installation = update_installation_configuration(installation=installation, configuration=form.configuration())
-            after = audit_model_snapshot(installation, fields=["configuration"])
+            after_config = dict(installation.configuration or {})
+            changed_config_fields = sorted(
+                key for key in set(before_config) | set(after_config) if before_config.get(key) != after_config.get(key)
+            )
             record_audit_event(
                 action=ACTION_AGENT_CONFIGURATION_UPDATED,
                 actor=request.user,
                 tenant=installation.tenant,
                 obj=installation,
-                before_data=changed_fields(before, after)["before"],
-                after_data=changed_fields(before, after)["after"],
+                metadata={
+                    "installation_id": str(installation.pk),
+                    "changed_fields": changed_config_fields,
+                },
                 request=request,
             )
             messages.success(request, "Configuração atualizada.")

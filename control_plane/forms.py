@@ -1,5 +1,6 @@
 from django import forms
 
+from agents.infrastructure.configuration_validation import normalize_agent_configuration
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from tenants.models import Tenant
@@ -42,13 +43,22 @@ class InstallAgentForm(forms.Form):
         version = cleaned.get("agent_version")
         if definition and version and version.agent_definition_id != definition.id:
             self.add_error("agent_version", "Selecione uma versão do agente escolhido.")
+        if definition:
+            normalized = normalize_agent_configuration(
+                agent_slug=definition.slug,
+                configuration=self._configuration_from(cleaned),
+            )
+            cleaned["_normalized_configuration"] = normalized
         return cleaned
 
     def configuration(self):
+        return dict(self.cleaned_data.get("_normalized_configuration") or self._configuration_from(self.cleaned_data))
+
+    def _configuration_from(self, data):
         return {
-            field: self.cleaned_data.get(field, "")
+            field: data.get(field, "")
             for field in SAFE_CONFIGURATION_FIELDS
-            if self.cleaned_data.get(field, "") not in ("", None)
+            if data.get(field, "") not in ("", None)
         }
 
 
@@ -70,9 +80,23 @@ class InstallationConfigurationForm(forms.ModelForm):
                 initial.setdefault(field, instance.configuration.get(field, ""))
         super().__init__(*args, **kwargs)
 
+    def clean(self):
+        cleaned = super().clean()
+        instance = self.instance
+        if instance:
+            normalized = normalize_agent_configuration(
+                agent_slug=getattr(instance.agent_definition, "slug", ""),
+                configuration=self._configuration_from(cleaned),
+            )
+            cleaned["_normalized_configuration"] = normalized
+        return cleaned
+
     def configuration(self):
+        return dict(self.cleaned_data.get("_normalized_configuration") or self._configuration_from(self.cleaned_data))
+
+    def _configuration_from(self, data):
         return {
-            field: self.cleaned_data.get(field, "")
+            field: data.get(field, "")
             for field in SAFE_CONFIGURATION_FIELDS
-            if self.cleaned_data.get(field, "") not in ("", None)
+            if data.get(field, "") not in ("", None)
         }

@@ -67,6 +67,13 @@ class Tenant(models.Model):
 
 
 class AssistantProfile(models.Model):
+    """Legacy compatibility profile for the Lívia runtime and widget.
+
+    New generic Agent Platform configuration belongs on AgentInstallation,
+    with AssistantProfile used only as the Lívia fallback while migration is
+    progressive.
+    """
+
     tenant = models.OneToOneField(
         Tenant,
         on_delete=models.CASCADE,

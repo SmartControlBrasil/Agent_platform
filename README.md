@@ -32,3 +32,15 @@ Nao armazene credenciais reais no repositorio.
 - `POST /api/v1/agent-installations/{id}/execute/`
 
 As listas e execucao exigem usuario autenticado e respeitam o escopo de tenant via `TenantMembership`.
+
+## Configuracao efetiva da Livia
+
+Na Fase 3, `AgentInstallation` passa a ser a configuracao moderna consumida pelo runtime da Livia.
+
+Precedencia da configuracao efetiva:
+
+1. `AgentInstallation.configuration` para campos conhecidos da Livia
+2. `AssistantProfile` legado ativo do tenant
+3. defaults seguros
+
+O caminho moderno usa a `installation` exata do contexto de execucao. O widget e os fluxos legados continuam funcionando via `AssistantProfile`, sem buscar `AgentInstallation` diretamente.
