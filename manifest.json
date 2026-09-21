@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Platform Executor",
+  "version": "0.1.0",
+  "description": "Chrome executor for Agent Platform delegated tool executions.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "src/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Agent Executor",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}
