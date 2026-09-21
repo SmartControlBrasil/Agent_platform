@@ -11,6 +11,17 @@ from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
 from tools.application.execution import ToolExecutionError, execute_tool
+from tools.application.identity import (
+    ExecutorAuthenticationError,
+    approve_pairing,
+    authenticate_executor_credential,
+    consume_pairing,
+    create_executor_credential,
+    reject_pairing,
+    request_pairing,
+    revoke_credential,
+    rotate_credential,
+)
 from tools.application.lifecycle import (
     ToolExecutionLifecycleError,
     claim_tool_execution,
@@ -24,7 +35,15 @@ from tools.infrastructure.prospecting_build_search_plan import (
     ProspectingBuildSearchPlanTool,
     normalize_build_search_plan_configuration,
 )
-from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
+from tools.models import (
+    AgentToolBinding,
+    ToolDefinition,
+    ToolExecution,
+    ToolExecutor,
+    ToolExecutorCapability,
+    ToolExecutorCredential,
+    ToolExecutorPairingRequest,
+)
 
 
 TEST_STORAGES = {
@@ -538,3 +557,211 @@ class ToolApiTests(ToolTestCase):
         self.assertEqual(wrong.status_code, 400)
         self.assertEqual(fail.status_code, 200)
         self.assertEqual(fail.json()["status"], ToolExecution.Status.FAILED)
+
+
+class ExecutorCredentialAndPairingTests(ToolTestCase):
+    def test_pairing_lifecycle_consumes_credential_once_without_plaintext_storage(self):
+        user = get_user_model().objects.create_user(username="admin", password="pass")
+        pairing = request_pairing(
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            requested_name="Chrome Ext",
+        )
+
+        self.assertIsNone(pairing.tenant_id)
+        approved = approve_pairing(pairing=pairing, tenant=self.tenant, actor=user)
+        issued = consume_pairing(pairing_id=approved.id, pairing_code=approved.pairing_code)
+
+        approved.refresh_from_db()
+        self.assertEqual(approved.status, ToolExecutorPairingRequest.Status.CONSUMED)
+        self.assertTrue(issued.secret.startswith(f"aep_{issued.credential.credential_prefix}_"))
+        self.assertNotEqual(issued.credential.secret_hash, issued.secret)
+        self.assertNotIn(issued.secret, issued.credential.secret_hash)
+        with self.assertRaises(ValidationError):
+            consume_pairing(pairing_id=approved.id, pairing_code=approved.pairing_code)
+
+    def test_pairing_expired_rejected_and_invalid_code_are_blocked(self):
+        expired = request_pairing(executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION, requested_name="Old")
+        expired.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+        expired.save(update_fields=["expires_at"])
+        with self.assertRaises(ValidationError):
+            approve_pairing(pairing=expired, tenant=self.tenant)
+        expired.refresh_from_db()
+        self.assertEqual(expired.status, ToolExecutorPairingRequest.Status.EXPIRED)
+
+        rejected = request_pairing(executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION, requested_name="No")
+        reject_pairing(pairing=rejected)
+        rejected.refresh_from_db()
+        self.assertEqual(rejected.status, ToolExecutorPairingRequest.Status.REJECTED)
+        with self.assertRaises(ValidationError):
+            approve_pairing(pairing=rejected, tenant=self.tenant)
+
+        approved = approve_pairing(
+            pairing=request_pairing(executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION, requested_name="Bad code"),
+            tenant=self.tenant,
+        )
+        with self.assertRaises(ValidationError):
+            consume_pairing(pairing_id=approved.id, pairing_code="WRONG")
+
+    def test_executor_credential_authentication_rotation_revocation_and_expiration(self):
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Auth Executor",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="auth-executor",
+        )
+        issued = create_executor_credential(executor=executor)
+
+        principal = authenticate_executor_credential(f"AgentExecutor {issued.secret}")
+        self.assertEqual(principal.executor_id, str(executor.id))
+        issued.credential.refresh_from_db()
+        self.assertIsNotNone(issued.credential.last_used_at)
+
+        with self.assertRaises(ExecutorAuthenticationError):
+            authenticate_executor_credential(f"AgentExecutor aep_{issued.credential.credential_prefix}_wrong")
+
+        rotated = rotate_credential(credential=issued.credential)
+        with self.assertRaises(ExecutorAuthenticationError):
+            authenticate_executor_credential(f"AgentExecutor {issued.secret}")
+        self.assertEqual(authenticate_executor_credential(f"Bearer {rotated.secret}").credential_id, str(rotated.credential.id))
+
+        revoke_credential(credential=rotated.credential)
+        with self.assertRaises(ExecutorAuthenticationError):
+            authenticate_executor_credential(f"AgentExecutor {rotated.secret}")
+
+        expired = create_executor_credential(executor=executor, expires_at=timezone.now() - timezone.timedelta(seconds=1))
+        with self.assertRaises(ExecutorAuthenticationError):
+            authenticate_executor_credential(f"AgentExecutor {expired.secret}")
+
+    def test_inactive_executor_blocks_valid_credential(self):
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Inactive Executor",
+            executor_type=ToolExecutor.ExecutorType.WORKER,
+            public_id="inactive-executor",
+            is_active=False,
+        )
+        issued = create_executor_credential(executor=executor)
+
+        with self.assertRaises(ExecutorAuthenticationError):
+            authenticate_executor_credential(f"AgentExecutor {issued.secret}")
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ExecutorApiTests(ToolTestCase):
+    def _executor_with_secret(self, tenant=None, public_id="executor-api", active=True, capability=True):
+        executor = ToolExecutor.objects.create(
+            tenant=tenant or self.tenant,
+            name=public_id,
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id=public_id,
+            is_active=active,
+        )
+        if capability:
+            ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.delegated_tool)
+        issued = create_executor_credential(executor=executor)
+        return executor, issued.secret
+
+    def test_pairing_api_request_status_consume_me_and_heartbeat(self):
+        response = self.client.post(
+            "/api/v1/executors/pairing/request/",
+            data=json.dumps({"requested_name": "Extension", "executor_type": "BROWSER_EXTENSION"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        pairing = ToolExecutorPairingRequest.objects.get(pk=response.json()["id"])
+        approve_pairing(pairing=pairing, tenant=self.tenant)
+
+        status_response = self.client.get(f"/api/v1/executors/pairing/{pairing.id}/status/")
+        consume_response = self.client.post(
+            f"/api/v1/executors/pairing/{pairing.id}/consume/",
+            data=json.dumps({"pairing_code": pairing.pairing_code}),
+            content_type="application/json",
+        )
+        secret = consume_response.json()["credential"]
+        second_consume = self.client.post(
+            f"/api/v1/executors/pairing/{pairing.id}/consume/",
+            data=json.dumps({"pairing_code": pairing.pairing_code}),
+            content_type="application/json",
+        )
+        me = self.client.get("/api/v1/executors/me/", HTTP_AUTHORIZATION=f"AgentExecutor {secret}")
+        heartbeat = self.client.post("/api/v1/executors/heartbeat/", HTTP_AUTHORIZATION=f"AgentExecutor {secret}")
+
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(consume_response.status_code, 200)
+        self.assertEqual(second_consume.status_code, 400)
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(heartbeat.status_code, 200)
+        self.assertIsNotNone(ToolExecutor.objects.get(pk=me.json()["executor"]["id"]).last_seen_at)
+
+    def test_executor_queue_filters_by_tenant_capability_and_status(self):
+        self.bind(tool=self.delegated_tool)
+        self.bind(installation=self.other_installation, tool=self.delegated_tool)
+        execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={"query": "a"})
+        execute_tool(installation=self.other_installation, tool_slug="prospecting.external_search_probe", input={"query": "b"})
+        local_binding = self.bind(tool=self.tool)
+        ToolExecution.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_binding=local_binding,
+            tool_definition=self.tool,
+            execution_mode=ToolDefinition.ExecutionMode.LOCAL,
+            status=ToolExecution.Status.DISPATCHED,
+        )
+        _, secret = self._executor_with_secret()
+
+        response = self.client.get("/api/v1/executors/tool-executions/", HTTP_AUTHORIZATION=f"AgentExecutor {secret}")
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item["id"] for item in response.json()["results"]]
+        expected = ToolExecution.objects.get(tenant=self.tenant, tool_definition=self.delegated_tool)
+        self.assertEqual(ids, [str(expected.id)])
+
+    def test_executor_claim_complete_fail_security(self):
+        self.bind(tool=self.delegated_tool)
+        execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={})
+        execution = ToolExecution.objects.get(tool_definition=self.delegated_tool)
+        owner, owner_secret = self._executor_with_secret(public_id="owner-auth")
+        _, other_secret = self._executor_with_secret(public_id="other-auth")
+
+        claim = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/claim/",
+            HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}",
+        )
+        wrong_complete = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/complete/",
+            data=json.dumps({"result": {"bad": True}}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {other_secret}",
+        )
+        complete = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/complete/",
+            data=json.dumps({"result": {"ok": True}}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}",
+        )
+
+        self.assertEqual(claim.status_code, 200)
+        self.assertEqual(wrong_complete.status_code, 400)
+        self.assertEqual(complete.status_code, 200)
+        self.assertEqual(complete.json()["status"], ToolExecution.Status.SUCCEEDED)
+        self.assertEqual(ToolExecution.objects.get(pk=execution.pk).executor_id, owner.id)
+
+    def test_executor_without_capability_inactive_and_invalid_credential_are_blocked(self):
+        self.bind(tool=self.delegated_tool)
+        execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={})
+        execution = ToolExecution.objects.get(tool_definition=self.delegated_tool)
+        _, no_cap_secret = self._executor_with_secret(public_id="no-cap", capability=False)
+        _, inactive_secret = self._executor_with_secret(public_id="inactive-api", active=False)
+
+        no_cap = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/claim/",
+            HTTP_AUTHORIZATION=f"AgentExecutor {no_cap_secret}",
+        )
+        inactive = self.client.get("/api/v1/executors/me/", HTTP_AUTHORIZATION=f"AgentExecutor {inactive_secret}")
+        invalid = self.client.get("/api/v1/executors/me/", HTTP_AUTHORIZATION="AgentExecutor aep_missing_bad")
+
+        self.assertEqual(no_cap.status_code, 400)
+        self.assertEqual(inactive.status_code, 401)
+        self.assertEqual(invalid.status_code, 401)
+        self.assertTrue(AuditEvent.objects.filter(action="executor.auth.failed").exists())

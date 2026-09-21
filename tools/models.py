@@ -1,8 +1,10 @@
 import uuid
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from agents.models import AgentInstallation
 from projects.models import Project
@@ -124,6 +126,74 @@ class ToolExecutor(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ToolExecutorCredential(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    executor = models.ForeignKey(ToolExecutor, on_delete=models.CASCADE, related_name="credentials")
+    credential_prefix = models.CharField(max_length=32, unique=True)
+    secret_hash = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["credential_prefix"]),
+            models.Index(fields=["executor", "is_active"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    @property
+    def is_usable(self):
+        if not self.is_active or self.revoked_at is not None:
+            return False
+        return self.expires_at is None or self.expires_at > timezone.now()
+
+    def __str__(self):
+        return f"{self.executor} / {self.credential_prefix}"
+
+
+class ToolExecutorPairingRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        EXPIRED = "EXPIRED", "Expired"
+        CONSUMED = "CONSUMED", "Consumed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="tool_executor_pairings", null=True, blank=True)
+    executor_type = models.CharField(max_length=32, choices=ToolExecutor.ExecutorType.choices)
+    requested_name = models.CharField(max_length=160)
+    pairing_code = models.CharField(max_length=32, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name="approved_tool_executor_pairings", null=True, blank=True
+    )
+    executor = models.ForeignKey(ToolExecutor, on_delete=models.SET_NULL, related_name="pairing_requests", null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["pairing_code"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    @property
+    def is_expired(self):
+        return self.expires_at <= timezone.now()
+
+    def __str__(self):
+        return f"{self.requested_name} / {self.status}"
 
 
 class ToolExecutorCapability(models.Model):

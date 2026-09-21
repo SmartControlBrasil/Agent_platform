@@ -1,0 +1,27 @@
+{% extends "control_plane/base.html" %}
+{% block title %}Executor{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">{{ executor.name }}</h1><p class="ap-muted">{{ executor.executor_type }} | {{ executor.tenant.name }} | {{ status_label }}</p></div></div>
+{% if one_time_secret %}<div class="alert alert-success"><strong>Nova credencial:</strong> <code>{{ one_time_secret }}</code></div>{% endif %}
+<div class="ap-grid">
+  <div class="ap-card"><strong>Public ID</strong><p>{{ executor.public_id }}</p><strong>Last seen</strong><p>{{ executor.last_seen_at|default:"-" }}</p></div>
+  <div class="ap-card"><strong>Status</strong><p>{% if executor.is_active %}Active{% else %}Inactive{% endif %}</p><strong>Created</strong><p>{{ executor.created_at }}</p></div>
+</div>
+<h2 class="mt-4">Capabilities</h2>
+<div class="ap-card">
+  <table class="ap-table"><thead><tr><th>Tool</th><th>Enabled</th></tr></thead><tbody>
+  {% for capability in capabilities %}<tr><td>{{ capability.tool_definition.slug }}</td><td>{{ capability.is_enabled }}</td></tr>{% empty %}<tr><td colspan="2" class="ap-muted">No capabilities.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+<h2 class="mt-4">Credentials</h2>
+<div class="ap-card">
+  <table class="ap-table"><thead><tr><th>Prefix</th><th>Status</th><th>Created</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead><tbody>
+  {% for credential in credentials %}<tr>
+    <td>{{ credential.credential_prefix }}</td>
+    <td>{% if credential.is_usable %}<span class="ap-badge">usable</span>{% else %}<span class="ap-badge off">inactive</span>{% endif %}</td>
+    <td>{{ credential.created_at }}</td><td>{{ credential.last_used_at|default:"-" }}</td><td>{{ credential.expires_at|default:"-" }}</td>
+    <td>{% if can_manage and credential.is_active %}<form method="post" action="{% url 'control_plane:executor_credential_revoke' credential.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-danger">Revoke</button></form> <form method="post" action="{% url 'control_plane:executor_credential_rotate' credential.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-primary">Rotate</button></form>{% endif %}</td>
+  </tr>{% empty %}<tr><td colspan="6" class="ap-muted">No credentials.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endblock %}

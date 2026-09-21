@@ -1,0 +1,23 @@
+{% extends "control_plane/base.html" %}
+{% block title %}Executors{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Executors</h1><p class="ap-muted">Operational identities authorized for delegated tools.</p></div></div>
+<div class="ap-card">
+  <table class="ap-table">
+    <thead><tr><th>Name</th><th>Type</th><th>Tenant</th><th>Active</th><th>Last seen</th><th>Capabilities</th><th>Credentials</th></tr></thead>
+    <tbody>
+      {% for executor in executors %}
+      <tr>
+        <td><a href="{% url 'control_plane:executor_detail' executor.pk %}">{{ executor.name }}</a><br><span class="ap-muted">{{ executor.public_id }}</span></td>
+        <td>{{ executor.executor_type }}</td>
+        <td>{{ executor.tenant.name }}</td>
+        <td>{% if executor.is_active %}<span class="ap-badge">active</span>{% else %}<span class="ap-badge off">inactive</span>{% endif %}</td>
+        <td>{{ executor.last_seen_at|default:"-" }}</td>
+        <td>{{ executor.capabilities.count }}</td>
+        <td>{{ executor.credentials.count }}</td>
+      </tr>
+      {% empty %}<tr><td colspan="7" class="ap-muted">No executors.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

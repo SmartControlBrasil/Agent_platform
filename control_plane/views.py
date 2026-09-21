@@ -2,6 +2,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count
+from django.utils import timezone
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
@@ -13,7 +14,15 @@ from agents.application.installations import (
 )
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from tools.forms import AgentToolBindingForm
-from tools.models import AgentToolBinding, ToolDefinition, ToolExecution
+from tools.application.identity import approve_pairing, reject_pairing, revoke_credential, rotate_credential
+from tools.models import (
+    AgentToolBinding,
+    ToolDefinition,
+    ToolExecution,
+    ToolExecutor,
+    ToolExecutorCredential,
+    ToolExecutorPairingRequest,
+)
 from audit.services import audit_model_snapshot, record_audit_event
 from projects.models import Project
 from tenants.access import (
@@ -81,6 +90,36 @@ def _tool_execution_queryset(user):
     return ToolExecution.objects.filter(tenant_id__in=_tenant_ids(user)).select_related(
         "tenant", "project", "agent_installation", "tool_definition", "executor"
     )
+
+
+def _executor_queryset(user):
+    return ToolExecutor.objects.filter(tenant_id__in=_tenant_ids(user)).select_related("tenant").prefetch_related(
+        "capabilities__tool_definition", "credentials"
+    )
+
+
+def _pairing_queryset(user):
+    qs = ToolExecutorPairingRequest.objects.select_related("tenant", "executor", "approved_by")
+    if user.is_superuser:
+        return qs
+    return qs.filter(tenant_id__in=_tenant_ids(user)) | qs.filter(tenant__isnull=True)
+
+
+def _credential_queryset(user):
+    return ToolExecutorCredential.objects.select_related("executor", "executor__tenant").filter(
+        executor__tenant_id__in=_tenant_ids(user)
+    )
+
+
+def _executor_status(executor):
+    if executor.last_seen_at is None:
+        return "offline"
+    age = timezone.now() - executor.last_seen_at
+    if age <= timezone.timedelta(minutes=5):
+        return "online"
+    if age <= timezone.timedelta(minutes=30):
+        return "recent"
+    return "offline"
 
 
 def _base_context(active_section):
@@ -466,3 +505,99 @@ def tool_execution_detail(request, pk):
     context = _base_context("tool_executions")
     context.update({"execution": execution})
     return render(request, "control_plane/tool_execution_detail.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def executor_list(request):
+    executors = _executor_queryset(request.user).order_by("tenant__name", "name")
+    context = _base_context("executors")
+    context.update({"executors": executors, "executor_status": _executor_status})
+    return render(request, "control_plane/executor_list.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def executor_detail(request, pk):
+    executor = get_object_or_404(_executor_queryset(request.user), pk=pk)
+    context = _base_context("executors")
+    context.update(
+        {
+            "executor": executor,
+            "status_label": _executor_status(executor),
+            "credentials": executor.credentials.order_by("-created_at"),
+            "capabilities": executor.capabilities.select_related("tool_definition").order_by("tool_definition__slug"),
+            "can_manage": _can_manage(request.user, executor.tenant),
+        }
+    )
+    return render(request, "control_plane/executor_detail.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def executor_pairing_list(request):
+    pairings = _pairing_queryset(request.user).order_by("-created_at")[:200]
+    context = _base_context("executor_pairings")
+    context.update({"pairings": pairings, "manageable_tenants": _manageable_tenants(request.user)})
+    return render(request, "control_plane/executor_pairing_list.html", context)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_pairing_approve(request, pk):
+    pairing = get_object_or_404(_pairing_queryset(request.user), pk=pk)
+    tenant_id = request.POST.get("tenant_id") or pairing.tenant_id
+    tenant = get_object_or_404(_accessible_tenants(request.user), pk=tenant_id)
+    _require_manage(request.user, tenant)
+    try:
+        approve_pairing(pairing=pairing, tenant=tenant, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "Pairing aprovado. A credencial sera emitida somente no consumo do client.")
+    return redirect("control_plane:executor_pairing_list")
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_pairing_reject(request, pk):
+    pairing = get_object_or_404(_pairing_queryset(request.user), pk=pk)
+    if pairing.tenant_id is not None:
+        _require_manage(request.user, pairing.tenant)
+    elif not _manageable_tenants(request.user):
+        raise PermissionDenied
+    try:
+        reject_pairing(pairing=pairing, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "Pairing rejeitado.")
+    return redirect("control_plane:executor_pairing_list")
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_credential_revoke(request, pk):
+    credential = get_object_or_404(_credential_queryset(request.user), pk=pk)
+    _require_manage(request.user, credential.executor.tenant)
+    revoke_credential(credential=credential, actor=request.user, request=request)
+    messages.success(request, "Credencial revogada.")
+    return redirect("control_plane:executor_detail", pk=credential.executor_id)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_credential_rotate(request, pk):
+    credential = get_object_or_404(_credential_queryset(request.user), pk=pk)
+    _require_manage(request.user, credential.executor.tenant)
+    issued = rotate_credential(credential=credential, actor=request.user, request=request)
+    executor = get_object_or_404(_executor_queryset(request.user), pk=credential.executor_id)
+    context = _base_context("executors")
+    context.update(
+        {
+            "executor": executor,
+            "status_label": _executor_status(executor),
+            "credentials": executor.credentials.order_by("-created_at"),
+            "capabilities": executor.capabilities.select_related("tool_definition").order_by("tool_definition__slug"),
+            "can_manage": True,
+            "one_time_secret": issued.secret,
+        }
+    )
+    return render(request, "control_plane/executor_detail.html", context)

@@ -1,0 +1,24 @@
+{% extends "control_plane/base.html" %}
+{% block title %}Executor Pairings{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">Executor Pairings</h1><p class="ap-muted">Pending requests must be assigned to a tenant by a human approver.</p></div></div>
+<div class="ap-card">
+  <table class="ap-table">
+    <thead><tr><th>Name</th><th>Type</th><th>Tenant</th><th>Status</th><th>Code</th><th>Expires</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for pairing in pairings %}
+      <tr>
+        <td>{{ pairing.requested_name }}</td><td>{{ pairing.executor_type }}</td><td>{{ pairing.tenant.name|default:"Pending assignment" }}</td><td>{{ pairing.status }}</td><td>{{ pairing.pairing_code }}</td><td>{{ pairing.expires_at }}</td>
+        <td>{% if pairing.status == 'PENDING' %}
+          <form method="post" action="{% url 'control_plane:executor_pairing_approve' pairing.pk %}" class="ap-actions">{% csrf_token %}
+            <select name="tenant_id">{% for tenant in manageable_tenants %}<option value="{{ tenant.pk }}">{{ tenant.name }}</option>{% endfor %}</select>
+            <button class="btn btn-sm btn-primary">Approve</button>
+          </form>
+          <form method="post" action="{% url 'control_plane:executor_pairing_reject' pairing.pk %}" style="margin-top:6px">{% csrf_token %}<button class="btn btn-sm btn-outline-danger">Reject</button></form>
+        {% else %}-{% endif %}</td>
+      </tr>
+      {% empty %}<tr><td colspan="7" class="ap-muted">No pairing requests.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
