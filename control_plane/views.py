@@ -14,12 +14,14 @@ from agents.application.installations import (
 )
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from tools.forms import AgentToolBindingForm
+from tools.infrastructure.validation import summarize_tool_execution
 from tools.application.identity import approve_pairing, reject_pairing, revoke_credential, rotate_credential
 from tools.models import (
     AgentToolBinding,
     ToolDefinition,
     ToolExecution,
     ToolExecutor,
+    ToolExecutorCapability,
     ToolExecutorCredential,
     ToolExecutorPairingRequest,
 )
@@ -44,6 +46,9 @@ ACTION_TOOL_BOUND = "tool.bound"
 ACTION_TOOL_ENABLED = "tool.enabled"
 ACTION_TOOL_DISABLED = "tool.disabled"
 ACTION_TOOL_CONFIGURATION_UPDATED = "tool.configuration.updated"
+ACTION_EXECUTOR_CAPABILITY_ADDED = "tool_executor.capability.added"
+ACTION_EXECUTOR_CAPABILITY_ENABLED = "tool_executor.capability.enabled"
+ACTION_EXECUTOR_CAPABILITY_DISABLED = "tool_executor.capability.disabled"
 
 
 def _accessible_tenants(user):
@@ -377,7 +382,7 @@ def tool_detail(request, pk):
         "tenant__name", "project__name", "agent_installation__name"
     )
     context = _base_context("tools")
-    context.update({"tool": tool, "bindings": bindings})
+    context.update({"tool": tool, "bindings": bindings, "executor_requirement": "Browser executor" if tool.execution_mode == ToolDefinition.ExecutionMode.DELEGATED else ""})
     return render(request, "control_plane/tool_detail.html", context)
 
 
@@ -503,7 +508,7 @@ def tool_execution_list(request):
 def tool_execution_detail(request, pk):
     execution = get_object_or_404(_tool_execution_queryset(request.user), pk=pk)
     context = _base_context("tool_executions")
-    context.update({"execution": execution})
+    context.update({"execution": execution, "tool_summary": summarize_tool_execution(execution)})
     return render(request, "control_plane/tool_execution_detail.html", context)
 
 
@@ -518,6 +523,9 @@ def executor_list(request):
 @login_required(login_url="/admin/login/")
 def executor_detail(request, pk):
     executor = get_object_or_404(_executor_queryset(request.user), pk=pk)
+    can_manage = _can_manage(request.user, executor.tenant)
+    assigned_tool_ids = executor.capabilities.values_list("tool_definition_id", flat=True)
+    available_capability_tools = ToolDefinition.objects.filter(is_active=True).exclude(pk__in=assigned_tool_ids).order_by("category", "name")
     context = _base_context("executors")
     context.update(
         {
@@ -525,10 +533,70 @@ def executor_detail(request, pk):
             "status_label": _executor_status(executor),
             "credentials": executor.credentials.order_by("-created_at"),
             "capabilities": executor.capabilities.select_related("tool_definition").order_by("tool_definition__slug"),
-            "can_manage": _can_manage(request.user, executor.tenant),
+            "available_capability_tools": available_capability_tools,
+            "can_manage": can_manage,
         }
     )
     return render(request, "control_plane/executor_detail.html", context)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_capability_add(request, pk):
+    executor = get_object_or_404(_executor_queryset(request.user), pk=pk)
+    _require_manage(request.user, executor.tenant)
+    tool = get_object_or_404(ToolDefinition.objects.filter(is_active=True), pk=request.POST.get("tool_definition"))
+    capability, created = ToolExecutorCapability.objects.get_or_create(
+        executor=executor,
+        tool_definition=tool,
+        defaults={"is_enabled": True},
+    )
+    if not created and not capability.is_enabled:
+        capability.is_enabled = True
+        capability.save(update_fields=["is_enabled", "updated_at"])
+    record_audit_event(
+        action=ACTION_EXECUTOR_CAPABILITY_ADDED if created else ACTION_EXECUTOR_CAPABILITY_ENABLED,
+        actor=request.user,
+        tenant=executor.tenant,
+        obj=capability,
+        request=request,
+    )
+    messages.success(request, "Capability adicionada ao executor.")
+    return redirect("control_plane:executor_detail", pk=executor.pk)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_capability_enable(request, pk):
+    capability = get_object_or_404(
+        ToolExecutorCapability.objects.select_related("executor", "executor__tenant", "tool_definition").filter(
+            executor__tenant_id__in=_tenant_ids(request.user),
+        ),
+        pk=pk,
+    )
+    _require_manage(request.user, capability.executor.tenant)
+    capability.is_enabled = True
+    capability.save(update_fields=["is_enabled", "updated_at"])
+    record_audit_event(action=ACTION_EXECUTOR_CAPABILITY_ENABLED, actor=request.user, tenant=capability.executor.tenant, obj=capability, request=request)
+    messages.success(request, "Capability habilitada.")
+    return redirect("control_plane:executor_detail", pk=capability.executor_id)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def executor_capability_disable(request, pk):
+    capability = get_object_or_404(
+        ToolExecutorCapability.objects.select_related("executor", "executor__tenant", "tool_definition").filter(
+            executor__tenant_id__in=_tenant_ids(request.user),
+        ),
+        pk=pk,
+    )
+    _require_manage(request.user, capability.executor.tenant)
+    capability.is_enabled = False
+    capability.save(update_fields=["is_enabled", "updated_at"])
+    record_audit_event(action=ACTION_EXECUTOR_CAPABILITY_DISABLED, actor=request.user, tenant=capability.executor.tenant, obj=capability, request=request)
+    messages.success(request, "Capability desabilitada.")
+    return redirect("control_plane:executor_detail", pk=capability.executor_id)
 
 
 @login_required(login_url="/admin/login/")

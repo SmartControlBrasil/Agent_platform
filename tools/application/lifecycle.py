@@ -8,6 +8,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from audit.services import record_audit_event
+from tools.infrastructure.validation import (
+    ToolResultValidatorRegistry,
+    build_default_result_validator_registry,
+    validation_error_message,
+)
 from tools.models import ToolExecution, ToolExecutor, ToolExecutorCapability
 
 ACTION_EXECUTION_CREATED = "tool.execution.created"
@@ -138,15 +143,32 @@ def complete_tool_execution(
     result: dict[str, Any] | None = None,
     actor=None,
     request=None,
+    result_validators: ToolResultValidatorRegistry | None = None,
 ) -> ToolExecution:
+    result_validators = result_validators or build_default_result_validator_registry()
     with transaction.atomic():
-        execution = ToolExecution.objects.select_for_update().select_related("executor", "tenant").get(pk=execution.pk)
+        execution = ToolExecution.objects.select_for_update().select_related("executor", "tenant", "tool_definition").get(pk=execution.pk)
         executor = ToolExecutor.objects.get(pk=executor.pk)
         _validate_executor_owns_running_execution(executor=executor, execution=execution)
+        try:
+            result_payload = result_validators.validate(
+                tool_slug=execution.tool_definition.slug,
+                result=dict(result or {}),
+                execution=execution,
+            )
+        except ValidationError as exc:
+            execution = transition_execution(
+                execution,
+                ToolExecution.Status.FAILED,
+                error_code="invalid_tool_result",
+                error_message=validation_error_message(exc),
+            )
+            record_tool_execution_event(ACTION_EXECUTION_FAILED, execution, actor=actor, request=request)
+            return execution
         execution = transition_execution(
             execution,
             ToolExecution.Status.SUCCEEDED,
-            result_payload=dict(result or {}),
+            result_payload=result_payload,
         )
     record_tool_execution_event(ACTION_EXECUTION_SUCCEEDED, execution, actor=actor, request=request)
     return execution
@@ -208,7 +230,7 @@ def normalize_idempotency_key(value: str | None) -> str:
 
 def sanitize_error_text(value: str, limit: int) -> str:
     text = " ".join(str(value or "").split())
-    blocked = ("password", "token", "secret", "api_key", "apikey", "authorization")
+    blocked = ("password", "token", "secret", "api_key", "apikey", "authorization", "cookie", "credential")
     lowered = text.lower()
     if any(fragment in lowered for fragment in blocked):
         return "[sanitized]"

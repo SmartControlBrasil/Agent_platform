@@ -12,7 +12,7 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
-from tools.models import AgentToolBinding, ToolDefinition, ToolExecution
+from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
 
 
 class ControlPlaneTestCase(TestCase):
@@ -488,6 +488,33 @@ class ControlPlaneTestCase(TestCase):
         self.assertTrue(binding.is_enabled)
         self.assertTrue(AuditEvent.objects.filter(action="tool.bound", object_id=str(binding.pk)).exists())
 
+    def test_google_maps_tool_catalog_detail_and_add_tool_flow(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting Maps A",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+
+        catalog = self.client.get(reverse("control_plane:tool_list"))
+        detail = self.client.get(reverse("control_plane:tool_detail", args=[tool.pk]))
+        add = self.client.post(
+            reverse("control_plane:installation_add_tool", args=[installation.pk]),
+            {"tool_definition": tool.pk, "is_enabled": "on"},
+        )
+
+        self.assertEqual(catalog.status_code, 200)
+        self.assertContains(catalog, "Search Google Maps")
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, "prospecting.search_google_maps")
+        self.assertContains(detail, "Executor necessário")
+        self.assertEqual(add.status_code, 302)
+        binding = AgentToolBinding.objects.get(agent_installation=installation, tool_definition=tool)
+        self.assertEqual(binding.configuration, {})
+        self.assertTrue(binding.is_enabled)
+
     def test_add_tool_is_not_available_for_incompatible_livia_installation(self):
         tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
 
@@ -555,6 +582,81 @@ class ControlPlaneTestCase(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+
+    def test_executor_detail_can_assign_and_toggle_generic_capability(self):
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant_a,
+            name="Browser Executor A",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="browser-a",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+
+        detail = self.client.get(reverse("control_plane:executor_detail", args=[executor.pk]))
+        add = self.client.post(
+            reverse("control_plane:executor_capability_add", args=[executor.pk]),
+            {"tool_definition": tool.pk},
+        )
+        capability = ToolExecutorCapability.objects.get(executor=executor, tool_definition=tool)
+        disable = self.client.post(reverse("control_plane:executor_capability_disable", args=[capability.pk]))
+        capability.refresh_from_db()
+        self.assertFalse(capability.is_enabled)
+        enable = self.client.post(reverse("control_plane:executor_capability_enable", args=[capability.pk]))
+        capability.refresh_from_db()
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, "prospecting.search_google_maps")
+        self.assertEqual(add.status_code, 302)
+        self.assertEqual(disable.status_code, 302)
+        self.assertEqual(enable.status_code, 302)
+        self.assertTrue(capability.is_enabled)
+
+    def test_google_maps_tool_execution_detail_shows_summary_preview(self):
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Prospecting Maps Detail",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+        binding = AgentToolBinding.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_installation=installation,
+            tool_definition=tool,
+        )
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant_a,
+            name="Browser Detail",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="browser-detail",
+        )
+        execution = ToolExecution.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_installation=installation,
+            tool_binding=binding,
+            tool_definition=tool,
+            executor=executor,
+            execution_mode=tool.execution_mode,
+            status=ToolExecution.Status.SUCCEEDED,
+            request_payload={"input": {"queries": ["hospital privado São Paulo"], "max_results": 10}},
+            result_payload={
+                "schema_version": 1,
+                "status": "completed",
+                "businesses": [{"name": "Hospital A", "category": None, "address": "Rua A", "source_query": "hospital privado São Paulo"}],
+                "stats": {"duration_ms": 321},
+            },
+        )
+
+        response = self.client.get(reverse("control_plane:tool_execution_detail", args=[execution.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Resumo do resultado")
+        self.assertContains(response, "hospital privado São Paulo")
+        self.assertContains(response, "Hospital A")
+        self.assertContains(response, "321 ms")
 
     def test_tool_execution_control_plane_list_and_detail_are_tenant_scoped(self):
         tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")

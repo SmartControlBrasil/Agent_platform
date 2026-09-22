@@ -19,6 +19,7 @@ from tools.application.lifecycle import (
 from tools.application.registry import ToolRuntimeRegistry
 from tools.domain.runtime import ToolExecutionContext, ToolRequest, ToolResult
 from tools.infrastructure.registry import build_default_tool_registry
+from tools.infrastructure.validation import ToolInputValidatorRegistry, build_default_input_validator_registry
 from tools.models import AgentToolBinding, ToolDefinition, ToolExecution
 
 ACTION_TOOL_EXECUTED = "tool.executed"
@@ -53,11 +54,13 @@ def execute_tool(
     request=None,
     registry: ToolRuntimeRegistry | None = None,
     dispatcher: DelegatedToolDispatcherPort | None = None,
+    input_validators: ToolInputValidatorRegistry | None = None,
 ) -> ToolResult:
     registry = registry or build_default_tool_registry()
     dispatcher = dispatcher or NoopDelegatedToolDispatcher()
+    input_validators = input_validators or build_default_input_validator_registry()
     metadata = metadata or {}
-    input_payload = dict(input or {})
+    input_payload = input_validators.validate(tool_slug=tool_slug, payload=dict(input or {}))
     with transaction.atomic():
         installation = AgentInstallation.objects.select_related(
             "tenant", "project", "agent_definition", "agent_version"

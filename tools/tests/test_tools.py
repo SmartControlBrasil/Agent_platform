@@ -31,6 +31,11 @@ from tools.application.lifecycle import (
 )
 from tools.application.registry import ToolRuntimeRegistry, UnknownToolRuntime
 from tools.domain.runtime import ToolResult
+from tools.infrastructure.compatibility import is_tool_compatible_with_agent
+from tools.infrastructure.google_maps_contract import (
+    validate_google_maps_input,
+    validate_google_maps_result,
+)
 from tools.infrastructure.prospecting_build_search_plan import (
     ProspectingBuildSearchPlanTool,
     normalize_build_search_plan_configuration,
@@ -77,6 +82,7 @@ class ToolTestCase(TestCase):
         )
         self.tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
         self.delegated_tool = ToolDefinition.objects.get(slug="prospecting.external_search_probe")
+        self.google_maps_tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
 
     def bind(self, installation=None, tool=None, enabled=True, configuration=None):
         installation = installation or self.installation
@@ -101,6 +107,19 @@ class ToolModelTests(ToolTestCase):
         self.assertEqual(self.delegated_tool.execution_mode, ToolDefinition.ExecutionMode.DELEGATED)
         self.assertEqual(self.delegated_tool.runtime_handler, "")
         self.assertTrue(self.delegated_tool.is_active)
+
+    def test_google_maps_tool_contract_is_bootstrapped_without_runtime_or_auto_grants(self):
+        self.assertEqual(self.google_maps_tool.name, "Search Google Maps")
+        self.assertEqual(self.google_maps_tool.category, "prospecting")
+        self.assertEqual(self.google_maps_tool.execution_mode, ToolDefinition.ExecutionMode.DELEGATED)
+        self.assertEqual(self.google_maps_tool.runtime_handler, "")
+        self.assertTrue(self.google_maps_tool.is_active)
+        self.assertFalse(AgentToolBinding.objects.filter(tool_definition=self.google_maps_tool).exists())
+        self.assertFalse(ToolExecutorCapability.objects.filter(tool_definition=self.google_maps_tool).exists())
+
+    def test_google_maps_tool_is_compatible_only_with_prospecting_agent(self):
+        self.assertTrue(is_tool_compatible_with_agent(tool_slug=self.google_maps_tool.slug, agent_slug="prospecting"))
+        self.assertFalse(is_tool_compatible_with_agent(tool_slug=self.google_maps_tool.slug, agent_slug="livia"))
 
     def test_binding_validates_installation_scope(self):
         binding = AgentToolBinding(
@@ -158,6 +177,137 @@ class ToolRuntimeRegistryTests(TestCase):
     def test_unknown_runtime_fails_controlled(self):
         with self.assertRaises(UnknownToolRuntime):
             ToolRuntimeRegistry().resolve("missing")
+
+
+class GoogleMapsContractTests(ToolTestCase):
+    def valid_input(self):
+        return {
+            "schema_version": 1,
+            "queries": [" hospital privado  São Paulo "],
+            "target_region": " São Paulo ",
+            "max_results": 50,
+        }
+
+    def valid_result(self):
+        return {
+            "schema_version": 1,
+            "status": " completed ",
+            "businesses": [
+                {
+                    "name": " Hospital A ",
+                    "category": "Hospital",
+                    "address": "Rua A, 1",
+                    "phone": None,
+                    "website": "HTTPS://EXAMPLE.COM/",
+                    "maps_url": "https://maps.google.com/?cid=1",
+                    "external_id": "cid:1",
+                    "source_query": "hospital privado São Paulo",
+                }
+            ],
+            "stats": {
+                "queries_requested": 1,
+                "queries_executed": 1,
+                "businesses_found": 1,
+                "businesses_returned": 1,
+                "duplicates_removed": 0,
+                "duration_ms": 1200,
+            },
+        }
+
+    def execution_for_maps(self, max_results=50):
+        binding, _ = AgentToolBinding.objects.get_or_create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.google_maps_tool,
+            defaults={"is_enabled": True, "configuration": {}},
+        )
+        return ToolExecution.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_binding=binding,
+            tool_definition=self.google_maps_tool,
+            execution_mode=ToolDefinition.ExecutionMode.DELEGATED,
+            status=ToolExecution.Status.RUNNING,
+            request_payload={
+                "input": {
+                    "schema_version": 1,
+                    "queries": ["hospital privado São Paulo"],
+                    "target_region": "São Paulo",
+                    "max_results": max_results,
+                    "locale": "pt-BR",
+                }
+            },
+        )
+
+    def test_input_contract_normalizes_valid_payload(self):
+        normalized = validate_google_maps_input(self.valid_input())
+
+        self.assertEqual(normalized["queries"], ["hospital privado São Paulo"])
+        self.assertEqual(normalized["target_region"], "São Paulo")
+        self.assertEqual(normalized["locale"], "pt-BR")
+        self.assertEqual(normalized["max_results"], 50)
+
+    def test_input_contract_rejects_invalid_shapes_and_urls(self):
+        invalid_payloads = [
+            {},
+            {**self.valid_input(), "schema_version": 2},
+            {**self.valid_input(), "queries": []},
+            {**self.valid_input(), "queries": ["x"] * 21},
+            {**self.valid_input(), "queries": ["https://maps.google.com/search?q=x"]},
+            {**self.valid_input(), "max_results": 0},
+            {**self.valid_input(), "max_results": 101},
+        ]
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValidationError):
+                    validate_google_maps_input(payload)
+
+    def test_input_secret_safety_blocks_plaintext_and_allows_redacted(self):
+        with self.assertRaises(ValidationError):
+            validate_google_maps_input({**self.valid_input(), "cookie": "session=value"})
+
+        payload = validate_google_maps_input({**self.valid_input(), "credential": "[redacted]"})
+        self.assertEqual(payload["locale"], "pt-BR")
+
+    def test_output_contract_accepts_optional_business_fields(self):
+        result = self.valid_result()
+        result["businesses"][0].update({"category": None, "address": None, "phone": None, "website": None})
+
+        normalized = validate_google_maps_result(result, self.execution_for_maps())
+
+        self.assertEqual(normalized["status"], "completed")
+        self.assertEqual(normalized["businesses"][0]["name"], "Hospital A")
+        self.assertEqual(normalized["businesses"][0]["category"], None)
+
+    def test_output_contract_rejects_missing_identifier_too_many_results_and_secrets(self):
+        result = self.valid_result()
+        result["businesses"][0]["maps_url"] = None
+        result["businesses"][0]["external_id"] = None
+        with self.assertRaises(ValidationError):
+            validate_google_maps_result(result, self.execution_for_maps())
+
+        too_many = self.valid_result()
+        too_many["businesses"] = [self.valid_result()["businesses"][0]] * 2
+        with self.assertRaises(ValidationError):
+            validate_google_maps_result(too_many, self.execution_for_maps(max_results=1))
+
+        with self.assertRaises(ValidationError):
+            validate_google_maps_result({**self.valid_result(), "authorization": "Bearer secret"}, self.execution_for_maps())
+
+    def test_output_contract_dedupes_by_external_id_then_maps_url(self):
+        first = self.valid_result()["businesses"][0]
+        duplicate_external_id = {**first, "name": "Hospital A Unidade 2", "maps_url": "https://maps.google.com/?cid=2"}
+        duplicate_url = {**first, "external_id": None, "maps_url": "https://maps.google.com/?cid=3"}
+        duplicate_url_again = {**first, "external_id": None, "maps_url": "HTTPS://MAPS.GOOGLE.COM/?cid=3"}
+        result = {**self.valid_result(), "businesses": [first, duplicate_external_id, duplicate_url, duplicate_url_again]}
+
+        normalized = validate_google_maps_result(result, self.execution_for_maps())
+
+        self.assertEqual(len(normalized["businesses"]), 2)
+        self.assertEqual(normalized["stats"]["duplicates_removed"], 2)
 
 
 class ProspectingBuildSearchPlanToolTests(TestCase):
@@ -342,6 +492,132 @@ class ToolExecutionServiceTests(ToolTestCase):
         self.assertEqual(execution.status, ToolExecution.Status.DISPATCHED)
         self.assertEqual(execution.execution_mode, ToolDefinition.ExecutionMode.DELEGATED)
         self.assertTrue(AuditEvent.objects.filter(action="tool.execution.dispatched", object_id=str(execution.pk)).exists())
+
+    def test_google_maps_execute_validates_input_and_dispatches(self):
+        self.bind(tool=self.google_maps_tool, configuration={})
+
+        result = execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.search_google_maps",
+            input={
+                "schema_version": 1,
+                "queries": [" hospital privado São Paulo "],
+                "target_region": "São Paulo",
+                "max_results": 25,
+            },
+        )
+
+        execution = ToolExecution.objects.get(tool_definition=self.google_maps_tool)
+        self.assertEqual(result.status, "dispatched")
+        self.assertEqual(execution.status, ToolExecution.Status.DISPATCHED)
+        self.assertEqual(execution.request_payload["input"]["queries"], ["hospital privado São Paulo"])
+        self.assertEqual(execution.request_payload["input"]["locale"], "pt-BR")
+
+    def test_google_maps_invalid_input_does_not_create_execution(self):
+        self.bind(tool=self.google_maps_tool, configuration={})
+
+        with self.assertRaises(ValidationError):
+            execute_tool(
+                installation=self.installation,
+                tool_slug="prospecting.search_google_maps",
+                input={"schema_version": 1, "queries": [], "max_results": 10},
+            )
+
+        self.assertFalse(ToolExecution.objects.filter(tool_definition=self.google_maps_tool).exists())
+
+    def test_google_maps_idempotency_reuses_delegated_execution(self):
+        self.bind(tool=self.google_maps_tool, configuration={})
+        payload = {
+            "schema_version": 1,
+            "queries": ["hospital privado São Paulo"],
+            "max_results": 10,
+        }
+
+        first = execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.search_google_maps",
+            input=payload,
+            idempotency_key="maps-run",
+        )
+        second = execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.search_google_maps",
+            input=payload,
+            idempotency_key="maps-run",
+        )
+
+        self.assertEqual(first.status, "dispatched")
+        self.assertEqual(second.status, "dispatched")
+        self.assertEqual(ToolExecution.objects.filter(tool_definition=self.google_maps_tool, idempotency_key="maps-run").count(), 1)
+
+    def test_google_maps_complete_validates_result_before_success(self):
+        self.bind(tool=self.google_maps_tool, configuration={})
+        execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.search_google_maps",
+            input={"schema_version": 1, "queries": ["hospital privado São Paulo"], "max_results": 1},
+        )
+        execution = ToolExecution.objects.get(tool_definition=self.google_maps_tool)
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Maps Browser Executor",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="maps-browser-a",
+        )
+        ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.google_maps_tool)
+        claimed = claim_tool_execution(executor=executor, execution=execution)
+        completed = complete_tool_execution(
+            executor=executor,
+            execution=claimed,
+            result={
+                "schema_version": 1,
+                "status": "completed",
+                "businesses": [
+                    {
+                        "name": "Hospital A",
+                        "category": None,
+                        "address": "Rua A, 1",
+                        "phone": None,
+                        "website": None,
+                        "maps_url": "https://maps.google.com/?cid=1",
+                        "external_id": None,
+                        "source_query": "hospital privado São Paulo",
+                    }
+                ],
+                "stats": {"duration_ms": 100, "queries_requested": 1, "queries_executed": 1, "businesses_found": 1, "businesses_returned": 1, "duplicates_removed": 0},
+            },
+        )
+
+        self.assertEqual(completed.status, ToolExecution.Status.SUCCEEDED)
+        self.assertEqual(completed.result_payload["businesses"][0]["name"], "Hospital A")
+
+    def test_google_maps_invalid_result_marks_failed_without_payload(self):
+        self.bind(tool=self.google_maps_tool, configuration={})
+        execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.search_google_maps",
+            input={"schema_version": 1, "queries": ["hospital privado São Paulo"], "max_results": 1},
+        )
+        execution = ToolExecution.objects.get(tool_definition=self.google_maps_tool)
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Maps Browser Executor Invalid",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="maps-browser-invalid",
+        )
+        ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.google_maps_tool)
+        claimed = claim_tool_execution(executor=executor, execution=execution)
+
+        completed = complete_tool_execution(
+            executor=executor,
+            execution=claimed,
+            result={"schema_version": 1, "status": "completed", "businesses": [{"name": "No ID"}], "stats": {}},
+        )
+
+        self.assertEqual(completed.status, ToolExecution.Status.FAILED)
+        self.assertEqual(completed.error_code, "invalid_tool_result")
+        self.assertEqual(completed.result_payload, {})
+        self.assertTrue(AuditEvent.objects.filter(action="tool.execution.failed", object_id=str(execution.pk)).exists())
 
     def test_delegated_claim_complete_and_fail_services(self):
         self.bind(tool=self.delegated_tool)

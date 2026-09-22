@@ -9,8 +9,9 @@
 </div>
 <h2 class="mt-4">Capabilities</h2>
 <div class="ap-card">
-  <table class="ap-table"><thead><tr><th>Tool</th><th>Enabled</th></tr></thead><tbody>
-  {% for capability in capabilities %}<tr><td>{{ capability.tool_definition.slug }}</td><td>{{ capability.is_enabled }}</td></tr>{% empty %}<tr><td colspan="2" class="ap-muted">No capabilities.</td></tr>{% endfor %}
+  {% if can_manage %}<form method="post" action="{% url 'control_plane:executor_capability_add' executor.pk %}" class="mb-3">{% csrf_token %}<select name="tool_definition">{% for tool in available_capability_tools %}<option value="{{ tool.pk }}">{{ tool.slug }}</option>{% endfor %}</select> <button class="btn btn-sm btn-outline-primary">Add capability</button></form>{% endif %}
+  <table class="ap-table"><thead><tr><th>Tool</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>
+  {% for capability in capabilities %}<tr><td>{{ capability.tool_definition.slug }}</td><td>{{ capability.is_enabled }}</td><td>{% if can_manage %}{% if capability.is_enabled %}<form method="post" action="{% url 'control_plane:executor_capability_disable' capability.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-danger">Disable</button></form>{% else %}<form method="post" action="{% url 'control_plane:executor_capability_enable' capability.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-primary">Enable</button></form>{% endif %}{% endif %}</td></tr>{% empty %}<tr><td colspan="3" class="ap-muted">No capabilities.</td></tr>{% endfor %}
   </tbody></table>
 </div>
 <h2 class="mt-4">Credentials</h2>

@@ -11,7 +11,17 @@ from projects.models import Project
 from tenants.models import Tenant
 
 
-SENSITIVE_KEY_FRAGMENTS = ("password", "token", "secret", "api_key", "apikey", "authorization", "private_key")
+SENSITIVE_KEY_FRAGMENTS = (
+    "password",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "authorization",
+    "private_key",
+    "cookie",
+    "credential",
+)
 REDACTED_SECRET_MARKERS = {"[redacted]", "[sanitized]", "***"}
 
 

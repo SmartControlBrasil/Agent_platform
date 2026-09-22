@@ -3,6 +3,7 @@ from __future__ import annotations
 TOOL_AGENT_COMPATIBILITY = {
     "prospecting.build_search_plan": frozenset({"prospecting"}),
     "prospecting.external_search_probe": frozenset({"prospecting"}),
+    "prospecting.search_google_maps": frozenset({"prospecting"}),
 }
 
 
