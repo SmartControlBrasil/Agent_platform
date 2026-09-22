@@ -6,7 +6,7 @@ Fluxo principal:
 
 Install -> Configure URL -> Pair -> Admin approves -> Credential -> Heartbeat -> Poll -> Claim -> Execute -> Complete
 
-Este projeto nao e o backend Agent Platform, nao e smart_sales e ainda nao implementa Google Maps, scraping, WhatsApp, IA, CRM ou browser automation.
+Este projeto nao e o backend Agent Platform e nao e smart_sales. Ele executa tools delegadas de browser, incluindo `prospecting.external_search_probe` e `prospecting.search_google_maps`, sem Google Maps API, CRM, leads, WhatsApp, IA, stealth ou CAPTCHA bypass.
 
 ## Desenvolvimento
 
@@ -33,4 +33,8 @@ Carregamento manual:
 - `fetch` com timeout via `AbortController`
 - Testes unitarios com `node:test`
 
-Host access is requested as an optional host permission only for the configured Agent Platform origin.
+Host access for Agent Platform is requested as a restricted optional permission for local development and SmartControl origins. Google Maps execution uses explicit Maps host permissions and the executor capability `prospecting.search_google_maps`.
+
+## Google Maps Tool
+
+See `docs/tools/google-maps-search.md` for architecture, permissions, input/output contract, DOM strategy, privacy limits, and manual test flow. The backend must grant executor capability `prospecting.search_google_maps` before the queue will expose these executions.

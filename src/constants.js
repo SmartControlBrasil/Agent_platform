@@ -10,6 +10,7 @@ export const ExecutorState = Object.freeze({
 
 export const ToolSlugs = Object.freeze({
   EXTERNAL_SEARCH_PROBE: 'prospecting.external_search_probe',
+  GOOGLE_MAPS_SEARCH: 'prospecting.search_google_maps',
 });
 
 export const DEFAULT_REQUESTED_NAME = 'Chrome Executor';

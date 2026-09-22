@@ -18,3 +18,17 @@ chromeApi.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === HEARTBEAT_ALARM) await heartbeat({ state, chromeApi });
   if (alarm.name === JOB_POLL_ALARM) await pollAndRunJobs({ state, chromeApi });
 });
+
+
+chromeApi.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== 'AGENT_EXECUTOR_DEV_POLL_NOW') return false;
+  if (sender.id !== chromeApi.runtime.id) {
+    sendResponse({ ok: false, code: 'unsupported_message' });
+    return false;
+  }
+  getState(chromeApi)
+    .then((state) => pollAndRunJobs({ state, chromeApi }))
+    .then((handled) => sendResponse({ ok: true, handled }))
+    .catch(() => sendResponse({ ok: false, code: 'handler_error' }));
+  return true;
+});

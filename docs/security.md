@@ -10,7 +10,7 @@ A credential identifica um `ToolExecutor` e deve ser tratada como segredo bearer
 
 ## Least Privilege
 
-Permissoes iniciais: `storage` e `alarms`. A extensao nao solicita `tabs`, `scripting`, `activeTab` ou `webNavigation`, pois nesta fase nao controla paginas.
+Permissoes: `storage` e `alarms` para estado operacional; `tabs` e `scripting` para criar uma aba dedicada e injetar o content script do Google Maps. Host permissions permanentes ficam restritas a `https://www.google.com/maps*` e `https://www.google.com/maps/*`. A origem do Agent Platform continua sendo solicitada como optional host permission, limitada aos padroes local development e SmartControl declarados no manifest.
 
 ## Capabilities
 
@@ -24,4 +24,4 @@ Nao ha `eval`, `Function(string)`, import dinamico remoto ou script remoto. O se
 
 401/403 colocam a extensao em estado `REVOKED` e interrompem o ciclo operacional ate o usuario desconectar ou parear novamente.
 
-Host access is requested as an optional host permission only for the configured Agent Platform origin.
+O content script de Google Maps nao recebe credential, nao conhece tenant, nao chama Agent Platform e nao usa `fetch`; ele apenas responde mensagens internas whitelisted com dados publicos renderizados na pagina.

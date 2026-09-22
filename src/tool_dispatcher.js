@@ -1,5 +1,6 @@
 import { ToolSlugs } from './constants.js';
 import { ExternalSearchProbeHandler } from './tools/external_search_probe.js';
+import { GoogleMapsSearchHandler } from './tools/google_maps/handler.js';
 
 export class ToolDispatcher {
   constructor(registry = defaultRegistry()) {
@@ -18,8 +19,9 @@ export class ToolDispatcher {
   }
 }
 
-export function defaultRegistry() {
+export function defaultRegistry(options = {}) {
   return {
     [ToolSlugs.EXTERNAL_SEARCH_PROBE]: new ExternalSearchProbeHandler(),
+    [ToolSlugs.GOOGLE_MAPS_SEARCH]: new GoogleMapsSearchHandler(options),
   };
 }

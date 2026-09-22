@@ -4,7 +4,7 @@ import { ExecutorState } from './constants.js';
 import { normalizeQueueResponse } from './response_validation.js';
 import { setState } from './state.js';
 import { safeErrorCode } from './safe_log.js';
-import { ToolDispatcher } from './tool_dispatcher.js';
+import { ToolDispatcher, defaultRegistry } from './tool_dispatcher.js';
 
 export async function createClientFromState(state, chromeApi, fetchImpl = globalThis.fetch.bind(globalThis)) {
   const credential = await new CredentialStore(chromeApi).getCredential();
@@ -24,7 +24,7 @@ export async function heartbeat({ state, chromeApi, fetchImpl }) {
   }
 }
 
-export async function pollAndRunJobs({ state, chromeApi, fetchImpl, dispatcher = new ToolDispatcher() }) {
+export async function pollAndRunJobs({ state, chromeApi, fetchImpl, dispatcher = null }) {
   if (!state.platformBaseUrl) return [];
   const client = await createClientFromState(state, chromeApi, fetchImpl);
   try {
@@ -32,7 +32,7 @@ export async function pollAndRunJobs({ state, chromeApi, fetchImpl, dispatcher =
     await setState({ lastPollAt: new Date().toISOString(), lastErrorCode: '' }, chromeApi);
     const handled = [];
     for (const execution of queue) {
-      const result = await claimAndExecute({ client, execution, dispatcher, chromeApi });
+      const result = await claimAndExecute({ client, execution, dispatcher: dispatcher || new ToolDispatcher(defaultRegistryWithChrome(chromeApi)), chromeApi });
       handled.push(result);
     }
     return handled;
@@ -70,4 +70,8 @@ export async function handleAuthOrError(error, chromeApi) {
   } else {
     await setState({ state: ExecutorState.ERROR, lastErrorCode: safeErrorCode(error) }, chromeApi);
   }
+}
+
+function defaultRegistryWithChrome(chromeApi) {
+  return defaultRegistry({ chromeApi });
 }

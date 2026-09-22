@@ -5,7 +5,9 @@
   "description": "Chrome executor for Agent Platform delegated tool executions.",
   "permissions": [
     "storage",
-    "alarms"
+    "alarms",
+    "tabs",
+    "scripting"
   ],
   "background": {
     "service_worker": "src/service_worker.js",
@@ -17,7 +19,13 @@
   },
   "options_page": "options.html",
   "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://livia.smartcontrolbrasil.com.br/*",
+    "https://*.smartcontrolbrasil.com.br/*"
+  ],
+  "host_permissions": [
+    "https://www.google.com/maps*",
+    "https://www.google.com/maps/*"
   ]
 }
