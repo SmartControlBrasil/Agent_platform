@@ -11,7 +11,7 @@ export class AgentPlatformError extends Error {
 }
 
 export class AgentPlatformClient {
-  constructor({ baseUrl, credential = '', fetchImpl = globalThis.fetch, timeoutMs = FETCH_TIMEOUT_MS }) {
+  constructor({ baseUrl, credential = '', fetchImpl = globalThis.fetch.bind(globalThis), timeoutMs = FETCH_TIMEOUT_MS }) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.credential = credential;
     this.fetchImpl = fetchImpl;

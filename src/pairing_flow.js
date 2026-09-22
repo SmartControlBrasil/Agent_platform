@@ -3,7 +3,7 @@ import { CredentialStore } from './credential_store.js';
 import { DEFAULT_REQUESTED_NAME, ExecutorState } from './constants.js';
 import { getState, setState } from './state.js';
 
-export async function startPairing({ chromeApi, fetchImpl = globalThis.fetch }) {
+export async function startPairing({ chromeApi, fetchImpl = globalThis.fetch.bind(globalThis) }) {
   const state = await getState(chromeApi);
   const client = new AgentPlatformClient({ baseUrl: state.platformBaseUrl, fetchImpl });
   const pairing = await client.requestPairing({ requestedName: state.requestedName || DEFAULT_REQUESTED_NAME });
@@ -21,7 +21,7 @@ export async function startPairing({ chromeApi, fetchImpl = globalThis.fetch }) 
   return pairing;
 }
 
-export async function pollPairing({ chromeApi, fetchImpl = globalThis.fetch }) {
+export async function pollPairing({ chromeApi, fetchImpl = globalThis.fetch.bind(globalThis) }) {
   const state = await getState(chromeApi);
   if (!state.platformBaseUrl || !state.pairing?.id) return null;
   const client = new AgentPlatformClient({ baseUrl: state.platformBaseUrl, fetchImpl });
@@ -37,7 +37,7 @@ export async function pollPairing({ chromeApi, fetchImpl = globalThis.fetch }) {
   return status;
 }
 
-export async function consumeApprovedPairing({ chromeApi, fetchImpl = globalThis.fetch }) {
+export async function consumeApprovedPairing({ chromeApi, fetchImpl = globalThis.fetch.bind(globalThis) }) {
   const state = await getState(chromeApi);
   if (!state.pairing?.id || !state.pairing?.pairingCode) throw new Error('pairing_not_ready');
   if (state.pairing.consumed) throw new Error('pairing_already_consumed');

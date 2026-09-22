@@ -31,3 +31,23 @@ test('api client maps auth failure and invalid json', async () => {
   const invalidClient = new AgentPlatformClient({ baseUrl: 'https://agents.example.com', fetchImpl: invalidFetch });
   await assert.rejects(() => invalidClient.requestPairing({ requestedName: 'x' }), /invalid_json_response/);
 });
+
+
+test('api client binds default global fetch for browser extension contexts', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async function fetchWithBrandCheck(url, init = {}) {
+      assert.equal(this, globalThis);
+      assert.match(url, /pairing\/request\/$/);
+      assert.equal(init.method, 'POST');
+      return jsonResponse({ id: 'pairing', pairing_code: 'ABCD', status: 'PENDING' }, 201);
+    };
+
+    const client = new AgentPlatformClient({ baseUrl: 'http://127.0.0.1:8000' });
+    const response = await client.requestPairing({ requestedName: 'Chrome Executor' });
+
+    assert.equal(response.status, 'PENDING');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

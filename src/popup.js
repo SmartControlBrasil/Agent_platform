@@ -2,6 +2,7 @@ import { getChromeApi } from './chrome_api.js';
 import { CredentialStore } from './credential_store.js';
 import { ExecutorState } from './constants.js';
 import { startPairing } from './pairing_flow.js';
+import { formatCapabilities } from './capabilities.js';
 import { getState, resetOperationalState } from './state.js';
 
 const chromeApi = getChromeApi();
@@ -12,7 +13,7 @@ async function render() {
   setText('server', state.platformBaseUrl || '-');
   setText('executor', state.executor?.name || state.executor?.public_id || '-');
   setText('heartbeat', state.lastHeartbeatAt || '-');
-  setText('capabilities', state.executor?.capabilities?.join(', ') || '-');
+  setText('capabilities', formatCapabilities(state.executor?.capabilities));
   setText('last-execution', state.lastExecutionId ? `${state.lastExecutionId} (${state.lastExecutionStatus || '-'})` : '-');
   setText('error', state.lastErrorCode || '-');
   document.querySelector('#status-dot').className = `dot ${state.state.toLowerCase()}`;

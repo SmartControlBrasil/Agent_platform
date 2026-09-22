@@ -6,7 +6,7 @@ import { setState } from './state.js';
 import { safeErrorCode } from './safe_log.js';
 import { ToolDispatcher } from './tool_dispatcher.js';
 
-export async function createClientFromState(state, chromeApi, fetchImpl = globalThis.fetch) {
+export async function createClientFromState(state, chromeApi, fetchImpl = globalThis.fetch.bind(globalThis)) {
   const credential = await new CredentialStore(chromeApi).getCredential();
   return new AgentPlatformClient({ baseUrl: state.platformBaseUrl, credential, fetchImpl });
 }
