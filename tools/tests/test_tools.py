@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
@@ -124,6 +124,20 @@ class ToolModelTests(ToolTestCase):
 
         with self.assertRaises(ValidationError):
             binding.full_clean()
+
+    def test_tool_execution_result_allows_redacted_secret_markers(self):
+        binding = self.bind(tool=self.delegated_tool)
+        execution = ToolExecution(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_binding=binding,
+            tool_definition=self.delegated_tool,
+            execution_mode=ToolDefinition.ExecutionMode.DELEGATED,
+            result_payload={"received": {"api_key": "[redacted]"}},
+        )
+
+        execution.full_clean()
 
     def test_duplicate_binding_is_rejected(self):
         self.bind()
@@ -648,6 +662,17 @@ class ExecutorCredentialAndPairingTests(ToolTestCase):
 
 @override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
 class ExecutorApiTests(ToolTestCase):
+    def test_executor_pairing_api_accepts_extension_post_without_csrf_cookie(self):
+        client = Client(enforce_csrf_checks=True)
+
+        response = client.post(
+            "/api/v1/executors/pairing/request/",
+            data=json.dumps({"requested_name": "Extension", "executor_type": "BROWSER_EXTENSION"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+
     def _executor_with_secret(self, tenant=None, public_id="executor-api", active=True, capability=True):
         executor = ToolExecutor.objects.create(
             tenant=tenant or self.tenant,
@@ -669,7 +694,8 @@ class ExecutorApiTests(ToolTestCase):
         )
         self.assertEqual(response.status_code, 201)
         pairing = ToolExecutorPairingRequest.objects.get(pk=response.json()["id"])
-        approve_pairing(pairing=pairing, tenant=self.tenant)
+        approved_pairing = approve_pairing(pairing=pairing, tenant=self.tenant)
+        ToolExecutorCapability.objects.create(executor=approved_pairing.executor, tool_definition=self.delegated_tool)
 
         status_response = self.client.get(f"/api/v1/executors/pairing/{pairing.id}/status/")
         consume_response = self.client.post(
@@ -691,6 +717,13 @@ class ExecutorApiTests(ToolTestCase):
         self.assertEqual(second_consume.status_code, 400)
         self.assertEqual(me.status_code, 200)
         self.assertEqual(heartbeat.status_code, 200)
+        self.assertEqual(
+            consume_response.json()["executor"]["capabilities"][0]["slug"], "prospecting.external_search_probe"
+        )
+        self.assertEqual(me.json()["executor"]["capabilities"][0]["slug"], "prospecting.external_search_probe")
+        self.assertEqual(
+            heartbeat.json()["executor"]["capabilities"][0]["slug"], "prospecting.external_search_probe"
+        )
         self.assertIsNotNone(ToolExecutor.objects.get(pk=me.json()["executor"]["id"]).last_seen_at)
 
     def test_executor_queue_filters_by_tenant_capability_and_status(self):

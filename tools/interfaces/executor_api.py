@@ -5,6 +5,7 @@ import json
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from assistant_core.security.ip import get_client_ip
@@ -71,6 +72,7 @@ def _execution_payload(execution):
 
 
 def _executor_payload(executor, credential_id=""):
+    capabilities = executor.capabilities.filter(is_enabled=True, tool_definition__is_active=True).select_related("tool_definition")
     return {
         "id": str(executor.id),
         "public_id": executor.public_id,
@@ -80,9 +82,11 @@ def _executor_payload(executor, credential_id=""):
         "is_active": executor.is_active,
         "last_seen_at": executor.last_seen_at.isoformat() if executor.last_seen_at else None,
         "credential_id": credential_id,
+        "capabilities": [_tool_payload(capability.tool_definition) for capability in capabilities],
     }
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def pairing_request(request):
     limited = _rate_limit(request, "pairing-request")
@@ -130,6 +134,7 @@ def pairing_status(request, pairing_id):
     )
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def pairing_consume(request, pairing_id):
     limited = _rate_limit(request, f"pairing-consume:{pairing_id}")
@@ -160,6 +165,7 @@ def me(request):
     return JsonResponse({"executor": _executor_payload(principal.executor, credential_id=principal.credential_id)})
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def heartbeat(request):
     principal = _principal(request)
@@ -191,6 +197,7 @@ def _execution_for_principal(execution_id, principal):
     return ToolExecution.objects.select_related("tool_definition").get(pk=execution_id, tenant_id=principal.tenant_id)
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def claim_execution(request, execution_id):
     principal = _principal(request)
@@ -206,6 +213,7 @@ def claim_execution(request, execution_id):
     return JsonResponse(_execution_payload(execution))
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def complete_execution(request, execution_id):
     principal = _principal(request)
@@ -224,6 +232,7 @@ def complete_execution(request, execution_id):
     return JsonResponse(_execution_payload(execution))
 
 
+@csrf_exempt
 @require_http_methods(["POST"])
 def fail_execution(request, execution_id):
     principal = _principal(request)

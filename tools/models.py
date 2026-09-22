@@ -12,13 +12,14 @@ from tenants.models import Tenant
 
 
 SENSITIVE_KEY_FRAGMENTS = ("password", "token", "secret", "api_key", "apikey", "authorization", "private_key")
+REDACTED_SECRET_MARKERS = {"[redacted]", "[sanitized]", "***"}
 
 
 def validate_no_plaintext_secrets(value, field_name="payload"):
     if isinstance(value, dict):
         for key, item in value.items():
             normalized = str(key).lower()
-            if any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS) and item not in ("", None):
+            if any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS) and item not in ("", None) and item not in REDACTED_SECRET_MARKERS:
                 raise ValidationError({field_name: "Tool data must not store plaintext secrets."})
             validate_no_plaintext_secrets(item, field_name=field_name)
     elif isinstance(value, list):
