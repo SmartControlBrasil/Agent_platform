@@ -180,3 +180,26 @@ class LiviaWidgetCorsMiddlewareTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertNotIn("Access-Control-Allow-Origin", response)
+
+    def test_executor_api_allows_chrome_extension_preflight(self):
+        response = self.client.options(
+            "/api/v1/executors/pairing/request/",
+            HTTP_ORIGIN="chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="content-type",
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response["Access-Control-Allow-Origin"], "chrome-extension://abcdefghijklmnopabcdefghijklmnop")
+        self.assertIn("POST", response["Access-Control-Allow-Methods"])
+        self.assertIn("Content-Type", response["Access-Control-Allow-Headers"])
+
+    def test_executor_api_rejects_non_extension_preflight(self):
+        response = self.client.options(
+            "/api/v1/executors/pairing/request/",
+            HTTP_ORIGIN="https://evil.example",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("Access-Control-Allow-Origin", response)

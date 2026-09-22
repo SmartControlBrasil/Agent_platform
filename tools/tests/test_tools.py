@@ -673,6 +673,16 @@ class ExecutorApiTests(ToolTestCase):
 
         self.assertEqual(response.status_code, 201)
 
+    def test_executor_mutations_ignore_human_session_without_executor_credential(self):
+        user = get_user_model().objects.create_user(username="executor-session-user", password="pass")
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(user)
+
+        response = client.post("/api/v1/executors/heartbeat/")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "executor_authentication_failed")
+
     def _executor_with_secret(self, tenant=None, public_id="executor-api", active=True, capability=True):
         executor = ToolExecutor.objects.create(
             tenant=tenant or self.tenant,
