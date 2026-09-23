@@ -52,6 +52,7 @@ def execute_tool(
     expires_at=None,
     actor=None,
     request=None,
+    requested_by_service_client=None,
     registry: ToolRuntimeRegistry | None = None,
     dispatcher: DelegatedToolDispatcherPort | None = None,
     input_validators: ToolInputValidatorRegistry | None = None,
@@ -85,6 +86,7 @@ def execute_tool(
             expires_at=expires_at,
             actor=actor,
             request=request,
+            requested_by_service_client=requested_by_service_client,
         )
         if not created:
             return _result_from_existing_execution(execution)

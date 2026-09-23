@@ -12,7 +12,17 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
-from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
+from tools.application.client_identity import create_service_client_credential
+from tools.models import (
+    AgentToolBinding,
+    ServiceClient,
+    ServiceClientAgentAccess,
+    ServiceClientCredential,
+    ToolDefinition,
+    ToolExecution,
+    ToolExecutor,
+    ToolExecutorCapability,
+)
 
 
 class ControlPlaneTestCase(TestCase):
@@ -699,3 +709,84 @@ class ControlPlaneTestCase(TestCase):
         self.assertEqual(detail_a.status_code, 200)
         self.assertContains(detail_a, str(execution_a.pk))
         self.assertEqual(detail_b.status_code, 404)
+
+
+class ControlPlaneServiceClientTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user_a = User.objects.create_user(username="service-client-admin", password="pw")
+        self.viewer = User.objects.create_user(username="service-client-viewer", password="pw")
+        self.tenant_a = Tenant.objects.create(name="Tenant A", slug="tenant-a", domain="a.example")
+        self.tenant_b = Tenant.objects.create(name="Tenant B", slug="tenant-b", domain="b.example")
+        TenantMembership.objects.create(
+            tenant=self.tenant_a,
+            user=self.user_a,
+            role=TenantMembership.Role.TENANT_ADMIN,
+        )
+        TenantMembership.objects.create(
+            tenant=self.tenant_a,
+            user=self.viewer,
+            role=TenantMembership.Role.VIEWER,
+        )
+        self.project_a = Project.objects.create(tenant=self.tenant_a, name="Project A", slug="project-a")
+        self.project_b = Project.objects.create(tenant=self.tenant_b, name="Project B", slug="project-b")
+        self.prospecting_agent = AgentDefinition.objects.get(slug="prospecting")
+        self.prospecting_version = AgentVersion.objects.get(agent_definition=self.prospecting_agent, version="1.0.0")
+        self.prospecting_installation = AgentInstallation.objects.create(
+            tenant=self.tenant_a,
+            project=self.project_a,
+            agent_definition=self.prospecting_agent,
+            agent_version=self.prospecting_version,
+            name="Service Client Prospecting A",
+        )
+        self.client.force_login(self.user_a)
+
+    def test_service_client_create_credential_access_rotate_and_revoke(self):
+        create_response = self.client.post(
+            reverse("control_plane:service_client_list"),
+            {"tenant_id": self.tenant_a.pk, "name": "Smart Sales", "slug": "smart-sales"},
+        )
+        service_client = ServiceClient.objects.get(slug="smart-sales")
+        detail_url = reverse("control_plane:service_client_detail", args=[service_client.pk])
+
+        credential_response = self.client.post(reverse("control_plane:service_client_credential_create", args=[service_client.pk]))
+        credential = ServiceClientCredential.objects.get(service_client=service_client)
+        grant_response = self.client.post(
+            reverse("control_plane:service_client_access_grant", args=[service_client.pk]),
+            {"agent_installation": self.prospecting_installation.pk},
+        )
+        access = ServiceClientAgentAccess.objects.get(service_client=service_client, agent_installation=self.prospecting_installation)
+        rotate_response = self.client.post(reverse("control_plane:service_client_credential_rotate", args=[credential.pk]))
+        revoke_response = self.client.post(reverse("control_plane:service_client_access_revoke", args=[access.pk]))
+
+        self.assertEqual(create_response.status_code, 302)
+        self.assertEqual(create_response["Location"], detail_url)
+        self.assertEqual(credential_response.status_code, 200)
+        self.assertContains(credential_response, "apc_")
+        self.assertEqual(grant_response.status_code, 302)
+        self.assertTrue(access.is_active)
+        self.assertEqual(rotate_response.status_code, 200)
+        self.assertContains(rotate_response, "apc_")
+        self.assertEqual(ServiceClientCredential.objects.filter(service_client=service_client).count(), 2)
+        self.assertEqual(revoke_response.status_code, 302)
+        access.refresh_from_db()
+        self.assertFalse(access.is_active)
+        self.assertTrue(AuditEvent.objects.filter(action="service_client.created", object_id=str(service_client.pk)).exists())
+        self.assertTrue(AuditEvent.objects.filter(action="service_client.access.revoked", object_id=str(access.pk)).exists())
+
+    def test_service_client_control_plane_is_tenant_scoped_and_viewer_cannot_mutate(self):
+        service_client = ServiceClient.objects.create(tenant=self.tenant_b, name="Tenant B Client", slug="tenant-b-client")
+        create_service_client_credential(service_client=service_client)
+
+        list_response = self.client.get(reverse("control_plane:service_client_list"))
+        detail_response = self.client.get(reverse("control_plane:service_client_detail", args=[service_client.pk]))
+        self.client.force_login(self.viewer)
+        viewer_create = self.client.post(
+            reverse("control_plane:service_client_list"),
+            {"tenant_id": self.tenant_a.pk, "name": "No", "slug": "no"},
+        )
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertNotContains(list_response, "Tenant B Client")
+        self.assertEqual(detail_response.status_code, 404)
+        self.assertEqual(viewer_create.status_code, 403)

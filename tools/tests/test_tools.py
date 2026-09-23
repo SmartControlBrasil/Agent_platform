@@ -11,6 +11,15 @@ from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
 from tools.application.execution import ToolExecutionError, execute_tool
+from tools.application.client_identity import (
+    ServiceClientAuthenticationError,
+    authenticate_service_client_credential,
+    create_service_client_credential,
+    grant_service_client_access,
+    revoke_service_client_access,
+    revoke_service_client_credential,
+    rotate_service_client_credential,
+)
 from tools.application.identity import (
     ExecutorAuthenticationError,
     approve_pairing,
@@ -42,6 +51,9 @@ from tools.infrastructure.prospecting_build_search_plan import (
 )
 from tools.models import (
     AgentToolBinding,
+    ServiceClient,
+    ServiceClientAgentAccess,
+    ServiceClientCredential,
     ToolDefinition,
     ToolExecution,
     ToolExecutor,
@@ -1084,3 +1096,238 @@ class ExecutorApiTests(ToolTestCase):
         self.assertEqual(inactive.status_code, 401)
         self.assertEqual(invalid.status_code, 401)
         self.assertTrue(AuditEvent.objects.filter(action="executor.auth.failed").exists())
+
+
+class ServiceClientIdentityTests(ToolTestCase):
+    def setUp(self):
+        super().setUp()
+        self.service_client = ServiceClient.objects.create(tenant=self.tenant, name="Smart Sales", slug="smart-sales")
+
+    def test_service_client_credential_hash_auth_rotation_revocation_and_expiration(self):
+        issued = create_service_client_credential(service_client=self.service_client)
+
+        self.assertTrue(issued.secret.startswith(f"apc_{issued.credential.credential_prefix}_"))
+        self.assertNotEqual(issued.credential.secret_hash, issued.secret)
+        self.assertNotIn(issued.secret, issued.credential.secret_hash)
+        principal = authenticate_service_client_credential(f"AgentClient {issued.secret}")
+        self.assertEqual(principal.service_client_id, str(self.service_client.id))
+        issued.credential.refresh_from_db()
+        self.assertIsNotNone(issued.credential.last_used_at)
+
+        with self.assertRaises(ServiceClientAuthenticationError):
+            authenticate_service_client_credential(f"AgentExecutor {issued.secret}")
+        with self.assertRaises(ServiceClientAuthenticationError):
+            authenticate_service_client_credential(f"AgentClient apc_{issued.credential.credential_prefix}_wrong")
+
+        rotated = rotate_service_client_credential(credential=issued.credential)
+        with self.assertRaises(ServiceClientAuthenticationError):
+            authenticate_service_client_credential(f"AgentClient {issued.secret}")
+        self.assertEqual(authenticate_service_client_credential(f"AgentClient {rotated.secret}").credential_id, str(rotated.credential.id))
+
+        revoke_service_client_credential(credential=rotated.credential)
+        with self.assertRaises(ServiceClientAuthenticationError):
+            authenticate_service_client_credential(f"AgentClient {rotated.secret}")
+
+        expired = create_service_client_credential(
+            service_client=self.service_client,
+            expires_at=timezone.now() - timezone.timedelta(seconds=1),
+        )
+        with self.assertRaises(ServiceClientAuthenticationError):
+            authenticate_service_client_credential(f"AgentClient {expired.secret}")
+
+    def test_service_client_access_rejects_cross_tenant_and_can_be_revoked(self):
+        access = grant_service_client_access(service_client=self.service_client, installation=self.installation)
+        self.assertTrue(access.can_execute)
+
+        with self.assertRaises(ValidationError):
+            grant_service_client_access(service_client=self.service_client, installation=self.other_installation)
+
+        revoke_service_client_access(access=access)
+        access.refresh_from_db()
+        self.assertFalse(access.is_active)
+        self.assertFalse(access.can_execute)
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES, LIVIA_CHAT_RATE_LIMIT_ENABLED=False)
+class ServiceClientApiTests(ToolTestCase):
+    def setUp(self):
+        super().setUp()
+        self.service_client = ServiceClient.objects.create(tenant=self.tenant, name="Smart Sales", slug="smart-sales")
+        self.other_client = ServiceClient.objects.create(tenant=self.tenant, name="Other Client", slug="other-client")
+        self.other_tenant_client = ServiceClient.objects.create(tenant=self.other_tenant, name="Other Tenant Client", slug="other-tenant-client")
+        self.secret = create_service_client_credential(service_client=self.service_client).secret
+        self.other_secret = create_service_client_credential(service_client=self.other_client).secret
+        self.other_tenant_secret = create_service_client_credential(service_client=self.other_tenant_client).secret
+        grant_service_client_access(service_client=self.service_client, installation=self.installation)
+        grant_service_client_access(service_client=self.other_client, installation=self.installation)
+        grant_service_client_access(service_client=self.other_tenant_client, installation=self.other_installation)
+
+    def auth(self, secret=None):
+        return {"HTTP_AUTHORIZATION": f"AgentClient {secret or self.secret}"}
+
+    def test_me_requires_agent_client_credential_and_returns_safe_metadata(self):
+        unauthorized = self.client.get("/api/v1/clients/me/")
+        wrong_scheme = self.client.get("/api/v1/clients/me/", HTTP_AUTHORIZATION=f"AgentExecutor {self.secret}")
+        response = self.client.get("/api/v1/clients/me/", **self.auth())
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(wrong_scheme.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()["service_client"]
+        self.assertEqual(payload["slug"], "smart-sales")
+        self.assertNotIn("secret", json.dumps(payload).lower())
+
+    def test_execute_agent_allowed_denied_and_disabled_installation(self):
+        self.bind(configuration={"max_queries": 2})
+        allowed = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+            **self.auth(),
+        )
+        denied = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.other_installation.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+            **self.auth(),
+        )
+        self.installation.is_enabled = False
+        self.installation.save(update_fields=["is_enabled"])
+        disabled = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/execute/",
+            data=json.dumps({"input": "prepare prospecting run"}),
+            content_type="application/json",
+            **self.auth(),
+        )
+
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.json()["status"], "planned")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(disabled.status_code, 404)
+
+    def test_execute_tool_dispatches_delegated_tool_with_idempotency_and_source_attribution(self):
+        self.bind(tool=self.google_maps_tool, configuration={})
+        body = {
+            "input": {"schema_version": 1, "queries": ["hospital Barueri"], "target_region": "Barueri", "max_results": 5},
+            "idempotency_key": "smart_sales:search_run:1",
+        }
+
+        first = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/tools/prospecting.search_google_maps/execute/",
+            data=json.dumps(body),
+            content_type="application/json",
+            **self.auth(),
+        )
+        second = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/tools/prospecting.search_google_maps/execute/",
+            data=json.dumps(body),
+            content_type="application/json",
+            **self.auth(),
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["status"], "dispatched")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["tool_execution_id"], first.json()["tool_execution_id"])
+        self.assertEqual(ToolExecution.objects.filter(tool_definition=self.google_maps_tool).count(), 1)
+        execution = ToolExecution.objects.get(pk=first.json()["tool_execution_id"])
+        self.assertEqual(execution.requested_by_service_client, self.service_client)
+
+    def test_execute_tool_rejects_disabled_binding_and_cross_tenant_client(self):
+        self.bind(tool=self.google_maps_tool, enabled=False, configuration={})
+
+        disabled_binding = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/tools/prospecting.search_google_maps/execute/",
+            data=json.dumps({"input": {"schema_version": 1, "queries": ["hospital"], "max_results": 5}}),
+            content_type="application/json",
+            **self.auth(),
+        )
+        cross_tenant = self.client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/tools/prospecting.search_google_maps/execute/",
+            data=json.dumps({"input": {"schema_version": 1, "queries": ["hospital"], "max_results": 5}}),
+            content_type="application/json",
+            **self.auth(self.other_tenant_secret),
+        )
+
+        self.assertEqual(disabled_binding.status_code, 404)
+        self.assertEqual(cross_tenant.status_code, 404)
+
+    def test_execution_status_polling_returns_succeeded_failed_and_blocks_other_client(self):
+        self.bind(tool=self.delegated_tool)
+        result = execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.external_search_probe",
+            input={"query": "a"},
+            requested_by_service_client=self.service_client,
+        )
+        execution = ToolExecution.objects.get(pk=result.metadata["tool_execution_id"])
+        transition_execution(execution, ToolExecution.Status.RUNNING)
+        transition_execution(
+            execution,
+            ToolExecution.Status.SUCCEEDED,
+            result_payload={"status": "completed", "output": {"ok": True}},
+        )
+        failed_result = execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.external_search_probe",
+            input={"query": "b"},
+            idempotency_key="failed-status",
+            requested_by_service_client=self.service_client,
+        )
+        failed = ToolExecution.objects.get(pk=failed_result.metadata["tool_execution_id"])
+        transition_execution(failed, ToolExecution.Status.RUNNING)
+        transition_execution(failed, ToolExecution.Status.FAILED, error_code="boom", error_message="safe failure")
+
+        succeeded_response = self.client.get(f"/api/v1/clients/tool-executions/{execution.id}/", **self.auth())
+        failed_response = self.client.get(f"/api/v1/clients/tool-executions/{failed.id}/", **self.auth())
+        other_client_response = self.client.get(f"/api/v1/clients/tool-executions/{execution.id}/", **self.auth(self.other_secret))
+        other_tenant_response = self.client.get(f"/api/v1/clients/tool-executions/{execution.id}/", **self.auth(self.other_tenant_secret))
+
+        self.assertEqual(succeeded_response.status_code, 200)
+        self.assertEqual(succeeded_response.json()["result"]["output"], {"ok": True})
+        self.assertEqual(failed_response.status_code, 200)
+        self.assertEqual(failed_response.json()["error_code"], "boom")
+        self.assertEqual(failed_response.json()["error_message"], "safe failure")
+        self.assertEqual(other_client_response.status_code, 404)
+        self.assertEqual(other_tenant_response.status_code, 404)
+
+    def test_human_session_does_not_authenticate_csrf_exempt_client_endpoint(self):
+        user = get_user_model().objects.create_user(username="client-session-user", password="pass")
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(user)
+
+        response = client.post(
+            f"/api/v1/clients/agent-installations/{self.installation.id}/tools/prospecting.search_google_maps/execute/",
+            data=json.dumps({"input": {}}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "service_client_authentication_failed")
+
+    def test_audit_events_do_not_store_service_client_secret(self):
+        issued = create_service_client_credential(service_client=self.service_client)
+        grant_service_client_access(service_client=self.service_client, installation=self.installation)
+
+        serialized = json.dumps(list(AuditEvent.objects.values("metadata", "before_data", "after_data")), default=str)
+
+        self.assertNotIn(issued.secret, serialized)
+        self.assertIn("service_client.credential.created", set(AuditEvent.objects.values_list("action", flat=True)))
+        self.assertIn("service_client.access.granted", set(AuditEvent.objects.values_list("action", flat=True)))
+
+    @override_settings(LIVIA_CHAT_RATE_LIMIT_ENABLED=True, LIVIA_CHAT_RATE_LIMIT_REQUESTS=1, LIVIA_CHAT_RATE_LIMIT_WINDOW_SECONDS=300)
+    def test_client_api_rate_limits_status_polling(self):
+        self.bind(tool=self.delegated_tool)
+        result = execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.external_search_probe",
+            input={"query": "a"},
+            requested_by_service_client=self.service_client,
+        )
+        execution_id = result.metadata["tool_execution_id"]
+
+        first = self.client.get(f"/api/v1/clients/tool-executions/{execution_id}/", **self.auth())
+        second = self.client.get(f"/api/v1/clients/tool-executions/{execution_id}/", **self.auth())
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)

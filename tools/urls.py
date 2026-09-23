@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .interfaces import api, executor_api
+from .interfaces import api, client_api, executor_api
 
 app_name = "tools_api"
 
@@ -15,6 +15,10 @@ urlpatterns = [
     path("executors/tool-executions/<uuid:execution_id>/claim/", executor_api.claim_execution, name="executor_claim_execution"),
     path("executors/tool-executions/<uuid:execution_id>/complete/", executor_api.complete_execution, name="executor_complete_execution"),
     path("executors/tool-executions/<uuid:execution_id>/fail/", executor_api.fail_execution, name="executor_fail_execution"),
+    path("clients/me/", client_api.me, name="client_me"),
+    path("clients/agent-installations/<uuid:installation_id>/execute/", client_api.execute_agent_installation, name="client_execute_agent"),
+    path("clients/agent-installations/<uuid:installation_id>/tools/<str:tool_slug>/execute/", client_api.execute_installation_tool, name="client_execute_tool"),
+    path("clients/tool-executions/<uuid:execution_id>/", client_api.execution_detail, name="client_execution_detail"),
     path("tools/", api.tools_list, name="tools_list"),
     path("agent-installations/<uuid:installation_id>/tools/", api.installation_tools, name="installation_tools"),
     path("tool-bindings/<uuid:binding_id>/execute/", api.execute_binding, name="execute_binding"),

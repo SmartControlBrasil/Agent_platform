@@ -88,6 +88,7 @@ def create_tool_execution(
     expires_at=None,
     actor=None,
     request=None,
+    requested_by_service_client=None,
 ) -> tuple[ToolExecution, bool]:
     idempotency_key = normalize_idempotency_key(idempotency_key)
     defaults = {
@@ -100,6 +101,7 @@ def create_tool_execution(
         "status": ToolExecution.Status.PENDING,
         "request_payload": request_payload,
         "expires_at": expires_at,
+        "requested_by_service_client": requested_by_service_client,
     }
     if idempotency_key:
         execution, created = ToolExecution.objects.get_or_create(
@@ -217,6 +219,7 @@ def record_tool_execution_event(action: str, execution: ToolExecution, *, actor=
             "tool_binding_id": str(execution.tool_binding_id),
             "tool_definition_id": str(execution.tool_definition_id),
             "executor_id": str(execution.executor_id or ""),
+            "requested_by_service_client_id": str(execution.requested_by_service_client_id or ""),
             "execution_mode": execution.execution_mode,
             "status": execution.status,
         },

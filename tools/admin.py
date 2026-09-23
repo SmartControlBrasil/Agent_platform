@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
+from .models import AgentToolBinding, ServiceClient, ServiceClientAgentAccess, ServiceClientCredential, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
 
 
 @admin.register(ToolDefinition)
@@ -37,3 +37,25 @@ class ToolExecutorCapabilityAdmin(admin.ModelAdmin):
     list_display = ("executor", "tool_definition", "is_enabled")
     list_filter = ("is_enabled", "tool_definition__category")
     search_fields = ("executor__name", "tool_definition__slug")
+
+
+@admin.register(ServiceClient)
+class ServiceClientAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "tenant", "is_active", "created_at")
+    list_filter = ("is_active", "tenant")
+    search_fields = ("name", "slug", "tenant__name")
+
+
+@admin.register(ServiceClientCredential)
+class ServiceClientCredentialAdmin(admin.ModelAdmin):
+    list_display = ("service_client", "credential_prefix", "is_active", "last_used_at", "expires_at")
+    list_filter = ("is_active",)
+    search_fields = ("service_client__name", "credential_prefix")
+    readonly_fields = ("secret_hash",)
+
+
+@admin.register(ServiceClientAgentAccess)
+class ServiceClientAgentAccessAdmin(admin.ModelAdmin):
+    list_display = ("service_client", "agent_installation", "tenant", "can_execute", "is_active")
+    list_filter = ("can_execute", "is_active")
+    search_fields = ("service_client__name", "agent_installation__name", "tenant__name")

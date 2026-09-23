@@ -168,6 +168,105 @@ class ToolExecutorCredential(models.Model):
         return f"{self.executor} / {self.credential_prefix}"
 
 
+class ServiceClient(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="service_clients")
+    name = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=120)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["tenant__name", "name"]
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "slug"], name="unique_service_client_slug_per_tenant"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "is_active"]),
+            models.Index(fields=["tenant", "slug"]),
+        ]
+
+    def __str__(self):
+        return f"{self.tenant.slug} / {self.slug}"
+
+
+class ServiceClientCredential(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    service_client = models.ForeignKey(ServiceClient, on_delete=models.CASCADE, related_name="credentials")
+    credential_prefix = models.CharField(max_length=32, unique=True)
+    secret_hash = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["credential_prefix"]),
+            models.Index(fields=["service_client", "is_active"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    @property
+    def is_usable(self):
+        if not self.is_active or self.revoked_at is not None:
+            return False
+        return self.expires_at is None or self.expires_at > timezone.now()
+
+    def __str__(self):
+        return f"{self.service_client} / {self.credential_prefix}"
+
+
+class ServiceClientAgentAccess(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="service_client_agent_accesses")
+    service_client = models.ForeignKey(ServiceClient, on_delete=models.CASCADE, related_name="agent_accesses")
+    agent_installation = models.ForeignKey(
+        AgentInstallation, on_delete=models.CASCADE, related_name="service_client_accesses"
+    )
+    can_execute = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["tenant__name", "service_client__name", "agent_installation__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["service_client", "agent_installation"],
+                name="unique_service_client_access_per_installation",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "is_active"]),
+            models.Index(fields=["service_client", "is_active"]),
+            models.Index(fields=["agent_installation", "is_active"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.service_client_id and self.tenant_id and self.service_client.tenant_id != self.tenant_id:
+            raise ValidationError({"tenant": "Access tenant must match the service client tenant."})
+        if self.agent_installation_id and self.tenant_id and self.agent_installation.tenant_id != self.tenant_id:
+            raise ValidationError({"tenant": "Access tenant must match the installation tenant."})
+        if (
+            self.service_client_id
+            and self.agent_installation_id
+            and self.service_client.tenant_id != self.agent_installation.tenant_id
+        ):
+            raise ValidationError({"agent_installation": "Service client and installation must belong to the same tenant."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.service_client} / {self.agent_installation}"
+
+
 class ToolExecutorPairingRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -243,6 +342,13 @@ class ToolExecution(models.Model):
     tool_binding = models.ForeignKey(AgentToolBinding, on_delete=models.PROTECT, related_name="executions")
     tool_definition = models.ForeignKey(ToolDefinition, on_delete=models.PROTECT, related_name="executions")
     executor = models.ForeignKey(ToolExecutor, on_delete=models.PROTECT, related_name="executions", null=True, blank=True)
+    requested_by_service_client = models.ForeignKey(
+        ServiceClient,
+        on_delete=models.PROTECT,
+        related_name="requested_tool_executions",
+        null=True,
+        blank=True,
+    )
     execution_mode = models.CharField(max_length=16, choices=ToolDefinition.ExecutionMode.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     request_payload = models.JSONField(default=dict, blank=True)

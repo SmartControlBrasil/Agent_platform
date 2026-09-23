@@ -16,6 +16,14 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from tools.forms import AgentToolBindingForm
 from tools.infrastructure.validation import summarize_tool_execution
 from tools.application.identity import approve_pairing, reject_pairing, revoke_credential, rotate_credential
+from tools.application.client_identity import (
+    create_service_client,
+    create_service_client_credential,
+    grant_service_client_access,
+    revoke_service_client_access,
+    revoke_service_client_credential,
+    rotate_service_client_credential,
+)
 from tools.models import (
     AgentToolBinding,
     ToolDefinition,
@@ -24,6 +32,9 @@ from tools.models import (
     ToolExecutorCapability,
     ToolExecutorCredential,
     ToolExecutorPairingRequest,
+    ServiceClient,
+    ServiceClientAgentAccess,
+    ServiceClientCredential,
 )
 from audit.services import audit_model_snapshot, record_audit_event
 from projects.models import Project
@@ -114,6 +125,24 @@ def _credential_queryset(user):
     return ToolExecutorCredential.objects.select_related("executor", "executor__tenant").filter(
         executor__tenant_id__in=_tenant_ids(user)
     )
+
+
+def _service_client_queryset(user):
+    return ServiceClient.objects.filter(tenant_id__in=_tenant_ids(user)).select_related("tenant").prefetch_related(
+        "credentials", "agent_accesses__agent_installation", "agent_accesses__agent_installation__project"
+    )
+
+
+def _service_client_credential_queryset(user):
+    return ServiceClientCredential.objects.select_related("service_client", "service_client__tenant").filter(
+        service_client__tenant_id__in=_tenant_ids(user)
+    )
+
+
+def _service_client_access_queryset(user):
+    return ServiceClientAgentAccess.objects.select_related(
+        "service_client", "service_client__tenant", "agent_installation", "agent_installation__project"
+    ).filter(tenant_id__in=_tenant_ids(user))
 
 
 def _executor_status(executor):
@@ -669,3 +698,132 @@ def executor_credential_rotate(request, pk):
         }
     )
     return render(request, "control_plane/executor_detail.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def service_client_list(request):
+    manageable = _manageable_tenants(request.user)
+    if request.method == "POST":
+        if not manageable:
+            raise PermissionDenied
+        tenant = get_object_or_404(_accessible_tenants(request.user), pk=request.POST.get("tenant_id"))
+        _require_manage(request.user, tenant)
+        try:
+            service_client = create_service_client(
+                tenant=tenant,
+                name=request.POST.get("name") or "",
+                slug=request.POST.get("slug") or "",
+                actor=request.user,
+                request=request,
+            )
+        except ValidationError as exc:
+            messages.error(request, "; ".join(exc.messages))
+        else:
+            messages.success(request, "Service client criado.")
+            return redirect("control_plane:service_client_detail", pk=service_client.pk)
+    clients = _service_client_queryset(request.user).order_by("tenant__name", "name")
+    context = _base_context("service_clients")
+    context.update({"service_clients": clients, "manageable_tenants": manageable})
+    return render(request, "control_plane/service_client_list.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def service_client_detail(request, pk):
+    service_client = get_object_or_404(_service_client_queryset(request.user), pk=pk)
+    can_manage = _can_manage(request.user, service_client.tenant)
+    accessed_ids = service_client.agent_accesses.values_list("agent_installation_id", flat=True)
+    available_installations = AgentInstallation.objects.filter(
+        tenant=service_client.tenant, is_enabled=True
+    ).exclude(pk__in=accessed_ids).select_related("project", "agent_definition").order_by("project__name", "name")
+    context = _base_context("service_clients")
+    context.update(
+        {
+            "service_client": service_client,
+            "credentials": service_client.credentials.order_by("-created_at"),
+            "accesses": service_client.agent_accesses.select_related("agent_installation", "agent_installation__project", "agent_installation__agent_definition").order_by("agent_installation__project__name", "agent_installation__name"),
+            "available_installations": available_installations,
+            "can_manage": can_manage,
+        }
+    )
+    return render(request, "control_plane/service_client_detail.html", context)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def service_client_credential_create(request, pk):
+    service_client = get_object_or_404(_service_client_queryset(request.user), pk=pk)
+    _require_manage(request.user, service_client.tenant)
+    issued = create_service_client_credential(service_client=service_client, actor=request.user, request=request)
+    context = _base_context("service_clients")
+    accessed_ids = service_client.agent_accesses.values_list("agent_installation_id", flat=True)
+    context.update(
+        {
+            "service_client": service_client,
+            "credentials": service_client.credentials.order_by("-created_at"),
+            "accesses": service_client.agent_accesses.select_related("agent_installation", "agent_installation__project", "agent_installation__agent_definition"),
+            "available_installations": AgentInstallation.objects.filter(tenant=service_client.tenant, is_enabled=True).exclude(pk__in=accessed_ids).select_related("project", "agent_definition"),
+            "can_manage": True,
+            "one_time_secret": issued.secret,
+        }
+    )
+    return render(request, "control_plane/service_client_detail.html", context)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def service_client_credential_revoke(request, pk):
+    credential = get_object_or_404(_service_client_credential_queryset(request.user), pk=pk)
+    _require_manage(request.user, credential.service_client.tenant)
+    revoke_service_client_credential(credential=credential, actor=request.user, request=request)
+    messages.success(request, "Credencial revogada.")
+    return redirect("control_plane:service_client_detail", pk=credential.service_client_id)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def service_client_credential_rotate(request, pk):
+    credential = get_object_or_404(_service_client_credential_queryset(request.user), pk=pk)
+    _require_manage(request.user, credential.service_client.tenant)
+    issued = rotate_service_client_credential(credential=credential, actor=request.user, request=request)
+    service_client = get_object_or_404(_service_client_queryset(request.user), pk=credential.service_client_id)
+    context = _base_context("service_clients")
+    accessed_ids = service_client.agent_accesses.values_list("agent_installation_id", flat=True)
+    context.update(
+        {
+            "service_client": service_client,
+            "credentials": service_client.credentials.order_by("-created_at"),
+            "accesses": service_client.agent_accesses.select_related("agent_installation", "agent_installation__project", "agent_installation__agent_definition"),
+            "available_installations": AgentInstallation.objects.filter(tenant=service_client.tenant, is_enabled=True).exclude(pk__in=accessed_ids).select_related("project", "agent_definition"),
+            "can_manage": True,
+            "one_time_secret": issued.secret,
+        }
+    )
+    return render(request, "control_plane/service_client_detail.html", context)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def service_client_access_grant(request, pk):
+    service_client = get_object_or_404(_service_client_queryset(request.user), pk=pk)
+    _require_manage(request.user, service_client.tenant)
+    installation = get_object_or_404(
+        AgentInstallation.objects.select_related("tenant", "project").filter(tenant=service_client.tenant),
+        pk=request.POST.get("agent_installation"),
+    )
+    try:
+        grant_service_client_access(service_client=service_client, installation=installation, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "Access concedido.")
+    return redirect("control_plane:service_client_detail", pk=service_client.pk)
+
+
+@require_POST
+@login_required(login_url="/admin/login/")
+def service_client_access_revoke(request, pk):
+    access = get_object_or_404(_service_client_access_queryset(request.user), pk=pk)
+    _require_manage(request.user, access.tenant)
+    revoke_service_client_access(access=access, actor=request.user, request=request)
+    messages.success(request, "Access revogado.")
+    return redirect("control_plane:service_client_detail", pk=access.service_client_id)

@@ -1,0 +1,35 @@
+{% extends "control_plane/base.html" %}
+{% block title %}Service Client{% endblock %}
+{% block content %}
+<div class="ap-page-head"><div><h1 class="ap-title">{{ service_client.name }}</h1><p class="ap-muted">{{ service_client.tenant.name }} | {{ service_client.slug }}</p></div></div>
+{% if one_time_secret %}<div class="alert alert-success"><strong>Nova credencial:</strong> <code>{{ one_time_secret }}</code></div>{% endif %}
+<div class="ap-grid">
+  <div class="ap-card"><strong>Status</strong><p>{% if service_client.is_active %}Active{% else %}Inactive{% endif %}</p><strong>Created</strong><p>{{ service_client.created_at }}</p></div>
+  <div class="ap-card"><strong>Tenant</strong><p>{{ service_client.tenant.name }}</p><strong>Updated</strong><p>{{ service_client.updated_at }}</p></div>
+</div>
+<h2 class="mt-4">Credentials</h2>
+<div class="ap-card">
+  {% if can_manage %}<form method="post" action="{% url 'control_plane:service_client_credential_create' service_client.pk %}" class="mb-3">{% csrf_token %}<button class="btn btn-sm btn-primary">Create credential</button></form>{% endif %}
+  <table class="ap-table"><thead><tr><th>Prefix</th><th>Status</th><th>Created</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead><tbody>
+  {% for credential in credentials %}<tr>
+    <td>{{ credential.credential_prefix }}</td>
+    <td>{% if credential.is_usable %}<span class="ap-badge">usable</span>{% else %}<span class="ap-badge off">inactive</span>{% endif %}</td>
+    <td>{{ credential.created_at }}</td><td>{{ credential.last_used_at|default:"-" }}</td><td>{{ credential.expires_at|default:"-" }}</td>
+    <td>{% if can_manage and credential.is_active %}<form method="post" action="{% url 'control_plane:service_client_credential_revoke' credential.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-danger">Revoke</button></form> <form method="post" action="{% url 'control_plane:service_client_credential_rotate' credential.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-primary">Rotate</button></form>{% endif %}</td>
+  </tr>{% empty %}<tr><td colspan="6" class="ap-muted">No credentials.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+<h2 class="mt-4">Installation Access</h2>
+<div class="ap-card">
+  {% if can_manage and available_installations %}<form method="post" action="{% url 'control_plane:service_client_access_grant' service_client.pk %}" class="mb-3">{% csrf_token %}<select name="agent_installation">{% for installation in available_installations %}<option value="{{ installation.pk }}">{{ installation.project.name }} / {{ installation.name }}</option>{% endfor %}</select> <button class="btn btn-sm btn-outline-primary">Grant access</button></form>{% endif %}
+  <table class="ap-table"><thead><tr><th>Installation</th><th>Project</th><th>Can execute</th><th>Active</th><th>Actions</th></tr></thead><tbody>
+  {% for access in accesses %}<tr>
+    <td>{{ access.agent_installation.name }}<br><span class="ap-muted">{{ access.agent_installation.agent_definition.slug }}</span></td>
+    <td>{{ access.agent_installation.project.name }}</td>
+    <td>{{ access.can_execute }}</td>
+    <td>{% if access.is_active %}<span class="ap-badge">active</span>{% else %}<span class="ap-badge off">inactive</span>{% endif %}</td>
+    <td>{% if can_manage and access.is_active %}<form method="post" action="{% url 'control_plane:service_client_access_revoke' access.pk %}" style="display:inline">{% csrf_token %}<button class="btn btn-sm btn-outline-danger">Revoke</button></form>{% endif %}</td>
+  </tr>{% empty %}<tr><td colspan="5" class="ap-muted">No installation access.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endblock %}
