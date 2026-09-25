@@ -9,7 +9,7 @@ from agents.infrastructure.prospecting_configuration import ProspectingConfigura
 from agents.models import AgentInstallation
 from projects.models import Project
 from prospecting.domain.dedupe import build_search_result_dedupe_key
-from prospecting.models import SearchResult, SearchRun
+from prospecting.models import SearchResult, SearchRun, SearchRunExecutionAttempt
 from tenants.models import Tenant
 from tools.application.execution import ToolExecutionError, execute_tool
 from tools.models import ToolExecution
@@ -112,53 +112,44 @@ def create_and_dispatch_search_run(
             locale="pt-BR",
             status=SearchRun.Status.PENDING,
         )
-        tool_result = execute_tool(
-            installation=installation,
-            tool_slug=SEARCH_TOOL,
-            input={
-                "schema_version": 1,
-                "queries": queries,
-                "target_region": search_run.target_region,
-                "max_results": search_run.max_results,
-                "locale": search_run.locale,
-            },
-            idempotency_key=search_run.idempotency_key,
+        _dispatch_search_attempt(
+            run=search_run,
+            attempt_number=1,
             actor=actor,
             request=request,
-            metadata={
-                "search_run_id": str(search_run.id),
-                "objective": search_run.objective,
-            },
+            override_status=True,
         )
-        tool_execution_id = _uuid_from_metadata(tool_result.metadata.get("tool_execution_id"))
-        if not tool_execution_id:
-            raise ProspectingSearchRunError("Falha ao registrar execução da pesquisa no Agent Platform.")
-        search_run.agent_platform_execution_id = tool_execution_id
-        if tool_result.status == "dispatched":
-            search_run.transition_to(SearchRun.Status.DISPATCHED)
-        search_run.save(update_fields=["agent_platform_execution_id", "status", "dispatched_at", "updated_at"])
     return synchronize_search_run(search_run=search_run)
 
 
 def synchronize_search_run(*, search_run: SearchRun) -> SearchRun:
     with transaction.atomic():
         run = SearchRun.objects.select_for_update().select_related("tenant", "project", "agent_installation").get(pk=search_run.pk)
-        if not run.agent_platform_execution_id:
+        attempt = _latest_attempt_for_run(run)
+        if attempt is None:
+            attempt = _ensure_attempt_tracking_for_legacy_run(run)
+        if attempt is None:
             return run
-        try:
-            execution = ToolExecution.objects.select_for_update().get(
-                pk=run.agent_platform_execution_id,
-                tenant=run.tenant,
-                project=run.project,
-                agent_installation=run.agent_installation,
-                tool_definition__slug=SEARCH_TOOL,
-            )
-        except ToolExecution.DoesNotExist as exc:
-            raise ProspectingSearchRunError("Execução da pesquisa não foi encontrada para este SearchRun.") from exc
-
-        if execution.status == ToolExecution.Status.DISPATCHED and run.status == SearchRun.Status.PENDING:
+        execution = ToolExecution.objects.select_for_update().get(
+            pk=attempt.tool_execution_id,
+            tenant=run.tenant,
+            project=run.project,
+            agent_installation=run.agent_installation,
+            tool_definition__slug=SEARCH_TOOL,
+        )
+        run.agent_platform_execution_id = execution.id
+        if execution.status == ToolExecution.Status.DISPATCHED and run.status in {
+            SearchRun.Status.PENDING,
+            SearchRun.Status.FAILED,
+            SearchRun.Status.CANCELLED,
+        }:
             run.transition_to(SearchRun.Status.DISPATCHED)
-        elif execution.status == ToolExecution.Status.RUNNING and run.status in {SearchRun.Status.PENDING, SearchRun.Status.DISPATCHED}:
+        elif execution.status == ToolExecution.Status.RUNNING and run.status in {
+            SearchRun.Status.PENDING,
+            SearchRun.Status.DISPATCHED,
+            SearchRun.Status.FAILED,
+            SearchRun.Status.CANCELLED,
+        }:
             run.transition_to(SearchRun.Status.RUNNING)
         elif execution.status == ToolExecution.Status.SUCCEEDED and run.status != SearchRun.Status.COMPLETED:
             _materialize_search_results(run=run, execution=execution)
@@ -173,6 +164,7 @@ def synchronize_search_run(*, search_run: SearchRun) -> SearchRun:
             run.transition_to(SearchRun.Status.CANCELLED)
         run.save(
             update_fields=[
+                "agent_platform_execution_id",
                 "status",
                 "dispatched_at",
                 "completed_at",
@@ -183,6 +175,86 @@ def synchronize_search_run(*, search_run: SearchRun) -> SearchRun:
             ]
         )
         return run
+
+
+def dispatch_search_run_attempt(*, search_run: SearchRun, attempt_number: int, actor=None, request=None) -> SearchRun:
+    with transaction.atomic():
+        run = SearchRun.objects.select_for_update().select_related("tenant", "project", "agent_installation").get(pk=search_run.pk)
+        return _dispatch_search_attempt(run=run, attempt_number=attempt_number, actor=actor, request=request)
+
+
+def _latest_attempt_for_run(run: SearchRun) -> SearchRunExecutionAttempt | None:
+    return run.execution_attempts.select_related("tool_execution").order_by("-attempt_number").first()
+
+
+def _ensure_attempt_tracking_for_legacy_run(run: SearchRun) -> SearchRunExecutionAttempt | None:
+    if not run.agent_platform_execution_id:
+        return None
+    try:
+        execution = ToolExecution.objects.select_for_update().get(
+            pk=run.agent_platform_execution_id,
+            tenant=run.tenant,
+            project=run.project,
+            agent_installation=run.agent_installation,
+            tool_definition__slug=SEARCH_TOOL,
+        )
+    except ToolExecution.DoesNotExist as exc:
+        raise ProspectingSearchRunError("Execução da pesquisa não foi encontrada para este SearchRun.") from exc
+    attempt, _ = SearchRunExecutionAttempt.objects.get_or_create(
+        search_run=run,
+        tool_execution=execution,
+        defaults={"tenant": run.tenant, "attempt_number": 1},
+    )
+    return attempt
+
+
+def _dispatch_search_attempt(*, run: SearchRun, attempt_number: int, actor=None, request=None, override_status: bool = False) -> SearchRun:
+    tool_result = execute_tool(
+        installation=run.agent_installation,
+        tool_slug=SEARCH_TOOL,
+        input={
+            "schema_version": 1,
+            "queries": run.queries,
+            "target_region": run.target_region,
+            "max_results": run.max_results,
+            "locale": run.locale,
+        },
+        idempotency_key=build_search_run_attempt_idempotency_key(run=run, attempt_number=attempt_number),
+        actor=actor,
+        request=request,
+        metadata={
+            "search_run_id": str(run.id),
+            "search_run_attempt": attempt_number,
+            "objective": run.objective,
+        },
+    )
+    tool_execution_id = _uuid_from_metadata(tool_result.metadata.get("tool_execution_id"))
+    if not tool_execution_id:
+        raise ProspectingSearchRunError("Falha ao registrar execução da pesquisa no Agent Platform.")
+    execution = ToolExecution.objects.select_for_update().get(
+        pk=tool_execution_id,
+        tenant=run.tenant,
+        project=run.project,
+        agent_installation=run.agent_installation,
+        tool_definition__slug=SEARCH_TOOL,
+    )
+    SearchRunExecutionAttempt.objects.get_or_create(
+        search_run=run,
+        tool_execution=execution,
+        defaults={"tenant": run.tenant, "attempt_number": attempt_number},
+    )
+    run.agent_platform_execution_id = tool_execution_id
+    if tool_result.status == "dispatched":
+        if override_status and run.status in {SearchRun.Status.FAILED, SearchRun.Status.CANCELLED}:
+            run.status = SearchRun.Status.PENDING
+        run.transition_to(SearchRun.Status.DISPATCHED)
+    run.save(update_fields=["agent_platform_execution_id", "status", "dispatched_at", "updated_at"])
+    return run
+
+
+def build_search_run_attempt_idempotency_key(*, run: SearchRun, attempt_number: int) -> str:
+    base = run.idempotency_key or f"prospecting:search_run:{run.id}"
+    return f"{base}:attempt:{attempt_number}"[:160]
 
 
 def _materialize_search_results(*, run: SearchRun, execution: ToolExecution) -> None:

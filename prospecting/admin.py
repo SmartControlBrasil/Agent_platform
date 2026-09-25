@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun
+from .models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 
 
 @admin.register(SearchRun)
@@ -9,6 +9,14 @@ class SearchRunAdmin(admin.ModelAdmin):
     list_filter = ("status", "tenant")
     search_fields = ("id", "project__name", "agent_installation__name", "target_region", "idempotency_key")
     readonly_fields = ("id", "idempotency_key", "created_at", "updated_at")
+
+
+@admin.register(SearchRunExecutionAttempt)
+class SearchRunExecutionAttemptAdmin(admin.ModelAdmin):
+    list_display = ("id", "tenant", "search_run", "attempt_number", "tool_execution", "created_at")
+    list_filter = ("tenant",)
+    search_fields = ("id", "search_run__id", "tool_execution__id")
+    readonly_fields = ("id", "created_at")
 
 
 @admin.register(SearchResult)

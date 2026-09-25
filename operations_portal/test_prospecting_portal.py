@@ -3,12 +3,15 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
-from prospecting.models import ProspectEnrichment, ProspectSource, SearchResult, SearchRun
+from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
+from prospecting.models import ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 from tenants.models import Tenant, TenantMembership
-from tools.models import AgentToolBinding, ToolDefinition
+from tools.application.lifecycle import claim_tool_execution, fail_tool_execution
+from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
 
 
 TEST_STORAGES = {
@@ -500,3 +503,142 @@ class ProspectingPortalTests(TestCase):
         self.assertEqual(cross.status_code, 302)
         self.result.refresh_from_db()
         self.assertEqual(self.result.review_status, SearchResult.ReviewStatus.UNREVIEWED)
+
+    def _maps_executor(self, public_id):
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="SCB Chrome Executor Operacional",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id=public_id,
+            last_seen_at=None,
+        )
+        ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.maps_tool)
+        return executor
+
+    def _failed_operational_run(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Diagnóstico operacional",
+            target_region="Barueri",
+            selected_queries=["hospitais em Barueri SP"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = self._maps_executor(f"portal-{execution.id}")
+        claim_tool_execution(executor=executor, execution=execution)
+        fail_tool_execution(executor=executor, execution=execution, error_code="results_not_loaded", error_message="feed vazio")
+        return synchronize_search_run(search_run=run)
+
+    def test_failed_run_shows_retry_and_human_error(self):
+        run = self._failed_operational_run()
+        self._login(self.admin)
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Tentar novamente")
+        self.assertContains(response, "Os resultados do Google Maps não ficaram disponíveis a tempo.")
+        self.assertContains(response, "Histórico de execução")
+        self.assertContains(response, "Tentativa 1")
+        self.assertNotContains(response, "aep_")
+        self.assertNotContains(response, "Authorization")
+
+    def test_completed_and_running_do_not_show_retry(self):
+        self._login(self.admin)
+        completed = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Concluída",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        completed.status = SearchRun.Status.COMPLETED
+        completed.save(update_fields=["status"])
+        completed_response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[completed.id]))
+        self.assertNotContains(completed_response, "Tentar novamente")
+
+        running = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Em execução",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=running.agent_platform_execution_id)
+        claim_tool_execution(executor=self._maps_executor(f"running-{execution.id}"), execution=execution)
+        running = synchronize_search_run(search_run=running)
+        running_response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[running.id]))
+        self.assertNotContains(running_response, "Tentar novamente")
+        self.assertNotContains(running_response, "Cancelar pesquisa")
+
+    def test_retry_is_post_only_and_manager_only(self):
+        run = self._failed_operational_run()
+        url = reverse("operations_portal:prospecting_search_run_retry", args=[run.id])
+        self._login(self.viewer)
+        viewer = self.client.post(url, {"tenant": str(self.tenant.pk)})
+        self.assertEqual(viewer.status_code, 403)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+        self._login(self.admin)
+        self.assertEqual(self.client.get(url).status_code, 405)
+        retry = self.client.post(url, {"tenant": str(self.tenant.pk)})
+        self.assertEqual(retry.status_code, 302)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 2)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
+
+    def test_dispatched_offline_executor_warning_and_cancel(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Aguardando",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        self._maps_executor("offline-scb")
+        self._login(self.admin)
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+        self.assertContains(response, "Aguardando executor")
+        self.assertContains(response, "Nenhum executor compatível está online no momento.")
+        self.assertContains(response, "Cancelar pesquisa")
+        self.assertContains(response, "SCB Chrome Executor Operacional")
+
+        cancel_get = self.client.get(reverse("operations_portal:prospecting_search_run_cancel", args=[run.id]))
+        self.assertEqual(cancel_get.status_code, 405)
+        cancel = self.client.post(
+            reverse("operations_portal:prospecting_search_run_cancel", args=[run.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
+        self.assertEqual(cancel.status_code, 302)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.CANCELLED)
+        self.assertTrue(SearchResult.objects.filter(search_run=self.run).exists())
+
+    def test_cross_tenant_retry_and_cancel_are_rejected(self):
+        run = self._failed_operational_run()
+        self._login(self.other_admin)
+        retry = self.client.post(
+            reverse("operations_portal:prospecting_search_run_retry", args=[run.id]),
+            {"tenant": str(self.other_tenant.pk)},
+        )
+        cancel = self.client.post(
+            reverse("operations_portal:prospecting_search_run_cancel", args=[run.id]),
+            {"tenant": str(self.other_tenant.pk)},
+        )
+        self.assertEqual(retry.status_code, 404)
+        self.assertEqual(cancel.status_code, 404)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+    def test_online_executor_does_not_show_offline_warning(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Online",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        executor = self._maps_executor("online-scb")
+        executor.last_seen_at = timezone.now()
+        executor.save(update_fields=["last_seen_at", "updated_at"])
+        self._login(self.admin)
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+        self.assertContains(response, "Online")
+        self.assertNotContains(response, "Nenhum executor compatível está online no momento.")

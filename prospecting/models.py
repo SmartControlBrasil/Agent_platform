@@ -14,8 +14,8 @@ ALLOWED_TRANSITIONS = {
     "DISPATCHED": {"RUNNING", "COMPLETED", "FAILED", "CANCELLED"},
     "RUNNING": {"COMPLETED", "FAILED", "CANCELLED"},
     "COMPLETED": set(),
-    "FAILED": set(),
-    "CANCELLED": set(),
+    "FAILED": {"DISPATCHED", "RUNNING", "COMPLETED"},
+    "CANCELLED": {"DISPATCHED", "RUNNING", "COMPLETED"},
 }
 
 
@@ -102,8 +102,11 @@ class SearchRun(models.Model):
             raise ValidationError(f"Invalid SearchRun transition: {self.status} -> {status}.")
         now = timezone.now()
         self.status = status
-        if status == self.Status.DISPATCHED and not self.dispatched_at:
-            self.dispatched_at = now
+        if status == self.Status.DISPATCHED:
+            if not self.dispatched_at:
+                self.dispatched_at = now
+            self.error_code = ""
+            self.error_message = ""
         if status == self.Status.COMPLETED:
             self.completed_at = now
             self.error_code = ""
@@ -177,6 +180,43 @@ class SearchResult(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class SearchRunExecutionAttempt(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="search_run_attempts")
+    search_run = models.ForeignKey("prospecting.SearchRun", on_delete=models.CASCADE, related_name="execution_attempts")
+    tool_execution = models.OneToOneField("tools.ToolExecution", on_delete=models.PROTECT, related_name="search_run_attempt")
+    attempt_number = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["attempt_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["search_run", "attempt_number"], name="unique_search_run_attempt_number"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "search_run"]),
+            models.Index(fields=["search_run", "attempt_number"]),
+        ]
+
+    def clean(self):
+        if self.search_run_id and self.tenant_id and self.search_run.tenant_id != self.tenant_id:
+            raise ValidationError({"search_run": "SearchRun must belong to the same tenant."})
+        if self.tool_execution_id and self.tenant_id and self.tool_execution.tenant_id != self.tenant_id:
+            raise ValidationError({"tool_execution": "ToolExecution must belong to the same tenant."})
+        if self.search_run_id and self.tool_execution_id:
+            if self.search_run.project_id != self.tool_execution.project_id:
+                raise ValidationError({"tool_execution": "ToolExecution project must match SearchRun project."})
+            if self.search_run.agent_installation_id != self.tool_execution.agent_installation_id:
+                raise ValidationError({"tool_execution": "ToolExecution installation must match SearchRun installation."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.search_run_id} / tentativa {self.attempt_number}"
 
 
 class Prospect(models.Model):

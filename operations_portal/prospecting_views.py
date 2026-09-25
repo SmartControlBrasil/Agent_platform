@@ -25,6 +25,11 @@ from operations_portal.selectors import clean_querystring
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.execution_recovery import (
+    ProspectingExecutionRecoveryError,
+    cancel_search_run,
+    retry_search_run,
+)
 from prospecting.application.review import (
     ProspectingReviewError,
     bulk_ignore_search_results,
@@ -39,10 +44,11 @@ from prospecting.application.search_runs import (
     synchronize_search_run,
 )
 from prospecting.application.website_enrichment import enrich_prospect_from_website
-from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun
+from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 from tenants.access import CAPABILITY_COMMERCIAL_MANAGE, CAPABILITY_COMMERCIAL_VIEW
+from tools.application.executor_presence import executor_presence
 from tools.infrastructure.validation import summarize_tool_execution
-from tools.models import ToolExecution
+from tools.models import ToolExecution, ToolExecutorCapability
 
 ACTION_PROSPECT_PROMOTED = "prospecting.search_result.promoted"
 ACTION_PROSPECT_ENRICHMENT_ADDED = "prospecting.enrichment.added"
@@ -51,11 +57,20 @@ SESSION_SEARCH_DRAFTS_KEY = "operations_portal_prospecting_drafts"
 SESSION_SEARCH_DRAFT_EXECUTIONS_KEY = "operations_portal_prospecting_draft_executions"
 SEARCH_RUN_STATUS_UI = {
     SearchRun.Status.PENDING: {"label": "Preparando", "tone": "secondary"},
-    SearchRun.Status.DISPATCHED: {"label": "Enviada", "tone": "info"},
+    SearchRun.Status.DISPATCHED: {"label": "Aguardando executor", "tone": "info"},
     SearchRun.Status.RUNNING: {"label": "Executando", "tone": "primary"},
     SearchRun.Status.COMPLETED: {"label": "Concluída", "tone": "success"},
     SearchRun.Status.FAILED: {"label": "Falhou", "tone": "danger"},
     SearchRun.Status.CANCELLED: {"label": "Cancelada", "tone": "warning"},
+}
+EXECUTION_ERROR_MESSAGES = {
+    "results_not_loaded": "Os resultados do Google Maps não ficaram disponíveis a tempo.",
+    "invalid_tool_result": "O executor retornou um resultado inválido.",
+    "google_challenge": "O Google Maps apresentou bloqueio/desafio durante a execução.",
+    "navigation_timeout": "A navegação do Google Maps excedeu o tempo esperado.",
+    "page_structure_changed": "A estrutura da página do Google Maps não foi reconhecida.",
+    "executor_unavailable": "Nenhum executor compatível está disponível.",
+    "tool_execution_failed": "A execução da pesquisa falhou.",
 }
 
 
@@ -108,6 +123,80 @@ def _enrich_run_ui(search_run):
     search_run.status_label = ui["label"]
     search_run.status_tone = ui["tone"]
     return search_run
+
+
+def _execution_error_message(execution):
+    if execution is None:
+        return ""
+    code = (execution.error_code or "").strip().lower()
+    if code and code in EXECUTION_ERROR_MESSAGES:
+        return EXECUTION_ERROR_MESSAGES[code]
+    if execution.status == ToolExecution.Status.EXPIRED:
+        return "A execução expirou antes de ser processada."
+    if execution.status == ToolExecution.Status.CANCELLED:
+        return "A pesquisa foi cancelada antes da conclusão."
+    if execution.status == ToolExecution.Status.FAILED:
+        return "Não foi possível concluir a pesquisa."
+    return ""
+
+
+def _attempt_status_label(status):
+    labels = {
+        ToolExecution.Status.PENDING: "Pendente",
+        ToolExecution.Status.DISPATCHED: "Aguardando executor",
+        ToolExecution.Status.RUNNING: "Executando",
+        ToolExecution.Status.SUCCEEDED: "Concluída",
+        ToolExecution.Status.FAILED: "Falhou",
+        ToolExecution.Status.CANCELLED: "Cancelada",
+        ToolExecution.Status.EXPIRED: "Expirada",
+    }
+    return labels.get(status, status)
+
+
+def _ensure_attempt_tracking(search_run):
+    attempts = search_run.execution_attempts.select_related("tool_execution", "tool_execution__executor").order_by("attempt_number")
+    if attempts.exists() or not search_run.agent_platform_execution_id:
+        return attempts
+    execution = ToolExecution.objects.filter(
+        pk=search_run.agent_platform_execution_id,
+        tenant=search_run.tenant,
+        project=search_run.project,
+        agent_installation=search_run.agent_installation,
+    ).select_related("executor").first()
+    if execution is not None:
+        SearchRunExecutionAttempt.objects.get_or_create(
+            search_run=search_run,
+            tool_execution=execution,
+            defaults={"tenant": search_run.tenant, "attempt_number": 1},
+        )
+    return search_run.execution_attempts.select_related("tool_execution", "tool_execution__executor").order_by("attempt_number")
+
+
+def _compatible_executor_snapshot(search_run, execution):
+    if execution is None:
+        return []
+    capabilities = (
+        ToolExecutorCapability.objects.select_related("executor")
+        .filter(
+            tool_definition=execution.tool_definition,
+            executor__tenant=search_run.tenant,
+            executor__is_active=True,
+            is_enabled=True,
+        )
+        .order_by("executor__name")
+    )
+    snapshot = []
+    for capability in capabilities:
+        presence = executor_presence(capability.executor)
+        snapshot.append(
+            {
+                "executor": capability.executor,
+                "presence_label": presence.label,
+                "is_online": presence.is_online,
+                "last_seen_at": capability.executor.last_seen_at,
+            }
+        )
+    return snapshot
 
 
 def _drafts(request):
@@ -352,17 +441,49 @@ def prospecting_search_run_detail(request, run_id):
     ignored_count = search_run.results.filter(review_status=SearchResult.ReviewStatus.IGNORED).count()
     total_results = search_run.results.count()
     unreviewed_count = max(total_results - promoted_count - ignored_count, 0)
-    execution = None
-    execution_summary = None
-    if search_run.agent_platform_execution_id:
-        execution = ToolExecution.objects.filter(
-            pk=search_run.agent_platform_execution_id,
-            tenant=search_run.tenant,
-            project=search_run.project,
-            agent_installation=search_run.agent_installation,
-        ).select_related("executor", "tool_definition").first()
-        if execution is not None:
-            execution_summary = summarize_tool_execution(execution)
+    attempts = list(_ensure_attempt_tracking(search_run))
+    current_attempt = attempts[-1] if attempts else None
+    execution = current_attempt.tool_execution if current_attempt else None
+    execution_summary = summarize_tool_execution(execution) if execution is not None else None
+    execution_error_message = _execution_error_message(execution)
+    attempts_view = []
+    for attempt in attempts:
+        attempt_execution = attempt.tool_execution
+        payload = attempt_execution.result_payload if isinstance(attempt_execution.result_payload, dict) else {}
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        attempts_view.append(
+            {
+                "attempt_number": attempt.attempt_number,
+                "tool_execution_id": attempt_execution.id,
+                "status": attempt_execution.status,
+                "status_label": _attempt_status_label(attempt_execution.status),
+                "executor_name": attempt_execution.executor.name if attempt_execution.executor else "Aguardando executor",
+                "created_at": attempt_execution.created_at,
+                "started_at": attempt_execution.started_at,
+                "completed_at": attempt_execution.completed_at,
+                "error_code": attempt_execution.error_code,
+                "error_message": _execution_error_message(attempt_execution),
+                "result_count": stats.get("businesses_returned"),
+                "is_current": current_attempt and attempt.id == current_attempt.id,
+            }
+        )
+
+    compatible_executors = _compatible_executor_snapshot(search_run, execution)
+    has_online_executor = any(item["is_online"] for item in compatible_executors)
+    can_manage = access.is_global or CAPABILITY_COMMERCIAL_MANAGE in access.capabilities
+    waiting_executor = execution is not None and execution.status == ToolExecution.Status.DISPATCHED
+    show_offline_warning = waiting_executor and bool(compatible_executors) and not has_online_executor
+    show_no_executor_warning = waiting_executor and not compatible_executors
+    can_retry = bool(
+        execution
+        and execution.status in {ToolExecution.Status.FAILED, ToolExecution.Status.EXPIRED, ToolExecution.Status.CANCELLED}
+        and can_manage
+    )
+    can_cancel = bool(
+        execution
+        and execution.status in {ToolExecution.Status.PENDING, ToolExecution.Status.DISPATCHED}
+        and can_manage
+    )
 
     context = {
         "active_section": "prospeccao",
@@ -373,11 +494,19 @@ def prospecting_search_run_detail(request, run_id):
         "filter_form": filter_form,
         "execution": execution,
         "execution_summary": execution_summary,
+        "execution_error_message": execution_error_message,
+        "attempts": attempts_view,
+        "current_attempt_number": current_attempt.attempt_number if current_attempt else None,
+        "compatible_executors": compatible_executors,
+        "show_offline_warning": show_offline_warning,
+        "show_no_executor_warning": show_no_executor_warning,
+        "can_retry": can_retry,
+        "can_cancel": can_cancel,
         "total_results": total_results,
         "unreviewed_count": unreviewed_count,
         "promoted_count": promoted_count,
         "ignored_count": ignored_count,
-        "can_manage": access.is_global or CAPABILITY_COMMERCIAL_MANAGE in access.capabilities,
+        "can_manage": can_manage,
     }
     context.update(portal_template_context(access))
     return render(request, "operations_portal/prospecting/search_run_detail.html", context)
@@ -401,6 +530,56 @@ def prospecting_search_run_refresh(request, run_id):
         messages.error(request, "; ".join(exc.messages))
         return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
     ui = _search_run_ui(synchronized.status)
+    messages.info(request, f"Status atualizado: {ui['label']}.")
+    return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_search_run_retry(request, run_id):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_run = get_object_or_404(_search_run_queryset(access.tenant), pk=run_id)
+    try:
+        outcome = retry_search_run(search_run=search_run, actor=request.user, request=request)
+        synchronized = synchronize_search_run(search_run=outcome.search_run)
+    except (ValidationError, ProspectingSearchRunError, ProspectingExecutionRecoveryError) as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+    if outcome.created_new_attempt:
+        messages.success(request, f"Nova tentativa {outcome.attempt.attempt_number} enviada ao executor.")
+    else:
+        messages.info(request, "A tentativa atual ainda está em andamento. Nenhuma nova tentativa foi criada.")
+    ui = _search_run_ui(synchronized.status)
+    messages.info(request, f"Status atualizado: {ui['label']}.")
+    return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_search_run_cancel(request, run_id):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_run = get_object_or_404(_search_run_queryset(access.tenant), pk=run_id)
+    try:
+        cancelled = cancel_search_run(search_run=search_run, actor=request.user, request=request)
+    except (ValidationError, ProspectingExecutionRecoveryError) as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+    messages.success(request, "Pesquisa cancelada. O histórico e os resultados já existentes foram preservados.")
+    ui = _search_run_ui(cancelled.status)
     messages.info(request, f"Status atualizado: {ui['label']}.")
     return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
 

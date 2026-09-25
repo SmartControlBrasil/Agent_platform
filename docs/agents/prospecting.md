@@ -33,6 +33,7 @@ Validation rules:
 The operational prospecting workflow lives in the same repository under the `prospecting` app and is exposed in the Hando portal (`/painel/prospeccao/...`), not in a parallel UI. This workflow includes:
 
 - `SearchRun` and `SearchResult` for discovery records;
+- `SearchRunExecutionAttempt` for explicit execution history (`retry` creates a new attempt; `redispatch` reuses a non-terminal `ToolExecution`);
 - explicit promotion `SearchResult -> Prospect`;
 - `ProspectSource` provenance history;
 - `ProspectEnrichment` manual observations;

@@ -18,15 +18,21 @@ from prospecting.application.review import (
     mark_search_result_ignored,
     restore_search_result_to_unreviewed,
 )
+from prospecting.application.execution_recovery import (
+    ProspectingExecutionRecoveryError,
+    cancel_search_run,
+    retry_search_run,
+)
 from prospecting.application.search_runs import (
     build_search_plan_for_manual_run,
+    build_search_run_attempt_idempotency_key,
     create_and_dispatch_search_run,
     synchronize_search_run,
 )
 from prospecting.application.website_enrichment import enrich_prospect_from_website
 from prospecting.infrastructure.website_fetcher import validate_public_http_url
 from prospecting.interfaces.website import WebsiteFetchResult
-from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun
+from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 from tenants.models import Tenant
 from tools.application.lifecycle import claim_tool_execution, complete_tool_execution, fail_tool_execution
 from tools.models import (
@@ -468,6 +474,8 @@ class ProspectingSearchRunExecutionTests(TestCase):
         self.assertEqual(execution.tool_definition.slug, "prospecting.search_google_maps")
         self.assertEqual(execution.request_payload["input"]["queries"], run.queries)
         self.assertEqual(execution.request_payload["input"]["target_region"], "Barueri")
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+        self.assertEqual(execution.idempotency_key, build_search_run_attempt_idempotency_key(run=run, attempt_number=1))
 
     def test_sync_succeeded_materializes_results_without_duplicates(self):
         run = create_and_dispatch_search_run(
@@ -545,6 +553,240 @@ class ProspectingSearchRunExecutionTests(TestCase):
 
         self.assertEqual(synced.status, SearchRun.Status.FAILED)
         self.assertNotEqual(synced.status, SearchRun.Status.COMPLETED)
+
+
+class ProspectingExecutionRecoveryTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant")
+        self.project = Project.objects.create(tenant=self.tenant, name="Projeto A", slug="project-a")
+        self.other_project = Project.objects.create(tenant=self.other_tenant, name="Projeto B", slug="project-b")
+        self.definition = AgentDefinition.objects.get(slug="prospecting")
+        self.version = AgentVersion.objects.get(agent_definition=self.definition, version="1.0.0")
+        self.installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting A",
+            configuration={"target_market": "hospitais", "target_profile": "privados", "max_results": 5},
+        )
+        self.other_installation = AgentInstallation.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting B",
+        )
+        self.plan_tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        self.maps_tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+        AgentToolBinding.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.plan_tool,
+            configuration={"max_queries": 4},
+        )
+        AgentToolBinding.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.maps_tool,
+            configuration={},
+        )
+        AgentToolBinding.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_installation=self.other_installation,
+            tool_definition=self.maps_tool,
+            configuration={},
+        )
+
+    def _dispatch_run(self):
+        return create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+
+    def _executor(self, public_id="browser-recovery"):
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Executor Browser",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id=public_id,
+        )
+        ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.maps_tool)
+        return executor
+
+    def _fail_run(self, run, error_code="results_not_loaded"):
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = self._executor(public_id=f"fail-{execution.id}")
+        claim_tool_execution(executor=executor, execution=execution)
+        fail_tool_execution(executor=executor, execution=execution, error_code=error_code, error_message="feed vazio")
+        return synchronize_search_run(search_run=run)
+
+    def _complete_execution(self, execution, name="Hospital A", external_id="cid:1"):
+        executor = execution.executor or self._executor(public_id=f"ok-{execution.id}")
+        if execution.status == ToolExecution.Status.DISPATCHED:
+            if execution.executor_id is None:
+                ToolExecutorCapability.objects.get_or_create(executor=executor, tool_definition=self.maps_tool)
+                claim_tool_execution(executor=executor, execution=execution)
+                execution.refresh_from_db()
+        complete_tool_execution(
+            executor=execution.executor,
+            execution=execution,
+            result={
+                "schema_version": 1,
+                "status": "completed",
+                "businesses": [
+                    {
+                        "name": name,
+                        "category": None,
+                        "address": "Rua A, 1",
+                        "phone": None,
+                        "website": None,
+                        "maps_url": f"https://maps.google.com/?cid={external_id}",
+                        "external_id": external_id,
+                        "source_query": "hospitais Barueri",
+                    }
+                ],
+                "stats": {
+                    "queries_requested": 1,
+                    "queries_executed": 1,
+                    "businesses_found": 1,
+                    "businesses_returned": 1,
+                    "duplicates_removed": 0,
+                    "duration_ms": 10,
+                },
+            },
+        )
+        return execution
+
+    def test_failed_run_allows_retry_and_preserves_previous_attempt(self):
+        run = self._fail_run(self._dispatch_run())
+        first_execution_id = run.agent_platform_execution_id
+        self.assertEqual(run.status, SearchRun.Status.FAILED)
+
+        first = retry_search_run(search_run=run)
+        second = retry_search_run(search_run=first.search_run)
+
+        self.assertTrue(first.created_new_attempt)
+        self.assertFalse(second.created_new_attempt)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 2)
+        self.assertEqual(first.attempt.attempt_number, 2)
+        self.assertEqual(first.attempt.tool_execution_id, second.attempt.tool_execution_id)
+        self.assertNotEqual(first.attempt.tool_execution_id, first_execution_id)
+        self.assertTrue(
+            SearchRunExecutionAttempt.objects.filter(search_run=run, tool_execution_id=first_execution_id, attempt_number=1).exists()
+        )
+        first.search_run.refresh_from_db()
+        self.assertEqual(first.search_run.status, SearchRun.Status.DISPATCHED)
+        self.assertEqual(first.search_run.project_id, self.project.id)
+        self.assertEqual(first.search_run.agent_installation_id, self.installation.id)
+        self.assertEqual(
+            first.attempt.tool_execution.idempotency_key,
+            build_search_run_attempt_idempotency_key(run=run, attempt_number=2),
+        )
+
+    def test_succeeded_and_running_do_not_allow_retry(self):
+        run = self._dispatch_run()
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        self._complete_execution(execution)
+        completed = synchronize_search_run(search_run=run)
+        with self.assertRaises(ProspectingExecutionRecoveryError):
+            retry_search_run(search_run=completed)
+
+        running = self._dispatch_run()
+        running_execution = ToolExecution.objects.get(pk=running.agent_platform_execution_id)
+        executor = self._executor(public_id=f"run-{running_execution.id}")
+        claim_tool_execution(executor=executor, execution=running_execution)
+        running = synchronize_search_run(search_run=running)
+        self.assertEqual(running.status, SearchRun.Status.RUNNING)
+        outcome = retry_search_run(search_run=running)
+        self.assertFalse(outcome.created_new_attempt)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=running).count(), 1)
+
+    def test_dispatched_does_not_create_new_attempt(self):
+        run = self._dispatch_run()
+        outcome = retry_search_run(search_run=run)
+        self.assertFalse(outcome.created_new_attempt)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+    def test_retry_then_success_completes_run_and_sync_uses_current_attempt(self):
+        run = self._fail_run(self._dispatch_run())
+        first_execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        outcome = retry_search_run(search_run=run)
+        new_execution = ToolExecution.objects.get(pk=outcome.attempt.tool_execution_id)
+        self._complete_execution(new_execution, name="Hospital B", external_id="cid:2")
+        first_execution.error_code = "stale_should_be_ignored"
+        first_execution.save(update_fields=["error_code"])
+        synced = synchronize_search_run(search_run=run)
+        self.assertEqual(synced.status, SearchRun.Status.COMPLETED)
+        self.assertEqual(synced.agent_platform_execution_id, new_execution.id)
+        self.assertEqual(SearchResult.objects.filter(search_run=run).count(), 1)
+        synchronize_search_run(search_run=run)
+        self.assertEqual(SearchResult.objects.filter(search_run=run).count(), 1)
+
+    def test_retry_keeps_previous_results_idempotent(self):
+        run = self._dispatch_run()
+        first_execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        self._complete_execution(first_execution)
+        synchronize_search_run(search_run=run)
+        first_execution.status = ToolExecution.Status.FAILED
+        first_execution.error_code = "results_not_loaded"
+        first_execution.save(update_fields=["status", "error_code"])
+        run.status = SearchRun.Status.FAILED
+        run.save(update_fields=["status"])
+        outcome = retry_search_run(search_run=run)
+        second = ToolExecution.objects.get(pk=outcome.attempt.tool_execution_id)
+        self._complete_execution(second, name="Hospital A", external_id="cid:1")
+        synchronize_search_run(search_run=run)
+        self.assertEqual(SearchResult.objects.filter(search_run=run).count(), 1)
+
+    def test_disabled_installation_blocks_retry(self):
+        run = self._fail_run(self._dispatch_run())
+        self.installation.is_enabled = False
+        self.installation.save(update_fields=["is_enabled", "updated_at"])
+        with self.assertRaises(ProspectingExecutionRecoveryError):
+            retry_search_run(search_run=run)
+
+    def test_cancel_dispatched_is_idempotent_and_preserves_results(self):
+        run = self._dispatch_run()
+        SearchResult.objects.create(tenant=self.tenant, search_run=run, name="Hospital Previo")
+        cancelled = cancel_search_run(search_run=run)
+        cancelled_again = cancel_search_run(search_run=cancelled)
+        self.assertEqual(cancelled.status, SearchRun.Status.CANCELLED)
+        self.assertEqual(cancelled_again.status, SearchRun.Status.CANCELLED)
+        self.assertEqual(SearchResult.objects.filter(search_run=run).count(), 1)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+        ToolExecution.objects.get(pk=run.agent_platform_execution_id).refresh_from_db()
+        self.assertEqual(ToolExecution.objects.get(pk=run.agent_platform_execution_id).status, ToolExecution.Status.CANCELLED)
+
+    def test_cancel_running_is_rejected(self):
+        run = self._dispatch_run()
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        claim_tool_execution(executor=self._executor(public_id=f"cancel-{execution.id}"), execution=execution)
+        with self.assertRaises(ProspectingExecutionRecoveryError):
+            cancel_search_run(search_run=run)
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, ToolExecution.Status.RUNNING)
+
+    def test_cross_tenant_recovery_does_not_touch_foreign_run(self):
+        run = self._fail_run(self._dispatch_run())
+        foreign = SearchRun.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_installation=self.other_installation,
+            target_region="Curitiba",
+            queries=["escola curitiba"],
+            max_results=5,
+        )
+        with self.assertRaises(Exception):
+            retry_search_run(search_run=foreign)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
 
 
 class ProspectingBootstrapCommandTests(TestCase):

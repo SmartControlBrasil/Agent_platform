@@ -2,7 +2,6 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count
-from django.utils import timezone
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
@@ -15,6 +14,7 @@ from agents.application.installations import (
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from tools.forms import AgentToolBindingForm
 from tools.infrastructure.validation import summarize_tool_execution
+from tools.application.executor_presence import executor_presence
 from tools.application.identity import approve_pairing, reject_pairing, revoke_credential, rotate_credential
 from tools.application.client_identity import (
     create_service_client,
@@ -146,14 +146,8 @@ def _service_client_access_queryset(user):
 
 
 def _executor_status(executor):
-    if executor.last_seen_at is None:
-        return "offline"
-    age = timezone.now() - executor.last_seen_at
-    if age <= timezone.timedelta(minutes=5):
-        return "online"
-    if age <= timezone.timedelta(minutes=30):
-        return "recent"
-    return "offline"
+    status = executor_presence(executor).status
+    return "offline" if status == "inactive" else status
 
 
 def _base_context(active_section):

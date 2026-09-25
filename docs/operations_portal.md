@@ -269,8 +269,19 @@ Limites arquiteturais mantidos:
 
 Fluxo operacional disponível:
 
-`Pesquisas -> Nova pesquisa -> gerar plano de queries -> revisar queries -> executar -> SearchRun -> ToolExecution delegada -> SearchResults`.
+`Pesquisas -> Nova pesquisa -> gerar plano de queries -> revisar queries -> executar -> SearchRun -> attempt -> ToolExecution delegada -> SearchResults`.
 
 O dispatch usa o pipeline real de tools (`prospecting.search_google_maps`) e o acompanhamento é feito no detalhe do SearchRun, sem WebSocket e sem acoplamento direto ao executor Chrome.
 
 Na mesa de triagem do detalhe da pesquisa, operadores com permissão de gestão podem filtrar, paginar, selecionar em lote, promover e ignorar resultados. O estado `Promovido` continua derivado de `ProspectSource`; `Ignorado` é reversível para `Não revisado`, não apaga registros e não dispara enriquecimento automático.
+
+Controle operacional de execução no detalhe da pesquisa:
+
+- `REDISPATCH` recoloca a mesma `ToolExecution` não terminal na fila, segundo o lifecycle existente.
+- `RETRY` é uma ação humana explícita: quando a tentativa atual está `FAILED`, `EXPIRED` ou `CANCELLED`, cria uma nova `SearchRunExecutionAttempt` e uma nova `ToolExecution` com chave de idempotência `prospecting:search_run:<id>:attempt:<n>`.
+- Duplo clique em "Tentar novamente" não cria duas tentativas.
+- Tentativas anteriores permanecem auditáveis. `SearchRun.agent_platform_execution_id` aponta somente para a tentativa atual.
+- `SUCCEEDED`/`COMPLETED` e `RUNNING` não oferecem retry. `DISPATCHED` aguarda executor e não cria nova tentativa.
+- Cancelamento é permitido apenas em `PENDING`/`DISPATCHED`. `RUNNING` não é cancelável nesta fase porque o executor Chrome não interrompe a execução em andamento.
+- Cancelar não apaga `SearchResults`, attempts, `ToolExecution` nem proveniência.
+- Presence do executor (`Online`/`Offline`) é derivada de `is_active` + `last_seen_at` + `TOOL_EXECUTOR_ONLINE_THRESHOLD_MINUTES` (padrão 5). Não existe retry automático, scheduler ou seleção manual de executor.

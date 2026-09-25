@@ -205,6 +205,16 @@ def expire_tool_execution(execution: ToolExecution, *, actor=None, request=None)
     return execution
 
 
+def cancel_tool_execution(execution: ToolExecution, *, actor=None, request=None) -> ToolExecution:
+    if execution.status == ToolExecution.Status.CANCELLED:
+        return execution
+    if execution.status == ToolExecution.Status.RUNNING:
+        raise ToolExecutionLifecycleError("Running tool executions cannot be cancelled safely.")
+    execution = transition_execution(execution, ToolExecution.Status.CANCELLED)
+    record_tool_execution_event(ACTION_EXECUTION_CANCELLED, execution, actor=actor, request=request)
+    return execution
+
+
 def record_tool_execution_event(action: str, execution: ToolExecution, *, actor=None, request=None) -> None:
     record_audit_event(
         action=action,

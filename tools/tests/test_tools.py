@@ -1331,3 +1331,77 @@ class ServiceClientApiTests(ToolTestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
+
+
+class ToolExecutorPresenceAndCancelTests(TestCase):
+    def test_executor_presence_uses_central_thresholds(self):
+        from tools.application.executor_presence import executor_presence
+        from tools.models import ToolExecutor
+
+        tenant = Tenant.objects.create(name="Presence", slug="presence-tenant")
+        executor = ToolExecutor.objects.create(
+            tenant=tenant,
+            name="Chrome",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="presence-exec",
+            last_seen_at=timezone.now(),
+        )
+        self.assertTrue(executor_presence(executor).is_online)
+        executor.last_seen_at = timezone.now() - timezone.timedelta(minutes=10)
+        executor.save(update_fields=["last_seen_at", "updated_at"])
+        presence = executor_presence(executor)
+        self.assertFalse(presence.is_online)
+        self.assertEqual(presence.status, "recent")
+        executor.last_seen_at = None
+        executor.save(update_fields=["last_seen_at", "updated_at"])
+        self.assertEqual(executor_presence(executor).status, "offline")
+
+    def test_cancel_tool_execution_rejects_running(self):
+        from tools.application.lifecycle import cancel_tool_execution
+        from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor
+
+        tenant = Tenant.objects.create(name="Cancel", slug="cancel-tenant")
+        project = Project.objects.create(tenant=tenant, name="P", slug="p")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting",
+        )
+        tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+        binding = AgentToolBinding.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_installation=installation,
+            tool_definition=tool,
+        )
+        execution = ToolExecution.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_installation=installation,
+            tool_binding=binding,
+            tool_definition=tool,
+            execution_mode=tool.execution_mode,
+            status=ToolExecution.Status.DISPATCHED,
+            request_payload={"input": {"queries": ["q"]}},
+        )
+        cancelled = cancel_tool_execution(execution)
+        self.assertEqual(cancelled.status, ToolExecution.Status.CANCELLED)
+        again = cancel_tool_execution(cancelled)
+        self.assertEqual(again.status, ToolExecution.Status.CANCELLED)
+
+        running = ToolExecution.objects.create(
+            tenant=tenant,
+            project=project,
+            agent_installation=installation,
+            tool_binding=binding,
+            tool_definition=tool,
+            execution_mode=tool.execution_mode,
+            status=ToolExecution.Status.RUNNING,
+            request_payload={"input": {"queries": ["q"]}},
+        )
+        with self.assertRaises(ToolExecutionLifecycleError):
+            cancel_tool_execution(running)
