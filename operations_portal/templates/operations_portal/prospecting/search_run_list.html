@@ -11,6 +11,13 @@
         <li class="breadcrumb-item active">Prospecção · Pesquisas</li>
       </ol>
     </div>
+    <div>
+      {% if can_create %}
+      <a class="btn btn-primary" href="{% url 'operations_portal:prospecting_search_run_create' %}">+ Nova pesquisa</a>
+      {% elif can_manage and portal_is_global %}
+      <button class="btn btn-outline-secondary" type="button" disabled>Selecione um tenant para criar pesquisa</button>
+      {% endif %}
+    </div>
   </div>
 
   <div class="card mb-3">
@@ -49,7 +56,7 @@
                 <div class="text-muted small">{{ run.tenant.name }}</div>
               </td>
               <td>{{ run.target_region }}</td>
-              <td><span class="badge bg-light text-dark">{{ run.get_status_display }}</span></td>
+              <td><span class="badge bg-{{ run.status_tone }}-subtle text-{{ run.status_tone }}">{{ run.status_label }}</span></td>
               <td>{{ run.queries|length }}</td>
               <td>{{ run.results.count }}</td>
               <td>{{ run.created_at }}</td>

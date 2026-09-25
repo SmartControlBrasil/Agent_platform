@@ -246,6 +246,7 @@ A prospecção operacional faz parte do `Agent_platform` e usa exclusivamente o 
 Rotas principais:
 
 - `/painel/prospeccao/pesquisas/`
+- `/painel/prospeccao/pesquisas/nova/`
 - `/painel/prospeccao/pesquisas/<uuid>/`
 - `/painel/prospeccao/prospects/`
 - `/painel/prospeccao/prospects/<uuid>/`
@@ -264,3 +265,9 @@ Limites arquiteturais mantidos:
 - `/admin/` continua sendo o Django Admin técnico;
 - não existe UI operacional paralela oficial fora do Hando;
 - não foram adicionados CRM pipeline, scoring, IA comercial ou automações de outreach nesta fase.
+
+Fluxo operacional disponível:
+
+`Pesquisas -> Nova pesquisa -> gerar plano de queries -> revisar queries -> executar -> SearchRun -> ToolExecution delegada -> SearchResults`.
+
+O dispatch usa o pipeline real de tools (`prospecting.search_google_maps`) e o acompanhamento é feito no detalhe do SearchRun, sem WebSocket e sem acoplamento direto ao executor Chrome.

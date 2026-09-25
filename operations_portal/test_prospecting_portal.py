@@ -8,6 +8,7 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.models import ProspectEnrichment, ProspectSource, SearchResult, SearchRun
 from tenants.models import Tenant, TenantMembership
+from tools.models import AgentToolBinding, ToolDefinition
 
 
 TEST_STORAGES = {
@@ -47,6 +48,36 @@ class ProspectingPortalTests(TestCase):
             agent_definition=definition,
             agent_version=version,
             name="Prospecting B",
+        )
+        self.plan_tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        self.maps_tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+        AgentToolBinding.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.plan_tool,
+            configuration={"max_queries": 4},
+        )
+        AgentToolBinding.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.maps_tool,
+            configuration={},
+        )
+        AgentToolBinding.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_installation=self.other_installation,
+            tool_definition=self.plan_tool,
+            configuration={"max_queries": 4},
+        )
+        AgentToolBinding.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_installation=self.other_installation,
+            tool_definition=self.maps_tool,
+            configuration={},
         )
         self.run = SearchRun.objects.create(
             tenant=self.tenant,
@@ -179,3 +210,122 @@ class ProspectingPortalTests(TestCase):
         response = self.client.get(reverse("operations_portal:prospecting_search_run_list"))
         self.assertContains(response, "Prospecção · Pesquisas")
         self.assertContains(response, "Prospecção · Prospects")
+
+    def test_new_search_button_visibility_depends_on_role(self):
+        self._login(self.admin)
+        admin_response = self.client.get(reverse("operations_portal:prospecting_search_run_list"))
+        self.assertContains(admin_response, "+ Nova pesquisa")
+
+        self._login(self.viewer)
+        viewer_response = self.client.get(reverse("operations_portal:prospecting_search_run_list"))
+        self.assertNotContains(viewer_response, "+ Nova pesquisa")
+
+    def test_new_search_requires_specific_tenant_context(self):
+        superuser = get_user_model().objects.create_superuser(username="root", password="pass", email="root@example.com")
+        self._login(superuser)
+
+        response = self.client.get(f"{reverse('operations_portal:prospecting_search_run_list')}?tenant=global")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Selecione um tenant para criar pesquisa")
+
+    def test_new_search_create_flow_generates_plan_and_dispatches_run(self):
+        self._login(self.admin)
+        create_url = reverse("operations_portal:prospecting_search_run_create")
+        execute_url = reverse("operations_portal:prospecting_search_run_execute")
+
+        get_response = self.client.get(create_url)
+        self.assertEqual(get_response.status_code, 200)
+
+        plan_response = self.client.post(
+            create_url,
+            {
+                "tenant": str(self.tenant.pk),
+                "project": str(self.project.pk),
+                "objective": "Encontrar hospitais para apresentar robôs",
+                "target_region": "Barueri",
+            },
+        )
+        self.assertEqual(plan_response.status_code, 200)
+        self.assertContains(plan_response, "Queries sugeridas")
+
+        session = self.client.session
+        drafts = session.get("operations_portal_prospecting_drafts", {})
+        self.assertEqual(len(drafts), 1)
+        draft_id, draft = next(iter(drafts.items()))
+        self.assertEqual(draft["project_id"], str(self.project.pk))
+        self.assertTrue(draft["queries"])
+
+        execute_response = self.client.post(
+            execute_url,
+            {
+                "tenant": str(self.tenant.pk),
+                "draft_id": draft_id,
+                "selected_queries": draft["queries"][:2],
+            },
+        )
+        self.assertEqual(execute_response.status_code, 302)
+        run = SearchRun.objects.exclude(id=self.run.id).latest("created_at")
+        self.assertEqual(run.tenant_id, self.tenant.id)
+        self.assertEqual(run.project_id, self.project.id)
+        self.assertEqual(run.agent_installation_id, self.installation.id)
+        self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
+        self.assertEqual(run.objective, "Encontrar hospitais para apresentar robôs")
+        self.assertEqual(run.target_region, "Barueri")
+        self.assertEqual(len(run.queries), 2)
+        self.assertEqual(str(run.id), execute_response.url.rstrip("/").split("/")[-1])
+
+        retry_response = self.client.post(
+            execute_url,
+            {
+                "tenant": str(self.tenant.pk),
+                "draft_id": draft_id,
+                "selected_queries": draft["queries"][:2],
+            },
+        )
+        self.assertEqual(retry_response.status_code, 302)
+        self.assertEqual(SearchRun.objects.filter(objective="Encontrar hospitais para apresentar robôs").count(), 1)
+
+    def test_cross_tenant_project_is_rejected_on_new_search(self):
+        self._login(self.admin)
+        response = self.client.post(
+            reverse("operations_portal:prospecting_search_run_create"),
+            {
+                "tenant": str(self.tenant.pk),
+                "project": str(self.other_project.pk),
+                "objective": "objetivo",
+                "target_region": "região",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Revise os campos destacados")
+
+    def test_viewer_cannot_open_new_search(self):
+        self._login(self.viewer)
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_create"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_new_search_execute_rejects_zero_queries(self):
+        self._login(self.admin)
+        create_url = reverse("operations_portal:prospecting_search_run_create")
+        execute_url = reverse("operations_portal:prospecting_search_run_execute")
+        self.client.post(
+            create_url,
+            {
+                "tenant": str(self.tenant.pk),
+                "project": str(self.project.pk),
+                "objective": "Buscar hospitais",
+                "target_region": "Barueri",
+            },
+        )
+        draft_id = next(iter(self.client.session.get("operations_portal_prospecting_drafts", {}).keys()))
+
+        response = self.client.post(
+            execute_url,
+            {
+                "tenant": str(self.tenant.pk),
+                "draft_id": draft_id,
+                "selected_queries": [],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Selecione pelo menos uma query válida")

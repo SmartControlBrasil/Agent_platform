@@ -45,3 +45,34 @@ class ProspectEnrichmentCreateForm(_StyledForm):
     source_type = forms.ChoiceField(choices=ProspectEnrichment.SourceType.choices, initial=ProspectEnrichment.SourceType.MANUAL)
     source_reference = forms.CharField(required=False, max_length=320)
     source_url = forms.URLField(required=False, max_length=1000)
+
+
+class ProspectingSearchPlanForm(_StyledForm):
+    project = forms.ModelChoiceField(queryset=Project.objects.none(), required=True, empty_label=None)
+    objective = forms.CharField(required=True, max_length=500, widget=forms.Textarea(attrs={"rows": 3}))
+    target_region = forms.CharField(required=True, max_length=160)
+
+    def __init__(self, *args, project_queryset=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["project"].queryset = project_queryset or Project.objects.none()
+        self.fields["objective"].widget.attrs.setdefault(
+            "placeholder",
+            "Ex.: Encontrar hospitais para apresentar soluções robóticas",
+        )
+        self.fields["target_region"].widget.attrs.setdefault(
+            "placeholder",
+            "Ex.: Barueri e Alphaville, SP",
+        )
+
+
+class ProspectingSearchQueryReviewForm(_StyledForm):
+    draft_id = forms.CharField(required=True, max_length=64, widget=forms.HiddenInput())
+    selected_queries = forms.MultipleChoiceField(
+        required=True,
+        choices=(),
+        widget=forms.CheckboxSelectMultiple,
+    )
+
+    def __init__(self, *args, query_choices=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["selected_queries"].choices = tuple(query_choices or ())

@@ -11,12 +11,19 @@
         <li class="breadcrumb-item active">Detalhe</li>
       </ol>
     </div>
+    {% if can_manage and not portal_is_global %}
+    <form method="post" action="{% url 'operations_portal:prospecting_search_run_refresh' search_run.id %}">
+      {% csrf_token %}
+      <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+      <button type="submit" class="btn btn-outline-primary">Atualizar status</button>
+    </form>
+    {% endif %}
   </div>
 
   <div class="row g-3 mb-3">
     <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Projeto</div><div class="fw-semibold">{{ search_run.project.name }}</div></div></div></div>
     <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Região</div><div class="fw-semibold">{{ search_run.target_region }}</div></div></div></div>
-    <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Status</div><div class="fw-semibold">{{ search_run.get_status_display }}</div></div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Status</div><div class="fw-semibold"><span class="badge bg-{{ search_run.status_tone }}-subtle text-{{ search_run.status_tone }}">{{ search_run.status_label }}</span></div></div></div></div>
   </div>
 
   <div class="card mb-3">
@@ -28,6 +35,10 @@
         <div class="col-md-3"><div class="text-muted small">Locale</div><div>{{ search_run.locale }}</div></div>
       </div>
       <div class="mt-3">
+        <div class="text-muted small mb-1">Objetivo</div>
+        <div>{{ search_run.objective|default:"—" }}</div>
+      </div>
+      <div class="mt-3">
         <div class="text-muted small mb-1">Queries</div>
         {% for query in search_run.queries %}
           <span class="badge bg-soft-primary text-primary me-1 mb-1">{{ query }}</span>
@@ -37,6 +48,29 @@
       </div>
     </div>
   </div>
+
+  {% if execution %}
+  <div class="card mb-3">
+    <div class="card-header"><h5 class="mb-0">Execução delegada</h5></div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-3"><div class="text-muted small">ToolExecution</div><div class="fw-semibold">{{ execution.id }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Status</div><div class="fw-semibold">{{ execution.status }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Criada</div><div>{{ execution.created_at }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Iniciada</div><div>{{ execution.started_at|default:"—" }}</div></div>
+        <div class="col-md-3"><div class="text-muted small">Executor</div><div>{{ execution.executor.name|default:"Aguardando executor" }}</div></div>
+      </div>
+      {% if execution_summary %}
+      <hr>
+      <div class="row g-3">
+        <div class="col-md-2"><div class="text-muted small">Queries</div><div>{{ execution_summary.queries|length }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Resultados</div><div>{{ execution_summary.result_count }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Duração (ms)</div><div>{{ execution_summary.duration_ms|default:"—" }}</div></div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   <div class="card">
     <div class="card-header"><h5 class="mb-0">SearchResults</h5></div>

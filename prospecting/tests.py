@@ -9,11 +9,18 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.search_runs import (
+    build_search_plan_for_manual_run,
+    create_and_dispatch_search_run,
+    synchronize_search_run,
+)
 from prospecting.application.website_enrichment import enrich_prospect_from_website
 from prospecting.infrastructure.website_fetcher import validate_public_http_url
 from prospecting.interfaces.website import WebsiteFetchResult
 from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun
 from tenants.models import Tenant
+from tools.application.lifecycle import claim_tool_execution, complete_tool_execution, fail_tool_execution
+from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
 
 
 class ProspectingDomainTests(TestCase):
@@ -309,3 +316,152 @@ class ProspectingDomainTests(TestCase):
         self.assertGreaterEqual(result.pages_fetched, 1)
         self.assertGreaterEqual(result.enrichments_created, 1)
         self.assertTrue(result.warnings)
+
+
+class ProspectingSearchRunExecutionTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        self.project = Project.objects.create(tenant=self.tenant, name="Projeto A", slug="project-a")
+        self.definition = AgentDefinition.objects.get(slug="prospecting")
+        self.version = AgentVersion.objects.get(agent_definition=self.definition, version="1.0.0")
+        self.installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting A",
+            configuration={
+                "target_market": "hospitais",
+                "target_profile": "hospitais privados",
+                "max_results": 5,
+            },
+        )
+        self.plan_tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        self.maps_tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+        AgentToolBinding.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.plan_tool,
+            configuration={"max_queries": 4},
+        )
+        AgentToolBinding.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            tool_definition=self.maps_tool,
+            configuration={},
+        )
+
+    def test_build_search_plan_uses_bound_tool_path(self):
+        plan = build_search_plan_for_manual_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+        )
+
+        self.assertEqual(len(plan["queries"]), 4)
+        self.assertEqual(plan["installation"].id, self.installation.id)
+        self.assertEqual(
+            ToolExecution.objects.filter(
+                agent_installation=self.installation,
+                tool_definition=self.plan_tool,
+                status=ToolExecution.Status.SUCCEEDED,
+            ).count(),
+            1,
+        )
+
+    def test_create_run_dispatches_google_maps_with_single_execution(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri", "hospitais privados Barueri"],
+        )
+
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
+        self.assertEqual(run.max_results, 5)
+        self.assertEqual(run.queries, ["hospitais Barueri", "hospitais privados Barueri"])
+        self.assertEqual(execution.tool_definition.slug, "prospecting.search_google_maps")
+        self.assertEqual(execution.request_payload["input"]["queries"], run.queries)
+        self.assertEqual(execution.request_payload["input"]["target_region"], "Barueri")
+
+    def test_sync_succeeded_materializes_results_without_duplicates(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Executor Browser",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="browser-a",
+        )
+        ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.maps_tool)
+        claim_tool_execution(executor=executor, execution=execution)
+        complete_tool_execution(
+            executor=executor,
+            execution=execution,
+            result={
+                "schema_version": 1,
+                "status": "completed",
+                "businesses": [
+                    {
+                        "name": "Hospital A",
+                        "category": None,
+                        "address": "Rua A, 1",
+                        "phone": None,
+                        "website": None,
+                        "maps_url": "https://maps.google.com/?cid=1",
+                        "external_id": "cid:1",
+                        "source_query": "hospitais Barueri",
+                    }
+                ],
+                "stats": {
+                    "queries_requested": 1,
+                    "queries_executed": 1,
+                    "businesses_found": 1,
+                    "businesses_returned": 1,
+                    "duplicates_removed": 0,
+                    "duration_ms": 1234,
+                },
+            },
+        )
+
+        first_sync = synchronize_search_run(search_run=run)
+        second_sync = synchronize_search_run(search_run=run)
+
+        self.assertEqual(first_sync.status, SearchRun.Status.COMPLETED)
+        self.assertEqual(second_sync.status, SearchRun.Status.COMPLETED)
+        self.assertEqual(SearchResult.objects.filter(search_run=run).count(), 1)
+
+    def test_sync_failed_does_not_mark_run_completed(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = ToolExecutor.objects.create(
+            tenant=self.tenant,
+            name="Executor Browser",
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            public_id="browser-b",
+        )
+        ToolExecutorCapability.objects.create(executor=executor, tool_definition=self.maps_tool)
+        claim_tool_execution(executor=executor, execution=execution)
+        fail_tool_execution(executor=executor, execution=execution, error_code="executor_failed", error_message="sem navegador")
+
+        synced = synchronize_search_run(search_run=run)
+
+        self.assertEqual(synced.status, SearchRun.Status.FAILED)
+        self.assertNotEqual(synced.status, SearchRun.Status.COMPLETED)
