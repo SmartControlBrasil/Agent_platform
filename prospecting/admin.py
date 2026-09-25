@@ -29,8 +29,8 @@ class SearchResultAdmin(admin.ModelAdmin):
 
 @admin.register(Prospect)
 class ProspectAdmin(admin.ModelAdmin):
-    list_display = ("display_name", "tenant", "external_id", "created_at")
-    list_filter = ("tenant",)
+    list_display = ("display_name", "tenant", "qualification_status", "priority", "external_id", "created_at")
+    list_filter = ("tenant", "qualification_status", "priority")
     search_fields = ("display_name", "address", "phone", "website", "maps_url", "external_id", "identity_key")
     readonly_fields = ("id", "identity_key", "created_at", "updated_at")
 

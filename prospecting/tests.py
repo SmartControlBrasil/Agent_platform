@@ -11,6 +11,7 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.review import (
     ProspectingReviewError,
     bulk_ignore_search_results,
@@ -34,6 +35,8 @@ from prospecting.infrastructure.website_fetcher import validate_public_http_url
 from prospecting.interfaces.website import WebsiteFetchResult
 from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 from tenants.models import Tenant
+from audit.models import AuditEvent
+from django.contrib.auth import get_user_model
 from tools.application.lifecycle import claim_tool_execution, complete_tool_execution, fail_tool_execution
 from tools.models import (
     AgentToolBinding,
@@ -121,6 +124,8 @@ class ProspectingDomainTests(TestCase):
         source = ProspectSource.objects.get(search_result=self.search_result)
         self.assertEqual(source.prospect_id, prospect.id)
         self.assertEqual(source.search_run_id, self.search_run.id)
+        self.assertEqual(prospect.qualification_status, Prospect.QualificationStatus.UNQUALIFIED)
+        self.assertEqual(prospect.priority, Prospect.Priority.UNSET)
 
     def test_promotion_is_idempotent(self):
         first = promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)
@@ -787,6 +792,141 @@ class ProspectingExecutionRecoveryTests(TestCase):
         with self.assertRaises(Exception):
             retry_search_run(search_run=foreign)
         self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+
+class ProspectingQualificationTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant")
+        self.project = Project.objects.create(tenant=self.tenant, name="Projeto A", slug="project-a")
+        self.definition = AgentDefinition.objects.get(slug="prospecting")
+        self.version = AgentVersion.objects.get(agent_definition=self.definition, version="1.0.0")
+        self.installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting A",
+        )
+        self.search_run = SearchRun.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=self.installation,
+            target_region="São Paulo",
+            queries=["hospital privado são paulo"],
+            max_results=10,
+        )
+        self.search_result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=self.search_run,
+            name="Hospital Exemplo",
+            website="https://hospital.example.com",
+            external_id="cid:1",
+            source_query="hospital privado são paulo",
+        )
+        self.prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)
+
+    def test_qualify_prospect_updates_fields_and_audit(self):
+        updated, changed = qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="Hospital privado com site ativo.",
+            actor=self.user,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(updated.qualification_status, Prospect.QualificationStatus.QUALIFIED)
+        self.assertEqual(updated.priority, Prospect.Priority.HIGH)
+        self.assertEqual(updated.qualification_note, "Hospital privado com site ativo.")
+        self.assertIsNotNone(updated.qualified_at)
+        self.assertEqual(updated.qualified_by, self.user)
+        event = AuditEvent.objects.get(action=ACTION_PROSPECT_QUALIFICATION_UPDATED)
+        self.assertEqual(event.before_data["qualification_status"], Prospect.QualificationStatus.UNQUALIFIED)
+        self.assertEqual(event.after_data["qualification_status"], Prospect.QualificationStatus.QUALIFIED)
+
+    def test_not_a_fit_and_on_hold_and_reversal(self):
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.NOT_A_FIT,
+            priority=Prospect.Priority.LOW,
+            qualification_note="Fora do perfil atual.",
+            actor=self.user,
+        )
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, Prospect.QualificationStatus.NOT_A_FIT)
+        self.assertEqual(ProspectSource.objects.filter(prospect=self.prospect).count(), 1)
+
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="Reavaliado.",
+            actor=self.user,
+        )
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, Prospect.QualificationStatus.QUALIFIED)
+
+    def test_qualification_does_not_change_core_prospect_fields(self):
+        before = (
+            self.prospect.display_name,
+            self.prospect.phone,
+            self.prospect.website,
+            self.prospect.maps_url,
+            self.prospect.external_id,
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.ON_HOLD,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="Aguardar momento.",
+            actor=self.user,
+        )
+        self.prospect.refresh_from_db()
+        after = (
+            self.prospect.display_name,
+            self.prospect.phone,
+            self.prospect.website,
+            self.prospect.maps_url,
+            self.prospect.external_id,
+        )
+        self.assertEqual(before, after)
+
+    def test_cross_tenant_qualification_rejected(self):
+        with self.assertRaises(ValidationError):
+            qualify_prospect(
+                tenant=self.other_tenant,
+                prospect=self.prospect,
+                qualification_status=Prospect.QualificationStatus.QUALIFIED,
+                priority=Prospect.Priority.HIGH,
+                qualification_note="",
+                actor=self.user,
+            )
+
+    def test_idempotent_qualification_skips_audit(self):
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="Nota.",
+            actor=self.user,
+        )
+        self.assertEqual(AuditEvent.objects.filter(action=ACTION_PROSPECT_QUALIFICATION_UPDATED).count(), 1)
+        _, changed = qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="Nota.",
+            actor=self.user,
+        )
+        self.assertFalse(changed)
+        self.assertEqual(AuditEvent.objects.filter(action=ACTION_PROSPECT_QUALIFICATION_UPDATED).count(), 1)
 
 
 class ProspectingBootstrapCommandTests(TestCase):

@@ -68,6 +68,16 @@ Fluxo operacional:
 A prevenção contra duplicidade permanece centralizada no serviço de CRM e é reforçada pela UI: leads já enviados, com `crm_external_id` ou com `sent_to_crm_at` não exibem a ação e não chamam o serviço se receberem POST manual.
 
 
+## Prospecção · qualificação manual
+
+Em `/painel/prospeccao/prospects/<id>/`, operadores com `commercial.manage` registram qualificação comercial do `Prospect`:
+
+- status (`Não qualificado`, `Qualificado`, `Fora do perfil`, `Em espera`);
+- prioridade manual (`Baixa`, `Média`, `Alta` ou `—`);
+- observação curta.
+
+`commercial.view` permite visualizar; alterações exigem POST com `commercial.manage`. Qualificação não altera dados principais do prospect (nome, telefone, website, proveniência). **Qualificação ≠ pipeline comercial; prioridade ≠ score automático.**
+
 ## Terceira fase
 
 A visão geral em `/painel/` passou a ser um dashboard analítico com dados reais e seletor de período.

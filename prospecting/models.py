@@ -220,6 +220,18 @@ class SearchRunExecutionAttempt(models.Model):
 
 
 class Prospect(models.Model):
+    class QualificationStatus(models.TextChoices):
+        UNQUALIFIED = "UNQUALIFIED", "Não qualificado"
+        QUALIFIED = "QUALIFIED", "Qualificado"
+        NOT_A_FIT = "NOT_A_FIT", "Fora do perfil"
+        ON_HOLD = "ON_HOLD", "Em espera"
+
+    class Priority(models.TextChoices):
+        UNSET = "UNSET", "—"
+        LOW = "LOW", "Baixa"
+        MEDIUM = "MEDIUM", "Média"
+        HIGH = "HIGH", "Alta"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospects")
     display_name = models.CharField(max_length=220)
@@ -229,13 +241,33 @@ class Prospect(models.Model):
     maps_url = models.URLField(max_length=1000, blank=True, null=True)
     external_id = models.CharField(max_length=180, blank=True, null=True)
     identity_key = models.CharField(max_length=320)
+    qualification_status = models.CharField(
+        max_length=16,
+        choices=QualificationStatus.choices,
+        default=QualificationStatus.UNQUALIFIED,
+    )
+    priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.UNSET)
+    qualification_note = models.TextField(blank=True, default="")
+    qualified_at = models.DateTimeField(null=True, blank=True)
+    qualified_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="qualified_prospects",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["display_name"]
         constraints = [models.UniqueConstraint(fields=["tenant", "identity_key"], name="unique_prospect_identity_per_tenant")]
-        indexes = [models.Index(fields=["tenant", "identity_key"]), models.Index(fields=["tenant", "display_name"])]
+        indexes = [
+            models.Index(fields=["tenant", "identity_key"]),
+            models.Index(fields=["tenant", "display_name"]),
+            models.Index(fields=["tenant", "qualification_status"]),
+            models.Index(fields=["tenant", "priority"]),
+        ]
 
     def clean(self):
         self.display_name = " ".join((self.display_name or "").split())
@@ -248,6 +280,13 @@ class Prospect(models.Model):
         self.identity_key = " ".join((self.identity_key or "").split())
         if not self.identity_key:
             raise ValidationError({"identity_key": "Prospect identity key is required."})
+        if self.qualification_status not in self.QualificationStatus.values:
+            raise ValidationError({"qualification_status": "Prospect qualification_status is invalid."})
+        if self.priority not in self.Priority.values:
+            raise ValidationError({"priority": "Prospect priority is invalid."})
+        self.qualification_note = (self.qualification_note or "").strip()
+        if len(self.qualification_note) > 2000:
+            raise ValidationError({"qualification_note": "Qualification note must be at most 2000 characters."})
 
     def save(self, *args, **kwargs):
         self.full_clean()

@@ -7,8 +7,11 @@ from django.utils import timezone
 
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
+from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED
 from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
-from prospecting.models import ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from audit.models import AuditEvent
 from tenants.models import Tenant, TenantMembership
 from tools.application.lifecycle import claim_tool_execution, fail_tool_execution
 from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
@@ -642,3 +645,122 @@ class ProspectingPortalTests(TestCase):
         response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
         self.assertContains(response, "Online")
         self.assertNotContains(response, "Nenhum executor compatível está online no momento.")
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingQualificationPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-q", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-q", password="pass")
+        self.other_admin = User.objects.create_user(username="other-admin-q", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-q")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-q")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        TenantMembership.objects.create(tenant=self.other_tenant, user=self.other_admin, role=TenantMembership.Role.TENANT_ADMIN)
+        self.project = Project.objects.create(tenant=self.tenant, name="Comercial", slug="comercial-q")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Q",
+        )
+        run = SearchRun.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=installation,
+            target_region="São Paulo",
+            queries=["hospital privado"],
+            max_results=10,
+        )
+        result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=run,
+            name="Hospital Qualificação",
+            external_id="cid-q-1",
+            source_query="hospital privado",
+        )
+        self.prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=result)
+        self.client = Client()
+
+    def _qualify_payload(self, **overrides):
+        payload = {
+            "qualification_status": Prospect.QualificationStatus.QUALIFIED,
+            "priority": Prospect.Priority.HIGH,
+            "qualification_note": "Canal comercial público.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_detail_shows_qualification_block_and_viewer_cannot_post(self):
+        self.client.force_login(self.viewer)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, "Qualificação")
+        self.assertContains(detail, "Não qualificado")
+        self.assertNotContains(detail, "Salvar qualificação")
+
+        post = self.client.post(
+            reverse("operations_portal:prospecting_qualify_prospect", args=[self.prospect.id]),
+            self._qualify_payload(),
+        )
+        self.assertEqual(post.status_code, 403)
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, Prospect.QualificationStatus.UNQUALIFIED)
+
+    def test_admin_post_updates_qualification_and_get_is_read_only(self):
+        self.client.force_login(self.admin)
+        url = reverse("operations_portal:prospecting_qualify_prospect", args=[self.prospect.id])
+        self.assertEqual(self.client.get(url).status_code, 405)
+
+        response = self.client.post(url, self._qualify_payload())
+        self.assertEqual(response.status_code, 302)
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, Prospect.QualificationStatus.QUALIFIED)
+        self.assertEqual(self.prospect.priority, Prospect.Priority.HIGH)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_QUALIFICATION_UPDATED).exists())
+
+        list_response = self.client.get(
+            reverse("operations_portal:prospecting_prospect_list"),
+            {"qualification_status": Prospect.QualificationStatus.QUALIFIED},
+        )
+        self.assertContains(list_response, "Hospital Qualificação")
+        self.assertContains(list_response, "Qualificado")
+        self.assertContains(list_response, "Alta")
+
+    def test_priority_filter_and_cross_tenant_protection(self):
+        self.client.force_login(self.admin)
+        self.client.post(
+            reverse("operations_portal:prospecting_qualify_prospect", args=[self.prospect.id]),
+            self._qualify_payload(),
+        )
+        filtered = self.client.get(
+            reverse("operations_portal:prospecting_prospect_list"),
+            {"priority": Prospect.Priority.HIGH},
+        )
+        self.assertContains(filtered, "Hospital Qualificação")
+
+        other_run = SearchRun.objects.create(
+            tenant=self.other_tenant,
+            project=Project.objects.create(tenant=self.other_tenant, name="Outro", slug="outro-proj-q"),
+            target_region="Curitiba",
+            queries=["escola"],
+            max_results=5,
+        )
+        other_result = SearchResult.objects.create(
+            tenant=self.other_tenant,
+            search_run=other_run,
+            name="Escola Outra",
+            external_id="cid-other",
+            source_query="escola",
+        )
+        other_prospect = promote_search_result_to_prospect(tenant=self.other_tenant, search_result=other_result)
+        forbidden = self.client.post(
+            reverse("operations_portal:prospecting_qualify_prospect", args=[other_prospect.id]),
+            self._qualify_payload(),
+        )
+        self.assertEqual(forbidden.status_code, 404)

@@ -15,6 +15,7 @@ from operations_portal.access import portal_template_context, require_portal_cap
 from operations_portal.prospecting_forms import (
     ProspectEnrichmentCreateForm,
     ProspectFilterForm,
+    ProspectQualificationForm,
     ProspectingSearchPlanForm,
     ProspectingSearchQueryReviewForm,
     SearchResultBulkActionForm,
@@ -25,6 +26,7 @@ from operations_portal.selectors import clean_querystring
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.qualification import qualify_prospect
 from prospecting.application.execution_recovery import (
     ProspectingExecutionRecoveryError,
     cancel_search_run,
@@ -710,6 +712,12 @@ def prospecting_prospect_list(request):
         query = (form.cleaned_data.get("q") or "").strip()
         if project:
             queryset = queryset.filter(sources__search_run__project=project)
+        qualification_status = form.cleaned_data.get("qualification_status")
+        priority = form.cleaned_data.get("priority")
+        if qualification_status:
+            queryset = queryset.filter(qualification_status=qualification_status)
+        if priority:
+            queryset = queryset.filter(priority=priority)
         if query:
             queryset = queryset.filter(
                 Q(display_name__icontains=query)
@@ -755,10 +763,44 @@ def prospecting_prospect_detail(request, prospect_id):
                 "source_type": ProspectEnrichment.SourceType.MANUAL,
             }
         ),
+        "qualification_form": ProspectQualificationForm(prospect=prospect),
         "can_manage": access.is_global or CAPABILITY_COMMERCIAL_MANAGE in access.capabilities,
     }
     context.update(portal_template_context(access))
     return render(request, "operations_portal/prospecting/prospect_detail.html", context)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_qualify_prospect(request, prospect_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    form = ProspectQualificationForm(request.POST, prospect=prospect)
+    if not form.is_valid():
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    try:
+        _, changed = qualify_prospect(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            qualification_status=form.cleaned_data["qualification_status"],
+            priority=form.cleaned_data["priority"],
+            qualification_note=form.cleaned_data.get("qualification_note") or "",
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+    if changed:
+        messages.success(request, "Qualificação salva.")
+    else:
+        messages.info(request, "Qualificação já estava atualizada.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
 
 
 @login_required(login_url="/admin/login/")

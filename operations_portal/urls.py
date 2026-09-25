@@ -62,6 +62,7 @@ urlpatterns = [
     ),
     path("prospeccao/prospects/", prospecting_views.prospecting_prospect_list, name="prospecting_prospect_list"),
     path("prospeccao/prospects/<uuid:prospect_id>/", prospecting_views.prospecting_prospect_detail, name="prospecting_prospect_detail"),
+    path("prospeccao/prospects/<uuid:prospect_id>/qualificacao/", prospecting_views.prospecting_qualify_prospect, name="prospecting_qualify_prospect"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/adicionar/", prospecting_views.prospecting_add_enrichment, name="prospecting_add_enrichment"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/website/", prospecting_views.prospecting_website_enrichment, name="prospecting_website_enrichment"),
     path("configuracao/tenants/", tenant_config_views.tenant_config_list, name="tenant_config_list"),

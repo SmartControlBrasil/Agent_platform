@@ -3,7 +3,7 @@ from __future__ import annotations
 from django import forms
 
 from projects.models import Project
-from prospecting.models import ProspectEnrichment, SearchResult, SearchRun
+from prospecting.models import Prospect, ProspectEnrichment, SearchResult, SearchRun
 
 
 class _StyledForm(forms.Form):
@@ -31,12 +31,46 @@ class SearchRunFilterForm(_StyledForm):
 
 class ProspectFilterForm(_StyledForm):
     project = forms.ModelChoiceField(queryset=Project.objects.none(), required=False, empty_label="Todos")
+    qualification_status = forms.ChoiceField(
+        required=False,
+        choices=[("", "Qualificação: todas")] + list(Prospect.QualificationStatus.choices),
+    )
+    priority = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Prioridade: todas"),
+            (Prospect.Priority.HIGH, "Alta"),
+            (Prospect.Priority.MEDIUM, "Média"),
+            (Prospect.Priority.LOW, "Baixa"),
+        ],
+    )
     q = forms.CharField(required=False, max_length=220)
 
     def __init__(self, *args, project_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["project"].queryset = project_queryset or Project.objects.none()
         self.fields["q"].widget.attrs.setdefault("placeholder", "Nome, endereço, website, telefone")
+
+
+class ProspectQualificationForm(_StyledForm):
+    qualification_status = forms.ChoiceField(choices=Prospect.QualificationStatus.choices)
+    priority = forms.ChoiceField(choices=Prospect.Priority.choices)
+    qualification_note = forms.CharField(
+        required=False,
+        max_length=2000,
+        widget=forms.Textarea(attrs={"rows": 4}),
+    )
+
+    def __init__(self, *args, prospect=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if prospect is not None and not self.is_bound:
+            self.fields["qualification_status"].initial = prospect.qualification_status
+            self.fields["priority"].initial = prospect.priority
+            self.fields["qualification_note"].initial = prospect.qualification_note
+        self.fields["qualification_note"].widget.attrs.setdefault(
+            "placeholder",
+            "Ex.: Hospital privado com site ativo e canal comercial público.",
+        )
 
 
 class ProspectEnrichmentCreateForm(_StyledForm):

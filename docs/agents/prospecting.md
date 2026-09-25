@@ -37,7 +37,17 @@ The operational prospecting workflow lives in the same repository under the `pro
 - explicit promotion `SearchResult -> Prospect`;
 - `ProspectSource` provenance history;
 - `ProspectEnrichment` manual observations;
-- optional website enrichment with strict SSRF controls.
+- optional website enrichment with strict SSRF controls;
+- manual prospect qualification in Hando (`qualification_status`, manual `priority`, `qualification_note`) — qualification is not a CRM pipeline and priority is not an automated score.
+
+Qualification statuses:
+
+- `UNQUALIFIED` — not yet reviewed commercially;
+- `QUALIFIED` — worth commercial follow-up;
+- `NOT_A_FIT` — not a fit right now (does not delete prospect, sources, or enrichments);
+- `ON_HOLD` — potential interest, not prioritized now (no automatic reminders in this phase).
+
+Manual priority values: `UNSET`, `LOW`, `MEDIUM`, `HIGH`.
 
 ## Current Limitations
 

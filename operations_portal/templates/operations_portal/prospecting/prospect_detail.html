@@ -14,6 +14,51 @@
   </div>
 
   <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header"><h5 class="mb-0">Qualificação</h5></div>
+        <div class="card-body">
+          <form method="post" action="{% url 'operations_portal:prospecting_qualify_prospect' prospect.id %}">
+            {% csrf_token %}
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label" for="{{ qualification_form.qualification_status.id_for_label }}">Status</label>
+                {{ qualification_form.qualification_status }}
+              </div>
+              <div class="col-md-4">
+                <label class="form-label" for="{{ qualification_form.priority.id_for_label }}">Prioridade</label>
+                {{ qualification_form.priority }}
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">Última qualificação</label>
+                <div class="form-control-plaintext">
+                  {% if prospect.qualified_at %}
+                    {{ prospect.qualified_at }}
+                    {% if prospect.qualified_by %} · {{ prospect.qualified_by.get_username }}{% endif %}
+                  {% else %}
+                    —
+                  {% endif %}
+                </div>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="{{ qualification_form.qualification_note.id_for_label }}">Observação</label>
+                {{ qualification_form.qualification_note }}
+              </div>
+            </div>
+            {% if can_manage %}
+            <div class="mt-3">
+              <button type="submit" class="btn btn-primary">Salvar qualificação</button>
+            </div>
+            {% else %}
+            <p class="text-muted small mb-0 mt-2">Visualização apenas. Alterações exigem permissão comercial de gestão.</p>
+            {% endif %}
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
     <div class="col-lg-6">
       <div class="card h-100">
         <div class="card-header"><h5 class="mb-0">Dados principais</h5></div>
