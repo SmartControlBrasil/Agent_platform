@@ -6,7 +6,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, Max, OuterRef, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -14,6 +14,7 @@ from django.views.decorators.http import require_POST
 from audit.services import record_audit_event
 from operations_portal.access import portal_template_context, require_portal_capability, resolve_portal_access
 from operations_portal.prospecting_forms import (
+    ProspectActivityForm,
     ProspectContactForm,
     ProspectEnrichmentCreateForm,
     ProspectFilterForm,
@@ -26,6 +27,11 @@ from operations_portal.prospecting_forms import (
 )
 from operations_portal.selectors import clean_querystring
 from projects.models import Project
+from prospecting.application.activities import (
+    create_prospect_activity,
+    delete_prospect_activity,
+    update_prospect_activity,
+)
 from prospecting.application.contacts import (
     create_prospect_contact,
     delete_prospect_contact,
@@ -55,6 +61,7 @@ from prospecting.application.search_runs import (
 from prospecting.application.website_enrichment import enrich_prospect_from_website
 from prospecting.models import (
     Prospect,
+    ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
     ProspectSource,
@@ -133,6 +140,13 @@ def _prospect_queryset(tenant):
 
 def _contact_queryset(tenant):
     queryset = ProspectContact.objects.select_related("prospect", "tenant")
+    if tenant is not None:
+        queryset = queryset.filter(tenant=tenant)
+    return queryset
+
+
+def _activity_queryset(tenant):
+    queryset = ProspectActivity.objects.select_related("prospect", "tenant", "contact", "created_by")
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
@@ -727,11 +741,16 @@ def prospecting_search_result_bulk_action(request, run_id):
 @login_required(login_url="/admin/login/")
 def prospecting_prospect_list(request):
     access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
-    queryset = _prospect_queryset(access.tenant).annotate(contact_count=Count("contacts", distinct=True))
+    queryset = _prospect_queryset(access.tenant).annotate(
+        contact_count=Count("contacts", distinct=True),
+        activity_count=Count("activities", distinct=True),
+        last_activity_at=Max("activities__occurred_at"),
+    )
     form = ProspectFilterForm(request.GET or None, project_queryset=_project_queryset_for_tenant(access.tenant))
     if form.is_valid():
         project = form.cleaned_data.get("project")
         has_contacts = form.cleaned_data.get("has_contacts")
+        has_activities = form.cleaned_data.get("has_activities")
         query = (form.cleaned_data.get("q") or "").strip()
         if project:
             queryset = queryset.filter(sources__search_run__project=project)
@@ -739,6 +758,10 @@ def prospecting_prospect_list(request):
             queryset = queryset.filter(contact_count__gt=0)
         elif has_contacts == "no":
             queryset = queryset.filter(contact_count=0)
+        if has_activities == "yes":
+            queryset = queryset.filter(activity_count__gt=0)
+        elif has_activities == "no":
+            queryset = queryset.filter(activity_count=0)
         qualification_status = form.cleaned_data.get("qualification_status")
         priority = form.cleaned_data.get("priority")
         if qualification_status:
@@ -786,13 +809,28 @@ def prospecting_prospect_detail(request, prospect_id):
         editing_contact = next((item for item in contacts if str(item.pk) == edit_contact_id), None)
         if editing_contact is None:
             editing_contact = get_object_or_404(_contact_queryset(access.tenant), pk=edit_contact_id, prospect=prospect)
+    activities = list(
+        _activity_queryset(access.tenant)
+        .filter(prospect=prospect)
+        .order_by("-occurred_at", "-created_at")
+    )
+    editing_activity = None
+    edit_activity_id = (request.GET.get("edit_activity") or "").strip()
+    if edit_activity_id:
+        editing_activity = next((item for item in activities if str(item.pk) == edit_activity_id), None)
+        if editing_activity is None:
+            editing_activity = get_object_or_404(_activity_queryset(access.tenant), pk=edit_activity_id, prospect=prospect)
     context = {
         "active_section": "prospeccao",
         "prospect": prospect,
         "contacts": contacts,
+        "activities": activities,
         "editing_contact": editing_contact,
+        "editing_activity": editing_activity,
         "contact_create_form": ProspectContactForm(),
         "contact_edit_form": ProspectContactForm(contact=editing_contact) if editing_contact else None,
+        "activity_create_form": ProspectActivityForm(prospect=prospect),
+        "activity_edit_form": ProspectActivityForm(prospect=prospect, activity=editing_activity) if editing_activity else None,
         "sources": list(prospect.sources.all().order_by("-created_at")),
         "enrichments": list(prospect.enrichments.all().order_by("-observed_at", "-created_at")),
         "manual_form": ProspectEnrichmentCreateForm(
@@ -921,6 +959,89 @@ def prospecting_delete_prospect_contact(request, prospect_id, contact_id):
         messages.error(request, "; ".join(exc.messages))
         return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
     messages.success(request, "Contato removido.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_create_prospect_activity(request, prospect_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    form = ProspectActivityForm(request.POST, prospect=prospect)
+    if not form.is_valid():
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    contact = form.cleaned_data.get("contact")
+    if contact is not None and contact.prospect_id != prospect.id:
+        raise PermissionDenied
+    try:
+        create_prospect_activity(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            activity_type=form.cleaned_data["activity_type"],
+            note=form.cleaned_data["note"],
+            occurred_at=form.cleaned_data["occurred_at"],
+            contact=contact,
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    messages.success(request, "Atividade registrada.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_update_prospect_activity(request, prospect_id, activity_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    activity = get_object_or_404(_activity_queryset(access.tenant), pk=activity_id, prospect=prospect)
+    form = ProspectActivityForm(request.POST, prospect=prospect, activity=activity)
+    if not form.is_valid():
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?edit_activity={activity.id}")
+    contact = form.cleaned_data.get("contact")
+    if contact is not None and contact.prospect_id != prospect.id:
+        raise PermissionDenied
+    try:
+        _, changed = update_prospect_activity(
+            tenant=prospect.tenant,
+            activity=activity,
+            activity_type=form.cleaned_data["activity_type"],
+            note=form.cleaned_data["note"],
+            occurred_at=form.cleaned_data["occurred_at"],
+            contact=contact,
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?edit_activity={activity.id}")
+    messages.success(request, "Atividade atualizada." if changed else "Atividade já estava atualizada.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_delete_prospect_activity(request, prospect_id, activity_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    activity = get_object_or_404(_activity_queryset(access.tenant), pk=activity_id, prospect=prospect)
+    try:
+        delete_prospect_activity(tenant=prospect.tenant, activity=activity, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    messages.success(request, "Atividade removida.")
     return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
 
 

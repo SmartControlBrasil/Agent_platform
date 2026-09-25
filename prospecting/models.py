@@ -511,3 +511,70 @@ class ProspectContact(models.Model):
     def __str__(self):
         label = self.name or self.email or self.phone
         return f"{self.prospect.display_name}: {label}"
+
+
+class ProspectActivity(models.Model):
+    class ActivityType(models.TextChoices):
+        NOTE = "NOTE", "Nota"
+        CALL = "CALL", "Ligação"
+        MEETING = "MEETING", "Reunião"
+        CONTACT_ATTEMPT = "CONTACT_ATTEMPT", "Tentativa de contato"
+        REPLY_RECEIVED = "REPLY_RECEIVED", "Retorno recebido"
+        VISIT = "VISIT", "Visita"
+        OTHER = "OTHER", "Outro"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospect_activities")
+    prospect = models.ForeignKey("prospecting.Prospect", on_delete=models.CASCADE, related_name="activities")
+    contact = models.ForeignKey(
+        "prospecting.ProspectContact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="activities",
+    )
+    activity_type = models.CharField(max_length=24, choices=ActivityType.choices, default=ActivityType.NOTE)
+    note = models.TextField()
+    occurred_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prospect_activities_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "prospect", "occurred_at"]),
+            models.Index(fields=["tenant", "prospect", "activity_type"]),
+        ]
+
+    def clean(self):
+        if self.prospect_id and self.tenant_id and self.prospect.tenant_id != self.tenant_id:
+            raise ValidationError({"prospect": "Prospect must belong to the same tenant."})
+        if self.contact_id:
+            if self.contact.tenant_id != self.tenant_id:
+                raise ValidationError({"contact": "Contact must belong to the same tenant."})
+            if self.contact.prospect_id != self.prospect_id:
+                raise ValidationError({"contact": "Contact must belong to the same prospect."})
+        self.activity_type = (self.activity_type or "").upper()
+        if self.activity_type not in self.ActivityType.values:
+            raise ValidationError({"activity_type": "Invalid activity type."})
+        self.note = (self.note or "").strip()
+        if not self.note:
+            raise ValidationError({"note": "Activity note is required."})
+        if len(self.note) > 4000:
+            raise ValidationError({"note": "Activity note must be at most 4000 characters."})
+        if contains_forbidden_secret(self.note):
+            raise ValidationError("Activity cannot store credentials, tokens, cookies, or Authorization data.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.prospect.display_name}: {self.get_activity_type_display()} @ {self.occurred_at:%Y-%m-%d %H:%M}"

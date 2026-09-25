@@ -134,6 +134,83 @@
   </div>
 
   <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">Histórico comercial</h5>
+          <span class="text-muted small">{{ activities|length }} registro(s)</span>
+        </div>
+        <div class="card-body">
+          {% if editing_activity and activity_edit_form %}
+          <div class="border rounded p-3 mb-3 bg-light-subtle">
+            <h6 class="mb-3">Editar atividade</h6>
+            <form method="post" action="{% url 'operations_portal:prospecting_update_prospect_activity' prospect.id editing_activity.id %}">
+              {% csrf_token %}
+              <div class="row g-2">
+                <div class="col-md-4">{{ activity_edit_form.activity_type.label_tag }}{{ activity_edit_form.activity_type }}</div>
+                <div class="col-md-4">{{ activity_edit_form.contact.label_tag }}{{ activity_edit_form.contact }}</div>
+                <div class="col-md-4">{{ activity_edit_form.occurred_at.label_tag }}{{ activity_edit_form.occurred_at }}</div>
+                <div class="col-12">{{ activity_edit_form.note.label_tag }}{{ activity_edit_form.note }}</div>
+              </div>
+              {% if can_manage %}
+              <div class="d-flex gap-2 mt-3">
+                <button type="submit" class="btn btn-primary btn-sm">Salvar atividade</button>
+                <a class="btn btn-light border btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Cancelar</a>
+              </div>
+              {% endif %}
+            </form>
+          </div>
+          {% endif %}
+
+          {% for activity in activities %}
+            {% if not editing_activity or activity.id != editing_activity.id %}
+            <div class="border-bottom pb-3 mb-3">
+              <div class="d-flex justify-content-between flex-wrap gap-2">
+                <div class="fw-semibold">{{ activity.get_activity_type_display }}</div>
+                <div class="text-muted small">{{ activity.occurred_at|date:"d/m/Y H:i" }}</div>
+              </div>
+              {% if activity.contact %}
+              <div class="small text-muted">Contato: {{ activity.contact.name|default:activity.contact.email|default:activity.contact.phone }}</div>
+              {% endif %}
+              <p class="mb-2 mt-2">{{ activity.note|linebreaksbr }}</p>
+              <div class="small text-muted">
+                Registrado por {% if activity.created_by %}{{ activity.created_by.get_username }}{% else %}—{% endif %}
+                · criado em {{ activity.created_at|date:"d/m/Y H:i" }}
+              </div>
+              {% if can_manage %}
+              <div class="d-flex gap-2 mt-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?edit_activity={{ activity.id }}">Editar</a>
+                <form method="post" action="{% url 'operations_portal:prospecting_delete_prospect_activity' prospect.id activity.id %}" class="d-inline" onsubmit="return confirm('Remover esta atividade?');">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Remover</button>
+                </form>
+              </div>
+              {% endif %}
+            </div>
+            {% endif %}
+          {% empty %}
+            <p class="text-muted mb-0">Nenhuma atividade registrada.</p>
+          {% endfor %}
+
+          {% if can_manage %}
+          <h6 class="mt-2 mb-3">Registrar atividade</h6>
+          <form method="post" action="{% url 'operations_portal:prospecting_create_prospect_activity' prospect.id %}">
+            {% csrf_token %}
+            <div class="row g-2">
+              <div class="col-md-4">{{ activity_create_form.activity_type.label_tag }}{{ activity_create_form.activity_type }}</div>
+              <div class="col-md-4">{{ activity_create_form.contact.label_tag }}{{ activity_create_form.contact }}</div>
+              <div class="col-md-4">{{ activity_create_form.occurred_at.label_tag }}{{ activity_create_form.occurred_at }}</div>
+              <div class="col-12">{{ activity_create_form.note.label_tag }}{{ activity_create_form.note }}</div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm mt-3">+ Registrar atividade</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
     <div class="col-lg-6">
       <div class="card h-100">
         <div class="card-header"><h5 class="mb-0">Dados principais</h5></div>

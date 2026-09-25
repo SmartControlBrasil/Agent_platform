@@ -74,6 +74,21 @@ urlpatterns = [
         prospecting_views.prospecting_delete_prospect_contact,
         name="prospecting_delete_prospect_contact",
     ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/atividades/adicionar/",
+        prospecting_views.prospecting_create_prospect_activity,
+        name="prospecting_create_prospect_activity",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/atividades/<uuid:activity_id>/editar/",
+        prospecting_views.prospecting_update_prospect_activity,
+        name="prospecting_update_prospect_activity",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/atividades/<uuid:activity_id>/remover/",
+        prospecting_views.prospecting_delete_prospect_activity,
+        name="prospecting_delete_prospect_activity",
+    ),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/adicionar/", prospecting_views.prospecting_add_enrichment, name="prospecting_add_enrichment"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/website/", prospecting_views.prospecting_website_enrichment, name="prospecting_website_enrichment"),
     path("configuracao/tenants/", tenant_config_views.tenant_config_list, name="tenant_config_list"),

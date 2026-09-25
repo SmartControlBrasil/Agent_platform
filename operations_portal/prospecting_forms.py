@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from django import forms
+from django.utils import timezone
 
 from projects.models import Project
-from prospecting.models import Prospect, ProspectContact, ProspectEnrichment, SearchResult, SearchRun
+from prospecting.models import Prospect, ProspectActivity, ProspectContact, ProspectEnrichment, SearchResult, SearchRun
 
 
 class _StyledForm(forms.Form):
@@ -52,6 +53,14 @@ class ProspectFilterForm(_StyledForm):
             ("no", "Sem contato"),
         ],
     )
+    has_activities = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Atividades: todas"),
+            ("yes", "Com atividade"),
+            ("no", "Sem atividade"),
+        ],
+    )
     q = forms.CharField(required=False, max_length=220)
 
     def __init__(self, *args, project_queryset=None, **kwargs):
@@ -81,6 +90,36 @@ class ProspectContactForm(_StyledForm):
             self.fields["email"].initial = contact.email
             self.fields["phone"].initial = contact.phone
             self.fields["note"].initial = contact.note
+
+
+class ProspectActivityForm(_StyledForm):
+    activity_type = forms.ChoiceField(choices=ProspectActivity.ActivityType.choices, label="Tipo")
+    contact = forms.ModelChoiceField(
+        queryset=ProspectContact.objects.none(),
+        required=False,
+        empty_label="Sem contato específico",
+        label="Contato",
+    )
+    occurred_at = forms.DateTimeField(
+        label="Data/hora",
+        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"),
+        input_formats=["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"],
+    )
+    note = forms.CharField(required=True, max_length=4000, widget=forms.Textarea(attrs={"rows": 3}), label="Observação")
+
+    def __init__(self, *args, prospect=None, activity=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if prospect is not None:
+            self.fields["contact"].queryset = ProspectContact.objects.filter(tenant=prospect.tenant, prospect=prospect).order_by(
+                "name", "email"
+            )
+        if activity is not None and not self.is_bound:
+            self.fields["activity_type"].initial = activity.activity_type
+            self.fields["contact"].initial = activity.contact_id
+            self.fields["occurred_at"].initial = timezone.localtime(activity.occurred_at).strftime("%Y-%m-%dT%H:%M")
+            self.fields["note"].initial = activity.note
+        elif not self.is_bound:
+            self.fields["occurred_at"].initial = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M")
 
 
 class ProspectQualificationForm(_StyledForm):

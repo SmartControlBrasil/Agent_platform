@@ -82,6 +82,10 @@ Em `/painel/prospeccao/prospects/<id>/`, operadores com `commercial.manage` regi
 
 No detalhe do prospect, a seção **Contatos** registra pessoas ou canais (`ProspectContact`) com nome/função, e-mail, telefone e observação. `commercial.view` visualiza; `commercial.manage` cria, edita e remove (remoção física com auditoria — sem outreach associado ainda). Deduplicação conservadora: mesmo e-mail ou telefone normalizado no mesmo prospect é rejeitado; nomes iguais sem identificador forte não são fundidos. Enrichments permanecem separados e não viram contato automaticamente.
 
+## Prospecção · histórico comercial
+
+No detalhe do prospect, **Histórico comercial** registra `ProspectActivity` (nota, ligação, reunião, etc.) com data/hora (`occurred_at`), observação obrigatória e contato opcional. Timeline ordenada por `occurred_at` desc; `commercial.view` visualiza; `commercial.manage` cria/edita/remove (delete físico + audit). Isso é memória operacional — distinto de `AuditEvent` técnico. Não altera qualificação nem dispara outreach.
+
 ## Terceira fase
 
 A visão geral em `/painel/` passou a ser um dashboard analítico com dados reais e seletor de período.

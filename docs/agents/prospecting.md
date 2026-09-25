@@ -49,6 +49,10 @@ Conceptual split:
 
 Enrichment does **not** auto-create contacts in the current phase.
 
+- **ProspectActivity** — manual commercial history (notes, calls, meetings, etc.) optionally linked to a `ProspectContact`; separate from `AuditEvent` governance trail.
+
+Activity does not change qualification, send messages, or sync calendars.
+
 Qualification statuses:
 
 - `UNQUALIFIED` — not yet reviewed commercially;

@@ -11,6 +11,14 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.activities import (
+    ACTION_PROSPECT_ACTIVITY_CREATED,
+    ACTION_PROSPECT_ACTIVITY_DELETED,
+    ACTION_PROSPECT_ACTIVITY_UPDATED,
+    create_prospect_activity,
+    delete_prospect_activity,
+    update_prospect_activity,
+)
 from prospecting.application.contacts import (
     ACTION_PROSPECT_CONTACT_CREATED,
     ACTION_PROSPECT_CONTACT_DELETED,
@@ -41,7 +49,18 @@ from prospecting.application.search_runs import (
 from prospecting.application.website_enrichment import enrich_prospect_from_website
 from prospecting.infrastructure.website_fetcher import validate_public_http_url
 from prospecting.interfaces.website import WebsiteFetchResult
-from prospecting.models import Prospect, ProspectContact, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from prospecting.models import (
+    Prospect,
+    ProspectActivity,
+    ProspectContact,
+    ProspectEnrichment,
+    ProspectSource,
+    SearchResult,
+    SearchRun,
+    SearchRunExecutionAttempt,
+)
+from django.utils import timezone
+from datetime import timedelta
 from tenants.models import Tenant
 from audit.models import AuditEvent
 from django.contrib.auth import get_user_model
@@ -1122,6 +1141,117 @@ class ProspectingContactTests(TestCase):
                 note="",
                 actor=self.user,
             )
+
+
+class ProspectingActivityTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-activity", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-act")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-act")
+        self.prospect = Prospect.objects.create(tenant=self.tenant, display_name="Hospital ABC", identity_key="hospital-abc-act")
+        self.other_prospect = Prospect.objects.create(tenant=self.other_tenant, display_name="Outro", identity_key="outro-act")
+        self.contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.other_contact = ProspectContact.objects.create(
+            tenant=self.other_tenant,
+            prospect=self.other_prospect,
+            name="Outro Contato",
+            email="outro@example.com",
+        )
+
+    def test_create_note_and_call_with_contact(self):
+        note = create_prospect_activity(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            activity_type=ProspectActivity.ActivityType.NOTE,
+            note="Hospital com forte potencial.",
+            actor=self.user,
+        )
+        self.assertEqual(note.created_by, self.user)
+        self.assertIsNone(note.contact)
+
+        call = create_prospect_activity(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            activity_type=ProspectActivity.ActivityType.CALL,
+            note="Apresentação inicial realizada.",
+            contact=self.contact,
+            occurred_at=timezone.now() - timedelta(hours=2),
+            actor=self.user,
+        )
+        self.assertEqual(call.contact_id, self.contact.id)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_ACTIVITY_CREATED).exists())
+
+    def test_note_required_and_wrong_contact_rejected(self):
+        with self.assertRaises(ValidationError):
+            create_prospect_activity(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                activity_type=ProspectActivity.ActivityType.NOTE,
+                note="   ",
+                actor=self.user,
+            )
+        with self.assertRaises(ValidationError):
+            create_prospect_activity(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                activity_type=ProspectActivity.ActivityType.CALL,
+                note="Ligação",
+                contact=self.other_contact,
+                actor=self.user,
+            )
+
+    def test_cross_tenant_rejected(self):
+        activity = create_prospect_activity(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            activity_type=ProspectActivity.ActivityType.NOTE,
+            note="Nota",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            update_prospect_activity(
+                tenant=self.other_tenant,
+                activity=activity,
+                activity_type=ProspectActivity.ActivityType.NOTE,
+                note="Hack",
+                occurred_at=activity.occurred_at,
+                actor=self.user,
+            )
+
+    def test_update_delete_and_qualification_unchanged(self):
+        status_before = self.prospect.qualification_status
+        priority_before = self.prospect.priority
+        activity = create_prospect_activity(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            activity_type=ProspectActivity.ActivityType.MEETING,
+            note="Reunião inicial.",
+            actor=self.user,
+        )
+        updated, changed = update_prospect_activity(
+            tenant=self.tenant,
+            activity=activity,
+            activity_type=ProspectActivity.ActivityType.MEETING,
+            note="Reunião inicial — follow-up pedido.",
+            occurred_at=activity.occurred_at,
+            contact=self.contact,
+            actor=self.user,
+        )
+        self.assertTrue(changed)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_ACTIVITY_UPDATED).exists())
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, status_before)
+        self.assertEqual(self.prospect.priority, priority_before)
+        self.assertEqual(ProspectEnrichment.objects.filter(prospect=self.prospect).count(), 0)
+
+        delete_prospect_activity(tenant=self.tenant, activity=updated, actor=self.user)
+        self.assertFalse(ProspectActivity.objects.filter(pk=activity.pk).exists())
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_ACTIVITY_DELETED).exists())
 
 
 class ProspectingBootstrapCommandTests(TestCase):

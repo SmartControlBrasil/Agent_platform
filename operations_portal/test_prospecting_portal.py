@@ -8,10 +8,20 @@ from django.utils import timezone
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.activities import ACTION_PROSPECT_ACTIVITY_CREATED, ACTION_PROSPECT_ACTIVITY_UPDATED
 from prospecting.application.contacts import ACTION_PROSPECT_CONTACT_CREATED, ACTION_PROSPECT_CONTACT_UPDATED
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED
 from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
-from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from prospecting.models import (
+    Prospect,
+    ProspectActivity,
+    ProspectContact,
+    ProspectEnrichment,
+    ProspectSource,
+    SearchResult,
+    SearchRun,
+    SearchRunExecutionAttempt,
+)
 from audit.models import AuditEvent
 from tenants.models import Tenant, TenantMembership
 from tools.application.lifecycle import claim_tool_execution, fail_tool_execution
@@ -874,3 +884,117 @@ class ProspectingContactPortalTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 404)
         self.assertEqual(self.prospect.contacts.count(), 1)
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingActivityPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-act", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-act", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-act")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.project = Project.objects.create(tenant=self.tenant, name="Comercial", slug="comercial-act")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Activity Portal",
+        )
+        run = SearchRun.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=installation,
+            target_region="São Paulo",
+            queries=["hospital privado"],
+            max_results=10,
+        )
+        result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=run,
+            name="Hospital Atividades",
+            external_id="cid-act-1",
+            source_query="hospital privado",
+        )
+        self.prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=result)
+        self.contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.client = Client()
+
+    def _activity_payload(self, **overrides):
+        payload = {
+            "activity_type": ProspectActivity.ActivityType.CALL,
+            "contact": str(self.contact.pk),
+            "occurred_at": timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M"),
+            "note": "Apresentação inicial realizada.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_viewer_sees_timeline_but_cannot_create(self):
+        self.client.force_login(self.viewer)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Histórico comercial")
+        self.assertNotContains(detail, "+ Registrar atividade")
+        create = self.client.post(
+            reverse("operations_portal:prospecting_create_prospect_activity", args=[self.prospect.id]),
+            self._activity_payload(),
+        )
+        self.assertEqual(create.status_code, 403)
+
+    def test_manager_creates_edits_and_lists_last_activity(self):
+        self.client.force_login(self.admin)
+        create_url = reverse("operations_portal:prospecting_create_prospect_activity", args=[self.prospect.id])
+        self.assertEqual(self.client.get(create_url).status_code, 405)
+        response = self.client.post(create_url, self._activity_payload())
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_ACTIVITY_CREATED).exists())
+
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Ligação")
+        self.assertContains(detail, "Maria Silva")
+        self.assertContains(detail, "Apresentação inicial realizada.")
+
+        activity = self.prospect.activities.get()
+        edit = self.client.post(
+            reverse("operations_portal:prospecting_update_prospect_activity", args=[self.prospect.id, activity.id]),
+            self._activity_payload(note="Apresentação inicial — pediu material."),
+        )
+        self.assertEqual(edit.status_code, 302)
+        activity.refresh_from_db()
+        self.assertIn("pediu material", activity.note)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_ACTIVITY_UPDATED).exists())
+
+        listing = self.client.get(reverse("operations_portal:prospecting_prospect_list"))
+        self.assertContains(listing, "Hospital Atividades")
+        self.assertContains(listing, ">1<")
+
+    def test_invalid_post_and_cross_tenant_delete(self):
+        self.client.force_login(self.admin)
+        bad = self.client.post(
+            reverse("operations_portal:prospecting_create_prospect_activity", args=[self.prospect.id]),
+            {"activity_type": ProspectActivity.ActivityType.NOTE, "note": "", "occurred_at": "2026-09-25T10:00"},
+        )
+        self.assertEqual(bad.status_code, 302)
+        self.assertEqual(self.prospect.activities.count(), 0)
+
+        self.client.post(
+            reverse("operations_portal:prospecting_create_prospect_activity", args=[self.prospect.id]),
+            self._activity_payload(),
+        )
+        activity = self.prospect.activities.get()
+        other_tenant = Tenant.objects.create(name="Outro", slug="outro-act-x")
+        other_prospect = Prospect.objects.create(tenant=other_tenant, display_name="Outro", identity_key="outro-act-x")
+        forbidden = self.client.post(
+            reverse("operations_portal:prospecting_delete_prospect_activity", args=[other_prospect.id, activity.id]),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+        self.assertEqual(self.prospect.activities.count(), 1)
