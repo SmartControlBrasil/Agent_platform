@@ -6,7 +6,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
@@ -17,12 +17,21 @@ from operations_portal.prospecting_forms import (
     ProspectFilterForm,
     ProspectingSearchPlanForm,
     ProspectingSearchQueryReviewForm,
+    SearchResultBulkActionForm,
+    SearchResultFilterForm,
     SearchRunFilterForm,
 )
 from operations_portal.selectors import clean_querystring
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.review import (
+    ProspectingReviewError,
+    bulk_ignore_search_results,
+    bulk_promote_search_results,
+    mark_search_result_ignored,
+    restore_search_result_to_unreviewed,
+)
 from prospecting.application.search_runs import (
     ProspectingSearchRunError,
     build_search_plan_for_manual_run,
@@ -68,6 +77,19 @@ def _search_result_queryset(tenant):
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
+
+
+def _resolve_search_result_action_targets(*, access, request, search_run):
+    selected_ids = request.POST.getlist("selected_result_ids")
+    if not selected_ids:
+        return selected_ids, SearchResult.objects.none()
+    queryset = _search_result_queryset(access.tenant).filter(search_run=search_run, pk__in=selected_ids)
+    return selected_ids, queryset
+
+
+def _build_search_result_queryset(search_run):
+    promoted_subquery = ProspectSource.objects.filter(search_result_id=OuterRef("pk"))
+    return search_run.results.annotate(is_promoted=Exists(promoted_subquery))
 
 
 def _prospect_queryset(tenant):
@@ -290,14 +312,46 @@ def prospecting_search_run_detail(request, run_id):
     access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
     search_run = get_object_or_404(_search_run_queryset(access.tenant), pk=run_id)
     _enrich_run_ui(search_run)
-    result_ids = list(search_run.results.values_list("id", flat=True))
+    results_qs = _build_search_result_queryset(search_run)
+    filter_form = SearchResultFilterForm(request.GET or None)
+    if filter_form.is_valid():
+        status = filter_form.cleaned_data.get("status") or ""
+        phone = filter_form.cleaned_data.get("phone") or ""
+        website = filter_form.cleaned_data.get("website") or ""
+        query = (filter_form.cleaned_data.get("q") or "").strip()
+        if status == "unreviewed":
+            results_qs = results_qs.filter(review_status=SearchResult.ReviewStatus.UNREVIEWED, is_promoted=False)
+        elif status == "promoted":
+            results_qs = results_qs.filter(is_promoted=True)
+        elif status == "ignored":
+            results_qs = results_qs.filter(review_status=SearchResult.ReviewStatus.IGNORED)
+        if phone == "with":
+            results_qs = results_qs.exclude(phone__isnull=True).exclude(phone__exact="")
+        elif phone == "without":
+            results_qs = results_qs.filter(Q(phone__isnull=True) | Q(phone__exact=""))
+        if website == "with":
+            results_qs = results_qs.exclude(website__isnull=True).exclude(website__exact="")
+        elif website == "without":
+            results_qs = results_qs.filter(Q(website__isnull=True) | Q(website__exact=""))
+        if query:
+            results_qs = results_qs.filter(
+                Q(name__icontains=query) | Q(address__icontains=query) | Q(phone__icontains=query)
+            )
+    page_obj = Paginator(results_qs.order_by("name"), 25).get_page(request.GET.get("page") or 1)
+    page_ids = list(page_obj.object_list.values_list("id", flat=True))
     source_map = {
         source.search_result_id: source
-        for source in ProspectSource.objects.filter(search_result_id__in=result_ids).select_related("prospect", "search_run")
+        for source in ProspectSource.objects.filter(search_result_id__in=page_ids).select_related("prospect")
     }
-    results = list(search_run.results.order_by("name"))
+    results = list(page_obj.object_list)
     for result in results:
         result.promoted_source = source_map.get(result.id)
+        result.review_status_label = SearchResult.ReviewStatus(result.review_status).label
+
+    promoted_count = ProspectSource.objects.filter(search_result__search_run=search_run).count()
+    ignored_count = search_run.results.filter(review_status=SearchResult.ReviewStatus.IGNORED).count()
+    total_results = search_run.results.count()
+    unreviewed_count = max(total_results - promoted_count - ignored_count, 0)
     execution = None
     execution_summary = None
     if search_run.agent_platform_execution_id:
@@ -314,8 +368,15 @@ def prospecting_search_run_detail(request, run_id):
         "active_section": "prospeccao",
         "search_run": search_run,
         "results": results,
+        "page_obj": page_obj,
+        "querystring": clean_querystring(request.GET),
+        "filter_form": filter_form,
         "execution": execution,
         "execution_summary": execution_summary,
+        "total_results": total_results,
+        "unreviewed_count": unreviewed_count,
+        "promoted_count": promoted_count,
+        "ignored_count": ignored_count,
         "can_manage": access.is_global or CAPABILITY_COMMERCIAL_MANAGE in access.capabilities,
     }
     context.update(portal_template_context(access))
@@ -347,10 +408,18 @@ def prospecting_search_run_refresh(request, run_id):
 @login_required(login_url="/admin/login/")
 @require_POST
 def prospecting_promote_search_result(request, result_id):
-    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
     require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
     search_result = get_object_or_404(_search_result_queryset(access.tenant), pk=result_id)
     try:
+        if search_result.review_status == SearchResult.ReviewStatus.IGNORED:
+            restore_search_result_to_unreviewed(tenant=search_result.tenant, search_result=search_result)
         prospect = promote_search_result_to_prospect(tenant=search_result.tenant, search_result=search_result)
     except ValidationError as exc:
         messages.error(request, "; ".join(exc.messages))
@@ -370,6 +439,86 @@ def prospecting_promote_search_result(request, result_id):
     )
     messages.success(request, "SearchResult promovido para Prospect.")
     return redirect("operations_portal:prospecting_search_run_detail", run_id=search_result.search_run_id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_ignore_search_result(request, result_id):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_result = get_object_or_404(_search_result_queryset(access.tenant), pk=result_id)
+    try:
+        mark_search_result_ignored(tenant=search_result.tenant, search_result=search_result)
+    except (ValidationError, ProspectingReviewError) as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "SearchResult marcado como ignorado.")
+    return redirect("operations_portal:prospecting_search_run_detail", run_id=search_result.search_run_id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_restore_search_result(request, result_id):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_result = get_object_or_404(_search_result_queryset(access.tenant), pk=result_id)
+    try:
+        restore_search_result_to_unreviewed(tenant=search_result.tenant, search_result=search_result)
+    except (ValidationError, ProspectingReviewError) as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        messages.success(request, "SearchResult voltou para não revisado.")
+    return redirect("operations_portal:prospecting_search_run_detail", run_id=search_result.search_run_id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_search_result_bulk_action(request, run_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=False, require_tenant=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_run = get_object_or_404(_search_run_queryset(access.tenant), pk=run_id)
+    selected_ids, scoped_queryset = _resolve_search_result_action_targets(access=access, request=request, search_run=search_run)
+    form = SearchResultBulkActionForm(request.POST, result_choices=[(str(pk), str(pk)) for pk in selected_ids])
+    if not form.is_valid():
+        messages.error(request, "Selecione ao menos um SearchResult válido para executar a ação em lote.")
+        return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+    if scoped_queryset.count() != len(set(selected_ids)):
+        messages.error(request, "Foram detectados itens inválidos para o tenant ou para a pesquisa selecionada.")
+        return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+    selected_results = list(scoped_queryset)
+    action = form.cleaned_data["action"]
+    if action == "promote":
+        summary = bulk_promote_search_results(tenant=search_run.tenant, search_results=selected_results)
+        messages.success(
+            request,
+            (
+                f"Ação concluída: {summary.promoted} promovidos, "
+                f"{summary.already_promoted} já promovidos, {summary.failed} falharam."
+            ),
+        )
+    else:
+        summary = bulk_ignore_search_results(tenant=search_run.tenant, search_results=selected_results)
+        messages.success(
+            request,
+            (
+                f"Ação concluída: {summary.ignored} ignorados, {summary.already_ignored} já ignorados, "
+                f"{summary.promoted_conflict} em conflito por já estarem promovidos, {summary.failed} falharam."
+            ),
+        )
+    return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
 
 
 @login_required(login_url="/admin/login/")

@@ -118,6 +118,10 @@ class SearchRun(models.Model):
 
 
 class SearchResult(models.Model):
+    class ReviewStatus(models.TextChoices):
+        UNREVIEWED = "UNREVIEWED", "Não revisado"
+        IGNORED = "IGNORED", "Ignorado"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="search_results")
     search_run = models.ForeignKey("prospecting.SearchRun", on_delete=models.CASCADE, related_name="results")
@@ -129,6 +133,7 @@ class SearchResult(models.Model):
     maps_url = models.URLField(max_length=1000, blank=True, null=True)
     external_id = models.CharField(max_length=180, blank=True, null=True)
     source_query = models.CharField(max_length=260, blank=True, null=True)
+    review_status = models.CharField(max_length=16, choices=ReviewStatus.choices, default=ReviewStatus.UNREVIEWED)
     dedupe_key = models.CharField(max_length=320)
     raw_data = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -137,7 +142,11 @@ class SearchResult(models.Model):
     class Meta:
         ordering = ["name"]
         constraints = [models.UniqueConstraint(fields=["search_run", "dedupe_key"], name="unique_search_result_per_run_dedupe")]
-        indexes = [models.Index(fields=["tenant", "search_run"]), models.Index(fields=["search_run", "dedupe_key"])]
+        indexes = [
+            models.Index(fields=["tenant", "search_run"]),
+            models.Index(fields=["search_run", "dedupe_key"]),
+            models.Index(fields=["search_run", "review_status"]),
+        ]
 
     def clean(self):
         if self.search_run_id and self.tenant_id and self.search_run.tenant_id != self.tenant_id:
@@ -145,6 +154,8 @@ class SearchResult(models.Model):
         self.name = " ".join((self.name or "").split())
         if not self.name:
             raise ValidationError({"name": "SearchResult name is required."})
+        if self.review_status not in self.ReviewStatus.values:
+            raise ValidationError({"review_status": "SearchResult review_status is invalid."})
         if not self.dedupe_key:
             self.dedupe_key = build_search_result_dedupe_key(
                 external_id=self.external_id,

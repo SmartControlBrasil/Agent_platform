@@ -143,21 +143,33 @@ class ProspectingPortalTests(TestCase):
         get_attempt = self.client.get(reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]))
         self.assertEqual(get_attempt.status_code, 405)
 
-        post = self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]))
+        post = self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
         self.assertEqual(post.status_code, 302)
         self.assertEqual(ProspectSource.objects.filter(search_result=self.result).count(), 1)
 
-        post_again = self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]))
+        post_again = self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
         self.assertEqual(post_again.status_code, 302)
         self.assertEqual(ProspectSource.objects.filter(search_result=self.result).count(), 1)
 
     def test_viewer_cannot_promote_or_enrich(self):
         self._login(self.viewer)
-        promote = self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]))
+        promote = self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
         self.assertEqual(promote.status_code, 403)
 
         self._login(self.admin)
-        self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]))
+        self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
         source = ProspectSource.objects.get(search_result=self.result)
 
         self._login(self.viewer)
@@ -169,7 +181,10 @@ class ProspectingPortalTests(TestCase):
 
     def test_prospect_list_and_detail_show_provenance_and_enrichment(self):
         self._login(self.admin)
-        self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]))
+        self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.result.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
         source = ProspectSource.objects.get(search_result=self.result)
 
         add = self.client.post(
@@ -194,11 +209,17 @@ class ProspectingPortalTests(TestCase):
 
     def test_cross_tenant_promote_and_detail_are_blocked(self):
         self._login(self.admin)
-        promote = self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.other_result.id]))
+        promote = self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.other_result.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
         self.assertEqual(promote.status_code, 404)
 
         self._login(self.other_admin)
-        self.client.post(reverse("operations_portal:prospecting_promote_search_result", args=[self.other_result.id]))
+        self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[self.other_result.id]),
+            {"tenant": str(self.other_tenant.pk)},
+        )
         other_source = ProspectSource.objects.get(search_result=self.other_result)
 
         self._login(self.admin)
@@ -329,3 +350,153 @@ class ProspectingPortalTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Selecione pelo menos uma query válida")
+
+    def test_search_run_detail_shows_review_counters(self):
+        self._login(self.admin)
+        ignored = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=self.run,
+            name="Hospital Ignorado",
+            review_status=SearchResult.ReviewStatus.IGNORED,
+        )
+        promoted = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=self.run,
+            name="Hospital Promovido",
+        )
+        self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[promoted.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[self.run.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Resultados")
+        self.assertContains(response, "Não revisados")
+        self.assertContains(response, "Promovidos")
+        self.assertContains(response, "Ignorados")
+        self.assertContains(response, str(ignored.name))
+        self.assertContains(response, str(promoted.name))
+
+    def test_search_result_filters_and_pagination(self):
+        self._login(self.admin)
+        promoted = SearchResult.objects.create(tenant=self.tenant, search_run=self.run, name="Alpha Hospital", phone="119999999")
+        self.client.post(
+            reverse("operations_portal:prospecting_promote_search_result", args=[promoted.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
+        SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=self.run,
+            name="Beta Clinic",
+            review_status=SearchResult.ReviewStatus.IGNORED,
+            website="https://beta.example.com",
+        )
+        for index in range(30):
+            SearchResult.objects.create(
+                tenant=self.tenant,
+                search_run=self.run,
+                name=f"Hospital Extra {index:02d}",
+                phone="" if index % 2 else f"1100{index:02d}",
+                website="" if index % 3 else f"https://site{index:02d}.example.com",
+            )
+
+        promoted_response = self.client.get(
+            reverse("operations_portal:prospecting_search_run_detail", args=[self.run.id]),
+            {"status": "promoted"},
+        )
+        self.assertContains(promoted_response, "Alpha Hospital")
+        self.assertNotContains(promoted_response, "Beta Clinic")
+
+        ignored_response = self.client.get(
+            reverse("operations_portal:prospecting_search_run_detail", args=[self.run.id]),
+            {"status": "ignored"},
+        )
+        self.assertContains(ignored_response, "Beta Clinic")
+        self.assertNotContains(ignored_response, "Alpha Hospital")
+
+        filtered_page = self.client.get(
+            reverse("operations_portal:prospecting_search_run_detail", args=[self.run.id]),
+            {"q": "Hospital Extra", "page": 2},
+        )
+        self.assertEqual(filtered_page.status_code, 200)
+        self.assertContains(filtered_page, "page=1&q=Hospital+Extra")
+
+    def test_view_only_can_filter_but_cannot_mutate(self):
+        self._login(self.viewer)
+        response = self.client.get(
+            reverse("operations_portal:prospecting_search_run_detail", args=[self.run.id]),
+            {"status": "unreviewed"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Promover selecionados")
+        self.assertNotContains(response, "Promover para Prospect")
+
+    def test_ignore_restore_and_bulk_actions(self):
+        self._login(self.admin)
+        first = SearchResult.objects.create(tenant=self.tenant, search_run=self.run, name="Hospital Lote 1")
+        second = SearchResult.objects.create(tenant=self.tenant, search_run=self.run, name="Hospital Lote 2")
+
+        ignore_response = self.client.post(
+            reverse("operations_portal:prospecting_ignore_search_result", args=[first.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
+        self.assertEqual(ignore_response.status_code, 302)
+        first.refresh_from_db()
+        self.assertEqual(first.review_status, SearchResult.ReviewStatus.IGNORED)
+
+        restore_response = self.client.post(
+            reverse("operations_portal:prospecting_restore_search_result", args=[first.id]),
+            {"tenant": str(self.tenant.pk)},
+        )
+        self.assertEqual(restore_response.status_code, 302)
+        first.refresh_from_db()
+        self.assertEqual(first.review_status, SearchResult.ReviewStatus.UNREVIEWED)
+
+        bulk_ignore = self.client.post(
+            reverse("operations_portal:prospecting_search_result_bulk_action", args=[self.run.id]),
+            {
+                "tenant": str(self.tenant.pk),
+                "action": "ignore",
+                "selected_result_ids": [str(first.id), str(second.id)],
+            },
+        )
+        self.assertEqual(bulk_ignore.status_code, 302)
+        self.assertEqual(
+            SearchResult.objects.filter(
+                id__in=[first.id, second.id],
+                review_status=SearchResult.ReviewStatus.IGNORED,
+            ).count(),
+            2,
+        )
+
+        bulk_promote = self.client.post(
+            reverse("operations_portal:prospecting_search_result_bulk_action", args=[self.run.id]),
+            {
+                "tenant": str(self.tenant.pk),
+                "action": "promote",
+                "selected_result_ids": [str(first.id), str(second.id)],
+            },
+        )
+        self.assertEqual(bulk_promote.status_code, 302)
+        self.assertEqual(ProspectSource.objects.filter(search_result__in=[first, second]).count(), 2)
+
+    def test_bulk_actions_reject_empty_selection_and_cross_tenant_ids(self):
+        self._login(self.admin)
+        empty = self.client.post(
+            reverse("operations_portal:prospecting_search_result_bulk_action", args=[self.run.id]),
+            {"tenant": str(self.tenant.pk), "action": "ignore", "selected_result_ids": []},
+        )
+        self.assertEqual(empty.status_code, 302)
+        self.assertEqual(SearchResult.objects.filter(review_status=SearchResult.ReviewStatus.IGNORED).count(), 0)
+
+        cross = self.client.post(
+            reverse("operations_portal:prospecting_search_result_bulk_action", args=[self.run.id]),
+            {
+                "tenant": str(self.tenant.pk),
+                "action": "ignore",
+                "selected_result_ids": [str(self.result.id), str(self.other_result.id)],
+            },
+        )
+        self.assertEqual(cross.status_code, 302)
+        self.result.refresh_from_db()
+        self.assertEqual(self.result.review_status, SearchResult.ReviewStatus.UNREVIEWED)

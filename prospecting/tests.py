@@ -9,6 +9,13 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.review import (
+    ProspectingReviewError,
+    bulk_ignore_search_results,
+    bulk_promote_search_results,
+    mark_search_result_ignored,
+    restore_search_result_to_unreviewed,
+)
 from prospecting.application.search_runs import (
     build_search_plan_for_manual_run,
     create_and_dispatch_search_run,
@@ -172,6 +179,70 @@ class ProspectingDomainTests(TestCase):
 
         self.assertEqual(self.search_run.status, before_run_status)
         self.assertEqual(self.search_result.name, before_result_name)
+
+    def test_search_result_starts_unreviewed(self):
+        self.assertEqual(self.search_result.review_status, SearchResult.ReviewStatus.UNREVIEWED)
+
+    def test_ignore_result_is_idempotent_and_reversible(self):
+        mark_search_result_ignored(tenant=self.tenant, search_result=self.search_result)
+        self.search_result.refresh_from_db()
+        self.assertEqual(self.search_result.review_status, SearchResult.ReviewStatus.IGNORED)
+
+        mark_search_result_ignored(tenant=self.tenant, search_result=self.search_result)
+        self.search_result.refresh_from_db()
+        self.assertEqual(self.search_result.review_status, SearchResult.ReviewStatus.IGNORED)
+
+        restore_search_result_to_unreviewed(tenant=self.tenant, search_result=self.search_result)
+        self.search_result.refresh_from_db()
+        self.assertEqual(self.search_result.review_status, SearchResult.ReviewStatus.UNREVIEWED)
+
+    def test_ignore_keeps_search_run_and_result_persisted(self):
+        run_id = self.search_run.id
+        result_id = self.search_result.id
+        mark_search_result_ignored(tenant=self.tenant, search_result=self.search_result)
+        self.assertTrue(SearchRun.objects.filter(id=run_id).exists())
+        self.assertTrue(SearchResult.objects.filter(id=result_id).exists())
+
+    def test_cross_tenant_ignore_is_blocked(self):
+        with self.assertRaises(ProspectingReviewError):
+            mark_search_result_ignored(tenant=self.other_tenant, search_result=self.search_result)
+
+    def test_promoted_result_cannot_be_ignored(self):
+        promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)
+        with self.assertRaises(ProspectingReviewError):
+            mark_search_result_ignored(tenant=self.tenant, search_result=self.search_result)
+
+    def test_bulk_ignore_summary_counts_promoted_conflict(self):
+        promoted_result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=self.search_run,
+            name="Hospital Promovido",
+            external_id="cid:promoted",
+        )
+        promote_search_result_to_prospect(tenant=self.tenant, search_result=promoted_result)
+        summary = bulk_ignore_search_results(tenant=self.tenant, search_results=[self.search_result, promoted_result])
+        self.search_result.refresh_from_db()
+        self.assertEqual(self.search_result.review_status, SearchResult.ReviewStatus.IGNORED)
+        self.assertEqual(summary.ignored, 1)
+        self.assertEqual(summary.promoted_conflict, 1)
+
+    def test_bulk_promote_remains_idempotent_and_keeps_provenance(self):
+        second_result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=self.search_run,
+            name="Hospital B",
+            external_id="cid:2",
+            review_status=SearchResult.ReviewStatus.IGNORED,
+        )
+        first_summary = bulk_promote_search_results(tenant=self.tenant, search_results=[self.search_result, second_result])
+        second_summary = bulk_promote_search_results(tenant=self.tenant, search_results=[self.search_result, second_result])
+        second_result.refresh_from_db()
+
+        self.assertEqual(first_summary.promoted, 2)
+        self.assertEqual(second_summary.already_promoted, 2)
+        self.assertEqual(ProspectSource.objects.filter(search_result=self.search_result).count(), 1)
+        self.assertEqual(ProspectSource.objects.filter(search_result=second_result).count(), 1)
+        self.assertEqual(second_result.review_status, SearchResult.ReviewStatus.UNREVIEWED)
 
     def test_manual_enrichment_normalizes_and_is_idempotent(self):
         prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)

@@ -46,7 +46,18 @@ urlpatterns = [
     path("prospeccao/pesquisas/nova/executar/", prospecting_views.prospecting_search_run_execute, name="prospecting_search_run_execute"),
     path("prospeccao/pesquisas/<uuid:run_id>/", prospecting_views.prospecting_search_run_detail, name="prospecting_search_run_detail"),
     path("prospeccao/pesquisas/<uuid:run_id>/atualizar/", prospecting_views.prospecting_search_run_refresh, name="prospecting_search_run_refresh"),
+    path(
+        "prospeccao/pesquisas/<uuid:run_id>/resultados/acoes/",
+        prospecting_views.prospecting_search_result_bulk_action,
+        name="prospecting_search_result_bulk_action",
+    ),
     path("prospeccao/resultados/<uuid:result_id>/promover/", prospecting_views.prospecting_promote_search_result, name="prospecting_promote_search_result"),
+    path("prospeccao/resultados/<uuid:result_id>/ignorar/", prospecting_views.prospecting_ignore_search_result, name="prospecting_ignore_search_result"),
+    path(
+        "prospeccao/resultados/<uuid:result_id>/restaurar/",
+        prospecting_views.prospecting_restore_search_result,
+        name="prospecting_restore_search_result",
+    ),
     path("prospeccao/prospects/", prospecting_views.prospecting_prospect_list, name="prospecting_prospect_list"),
     path("prospeccao/prospects/<uuid:prospect_id>/", prospecting_views.prospecting_prospect_detail, name="prospecting_prospect_detail"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/adicionar/", prospecting_views.prospecting_add_enrichment, name="prospecting_add_enrichment"),

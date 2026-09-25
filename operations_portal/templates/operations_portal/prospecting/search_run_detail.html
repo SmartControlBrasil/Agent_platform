@@ -26,6 +26,13 @@
     <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Status</div><div class="fw-semibold"><span class="badge bg-{{ search_run.status_tone }}-subtle text-{{ search_run.status_tone }}">{{ search_run.status_label }}</span></div></div></div></div>
   </div>
 
+  <div class="row g-3 mb-3">
+    <div class="col-md-3"><div class="card"><div class="card-body"><div class="text-muted small">Resultados</div><div class="fw-semibold">{{ total_results }}</div></div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body"><div class="text-muted small">Não revisados</div><div class="fw-semibold">{{ unreviewed_count }}</div></div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body"><div class="text-muted small">Promovidos</div><div class="fw-semibold">{{ promoted_count }}</div></div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body"><div class="text-muted small">Ignorados</div><div class="fw-semibold">{{ ignored_count }}</div></div></div></div>
+  </div>
+
   <div class="card mb-3">
     <div class="card-body">
       <div class="row g-3">
@@ -72,9 +79,123 @@
   </div>
   {% endif %}
 
+  <div class="card mb-3">
+    <div class="card-body">
+      <form method="get" class="row g-2 align-items-end">
+        <div class="col-md-2">
+          <label class="form-label mb-1">Status</label>
+          {{ filter_form.status }}
+        </div>
+        <div class="col-md-2">
+          <label class="form-label mb-1">Telefone</label>
+          {{ filter_form.phone }}
+        </div>
+        <div class="col-md-2">
+          <label class="form-label mb-1">Website</label>
+          {{ filter_form.website }}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label mb-1">Busca textual</label>
+          {{ filter_form.q }}
+        </div>
+        <div class="col-md-2 d-flex gap-2">
+          <button type="submit" class="btn btn-outline-primary w-100">Filtrar</button>
+          <a class="btn btn-outline-secondary w-100" href="{% url 'operations_portal:prospecting_search_run_detail' search_run.id %}">Limpar</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-header"><h5 class="mb-0">SearchResults</h5></div>
     <div class="card-body p-0">
+      {% if can_manage and not portal_is_global %}
+      <form id="bulk-result-action-form" method="post" action="{% url 'operations_portal:prospecting_search_result_bulk_action' search_run.id %}" class="d-none">
+        {% csrf_token %}
+        <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+      </form>
+      <div>
+        <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
+          <div class="small text-muted">Ações aplicadas apenas aos itens selecionados nesta página.</div>
+          <div class="d-flex gap-2">
+            <button type="submit" form="bulk-result-action-form" name="action" value="promote" class="btn btn-sm btn-outline-primary">Promover selecionados</button>
+            <button type="submit" form="bulk-result-action-form" name="action" value="ignore" class="btn btn-sm btn-outline-secondary">Ignorar selecionados</button>
+          </div>
+        </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th class="text-center" style="width: 40px;">Sel.</th>
+              <th>Empresa</th>
+              <th>Contato</th>
+              <th>Origem</th>
+              <th>Status</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for result in results %}
+            <tr>
+              <td class="text-center">
+                <input type="checkbox" class="form-check-input" form="bulk-result-action-form" name="selected_result_ids" value="{{ result.id }}">
+              </td>
+              <td>
+                <div class="fw-semibold">{{ result.name }}</div>
+                <div class="text-muted small">{{ result.address|default:"Endereço não informado" }}</div>
+              </td>
+              <td>
+                <div>{{ result.phone|default:"—" }}</div>
+                {% if result.website %}<div class="small"><a href="{{ result.website }}" target="_blank" rel="noopener noreferrer">{{ result.website }}</a></div>{% endif %}
+              </td>
+              <td>
+                <div class="small text-muted">{{ result.source_query|default:"—" }}</div>
+                {% if result.maps_url %}<a class="small" href="{{ result.maps_url }}" target="_blank" rel="noopener noreferrer">Maps</a>{% endif %}
+              </td>
+              <td>
+                {% if result.promoted_source %}
+                  <span class="badge bg-success-subtle text-success">Prospect</span>
+                {% elif result.review_status == "IGNORED" %}
+                  <span class="badge bg-secondary-subtle text-secondary">Ignorado</span>
+                {% else %}
+                  <span class="badge bg-warning-subtle text-warning">Não revisado</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if result.promoted_source %}
+                  <div class="mt-1"><a class="small" href="{% url 'operations_portal:prospecting_prospect_detail' result.promoted_source.prospect_id %}">Abrir prospect</a></div>
+                {% elif can_manage %}
+                  <form method="post" action="{% url 'operations_portal:prospecting_promote_search_result' result.id %}" class="d-inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+                    <button type="submit" class="btn btn-sm btn-outline-primary">Promover para Prospect</button>
+                  </form>
+                  {% if result.review_status == "IGNORED" %}
+                  <form method="post" action="{% url 'operations_portal:prospecting_restore_search_result' result.id %}" class="d-inline ms-1">
+                    {% csrf_token %}
+                    <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Restaurar</button>
+                  </form>
+                  {% else %}
+                  <form method="post" action="{% url 'operations_portal:prospecting_ignore_search_result' result.id %}" class="d-inline ms-1">
+                    {% csrf_token %}
+                    <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Ignorar</button>
+                  </form>
+                  {% endif %}
+                {% else %}
+                  <span class="text-muted small">Sem permissão</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6" class="text-center text-muted py-4">Nenhum resultado registrado.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      </div>
+      {% else %}
       <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
           <thead class="table-light">
@@ -82,7 +203,8 @@
               <th>Empresa</th>
               <th>Contato</th>
               <th>Origem</th>
-              <th>Prospecção</th>
+              <th>Status</th>
+              <th>Ação</th>
             </tr>
           </thead>
           <tbody>
@@ -94,32 +216,55 @@
               </td>
               <td>
                 <div>{{ result.phone|default:"—" }}</div>
-                {% if result.website %}<div class="small"><a href="{{ result.website }}" target="_blank" rel="noopener">{{ result.website }}</a></div>{% endif %}
+                {% if result.website %}<div class="small"><a href="{{ result.website }}" target="_blank" rel="noopener noreferrer">{{ result.website }}</a></div>{% endif %}
               </td>
               <td>
                 <div class="small text-muted">{{ result.source_query|default:"—" }}</div>
-                {% if result.maps_url %}<a class="small" href="{{ result.maps_url }}" target="_blank" rel="noopener">Maps</a>{% endif %}
+                {% if result.maps_url %}<a class="small" href="{{ result.maps_url }}" target="_blank" rel="noopener noreferrer">Maps</a>{% endif %}
               </td>
               <td>
                 {% if result.promoted_source %}
-                  <span class="badge bg-success-subtle text-success">Prospect criado</span>
-                  <div class="mt-1"><a class="small" href="{% url 'operations_portal:prospecting_prospect_detail' result.promoted_source.prospect_id %}">Abrir prospect</a></div>
-                {% elif can_manage %}
-                  <form method="post" action="{% url 'operations_portal:prospecting_promote_search_result' result.id %}">
-                    {% csrf_token %}
-                    <button type="submit" class="btn btn-sm btn-outline-primary">Promover para Prospect</button>
-                  </form>
+                  <span class="badge bg-success-subtle text-success">Prospect</span>
+                {% elif result.review_status == "IGNORED" %}
+                  <span class="badge bg-secondary-subtle text-secondary">Ignorado</span>
+                {% else %}
+                  <span class="badge bg-warning-subtle text-warning">Não revisado</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if result.promoted_source %}
+                  <a class="small" href="{% url 'operations_portal:prospecting_prospect_detail' result.promoted_source.prospect_id %}">Abrir prospect</a>
                 {% else %}
                   <span class="text-muted small">Sem permissão</span>
                 {% endif %}
               </td>
             </tr>
             {% empty %}
-            <tr><td colspan="4" class="text-center text-muted py-4">Nenhum resultado registrado.</td></tr>
+            <tr><td colspan="5" class="text-center text-muted py-4">Nenhum resultado registrado.</td></tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
+      {% endif %}
+      {% if page_obj.paginator.num_pages > 1 %}
+      <div class="card-footer">
+        <nav aria-label="Paginação de resultados">
+          <ul class="pagination pagination-sm mb-0 justify-content-end">
+            {% if page_obj.has_previous %}
+              <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if querystring %}&{{ querystring }}{% endif %}">&laquo;</a></li>
+            {% else %}
+              <li class="page-item disabled"><span class="page-link">&laquo;</span></li>
+            {% endif %}
+            <li class="page-item disabled"><span class="page-link">Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span></li>
+            {% if page_obj.has_next %}
+              <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if querystring %}&{{ querystring }}{% endif %}">&raquo;</a></li>
+            {% else %}
+              <li class="page-item disabled"><span class="page-link">&raquo;</span></li>
+            {% endif %}
+          </ul>
+        </nav>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>

@@ -3,7 +3,7 @@ from __future__ import annotations
 from django import forms
 
 from projects.models import Project
-from prospecting.models import ProspectEnrichment, SearchRun
+from prospecting.models import ProspectEnrichment, SearchResult, SearchRun
 
 
 class _StyledForm(forms.Form):
@@ -76,3 +76,51 @@ class ProspectingSearchQueryReviewForm(_StyledForm):
     def __init__(self, *args, query_choices=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["selected_queries"].choices = tuple(query_choices or ())
+
+
+class SearchResultFilterForm(_StyledForm):
+    status = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Todos"),
+            ("unreviewed", "Não revisados"),
+            ("promoted", "Promovidos"),
+            ("ignored", "Ignorados"),
+        ],
+    )
+    phone = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Telefone: todos"),
+            ("with", "Com telefone"),
+            ("without", "Sem telefone"),
+        ],
+    )
+    website = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Website: todos"),
+            ("with", "Com website"),
+            ("without", "Sem website"),
+        ],
+    )
+    q = forms.CharField(required=False, max_length=220)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["q"].widget.attrs.setdefault("placeholder", "Nome, endereço, telefone")
+
+
+class SearchResultBulkActionForm(_StyledForm):
+    action = forms.ChoiceField(
+        required=True,
+        choices=[
+            ("promote", "Promover selecionados"),
+            ("ignore", "Ignorar selecionados"),
+        ],
+    )
+    selected_result_ids = forms.MultipleChoiceField(required=True, choices=(), widget=forms.MultipleHiddenInput)
+
+    def __init__(self, *args, result_choices=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["selected_result_ids"].choices = tuple(result_choices or ())

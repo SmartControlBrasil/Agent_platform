@@ -255,6 +255,7 @@ Escopo desta integração:
 
 - `SearchRun` e `SearchResult` para descoberta;
 - promoção explícita de `SearchResult` para `Prospect` via POST;
+- revisão operacional de `SearchResult` (`Não revisado` -> `Promovido` ou `Ignorado`);
 - `ProspectSource` para proveniência;
 - `ProspectEnrichment` manual e por website com proteções SSRF;
 - isolamento estrito por tenant e validação de capability.
@@ -271,3 +272,5 @@ Fluxo operacional disponível:
 `Pesquisas -> Nova pesquisa -> gerar plano de queries -> revisar queries -> executar -> SearchRun -> ToolExecution delegada -> SearchResults`.
 
 O dispatch usa o pipeline real de tools (`prospecting.search_google_maps`) e o acompanhamento é feito no detalhe do SearchRun, sem WebSocket e sem acoplamento direto ao executor Chrome.
+
+Na mesa de triagem do detalhe da pesquisa, operadores com permissão de gestão podem filtrar, paginar, selecionar em lote, promover e ignorar resultados. O estado `Promovido` continua derivado de `ProspectSource`; `Ignorado` é reversível para `Não revisado`, não apaga registros e não dispara enriquecimento automático.
