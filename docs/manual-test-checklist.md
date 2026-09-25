@@ -32,3 +32,37 @@
 11. Confirmar que `phone=null` e `website=null` sao aceitos quando ausentes.
 12. Repetir com queries proximas para validar dedupe.
 13. Se challenge aparecer naturalmente, confirmar fail seguro `google_challenge`; nao tentar resolver automaticamente.
+
+
+## Smart Sales E2E Acceptance Check
+
+This check validates the real chain `smart_sales -> Agent Platform -> Agent_executor_chrome -> Google Maps -> Agent Platform -> smart_sales` without adding CRM, Prospect promotion, email automation, crawler behavior, a new parser, or AI.
+
+Preconditions:
+
+- Agent Platform is running and exposes `prospecting.search_google_maps`.
+- `smart_sales` has an active Agent Platform connection for the same tenant.
+- The product connection uses `AgentClient` credentials (`apc_`).
+- This executor is paired, online, and authenticated as `AgentExecutor` (`aep_`).
+- The executor capability `prospecting.search_google_maps` is enabled.
+- The Chrome extension is loaded through the validated CDP path `Extensions.loadUnpacked` when running automated acceptance. Manual `Load unpacked` remains fine for local exploratory development.
+
+Flow:
+
+1. Dispatch a `SearchRun` from `smart_sales`.
+2. Confirm the Agent Platform `ToolExecution` is `DISPATCHED`.
+3. Confirm the executor queue returns that exact execution.
+4. Confirm this executor claims it.
+5. Confirm status becomes `RUNNING`.
+6. Let the browser execute the Google Maps workflow.
+7. Confirm complete returns `SUCCEEDED`.
+8. Refresh the `SearchRun` in `smart_sales`.
+9. Confirm `SearchRun.COMPLETED` and expected `SearchResults`.
+10. Repeat refresh and confirm no duplicate `SearchResults`.
+11. Redispatch the same logical run and confirm idempotency preserves the existing execution.
+
+Security checks:
+
+- Do not log or persist `AgentClient` credentials, `AgentExecutor` credentials, or `Authorization` headers.
+- Result payloads must not contain `apc_`, `aep_`, cookies, raw HTML, storage dumps, or backend secrets.
+- The content script must remain isolated from credentials and must not call Agent Platform directly.

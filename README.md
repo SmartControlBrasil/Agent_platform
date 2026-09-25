@@ -14,7 +14,7 @@ Este projeto nao e o backend Agent Platform e nao e smart_sales. Ele executa too
 npm test
 ```
 
-Carregamento manual:
+Carregamento manual para desenvolvimento:
 
 1. Abra `chrome://extensions`.
 2. Ative Developer mode.
@@ -38,3 +38,5 @@ Host access for Agent Platform is requested as a restricted optional permission 
 ## Google Maps Tool
 
 See `docs/tools/google-maps-search.md` for architecture, permissions, input/output contract, DOM strategy, privacy limits, and manual test flow. The backend must grant executor capability `prospecting.search_google_maps` before the queue will expose these executions.
+
+For automated acceptance, use the already validated CDP loading path with `Extensions.loadUnpacked` and the existing executor configuration/flag. Do not use `--load-extension` as the operational acceptance criterion.

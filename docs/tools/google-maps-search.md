@@ -2,7 +2,7 @@
 
 Tool slug: `prospecting.search_google_maps`
 
-This extension executes the delegated browser workflow for the Agent Platform Google Maps prospecting contract. It uses the normal executor queue: poll, claim, run in Chrome, complete, or fail with a controlled error. It does not create leads, prospects, CRM records, Smart Sales data, emails, WhatsApp messages, OpenAI calls, proxies, stealth behavior, or CAPTCHA bypasses.
+This extension executes the delegated browser workflow for the Agent Platform Google Maps prospecting contract. It uses the normal executor queue: poll, claim, run in Chrome, complete, or fail with a controlled error. It does not create leads, prospects, CRM records, Smart Sales data, emails, WhatsApp messages, OpenAI calls, proxies, stealth behavior, or CAPTCHA bypasses. In the accepted Smart Sales E2E, it is only the browser executor between Agent Platform and Google Maps.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ The handler returns the backend v1 contract exactly:
 }
 ```
 
-No raw HTML, cookies, tokens, storage data, or large metadata dumps are sent.
+No raw HTML, cookies, tokens, storage data, or large metadata dumps are sent. Real Maps URLs may exceed the Django default URL length; consumers should allow long `website` and `maps_url` values such as the accepted 271-character Maps URL regression case.
 
 ## DOM Strategy
 
