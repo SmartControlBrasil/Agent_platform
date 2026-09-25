@@ -233,6 +233,54 @@ test('browser controller maps challenge and changed structure to controlled erro
   );
 });
 
+test('browser controller waits through transient empty feed and then returns businesses', async () => {
+  let collectCalls = 0;
+  const chrome = {
+    tabs: {
+      async create() { return { id: 10 }; },
+      async update() {},
+      async get() { return { id: 10, status: 'complete' }; },
+      async sendMessage(_tabId, message) {
+        if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true };
+        if (message.type === GoogleMapsMessages.COLLECT_FEED) {
+          collectCalls += 1;
+          if (collectCalls < 3) return { ok: true, businesses: [], endOfResults: false };
+          return { ok: true, businesses: [business()], endOfResults: true };
+        }
+        return { ok: true };
+      },
+      async remove() {},
+    },
+    scripting: { async executeScript() {} },
+  };
+  const result = await new GoogleMapsBrowserController(chrome, { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
+    .withDedicatedTab((tab) => tab.search('q', { maxResults: 5 }));
+  assert.equal(result.found, 1);
+  assert.equal(result.businesses.length, 1);
+});
+
+test('browser controller emits controlled error when feed never yields recognizable cards', async () => {
+  const chrome = {
+    tabs: {
+      async create() { return { id: 11 }; },
+      async update() {},
+      async get() { return { id: 11, status: 'complete' }; },
+      async sendMessage(_tabId, message) {
+        if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true };
+        if (message.type === GoogleMapsMessages.COLLECT_FEED) return { ok: true, businesses: [], endOfResults: false };
+        return { ok: true };
+      },
+      async remove() {},
+    },
+    scripting: { async executeScript() {} },
+  };
+  await assert.rejects(
+    () => new GoogleMapsBrowserController(chrome, { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
+      .withDedicatedTab((tab) => tab.search('q', { maxResults: 5 })),
+    (error) => error.code === 'results_not_loaded',
+  );
+});
+
 
 test('manifest grants only scoped google maps permissions and no global host access', () => {
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));

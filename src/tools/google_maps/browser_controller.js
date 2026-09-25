@@ -73,16 +73,28 @@ export class GoogleMapsTabSession {
     const businesses = [];
     let staleRounds = 0;
     let previousCount = 0;
-    while (businesses.length < maxResults && staleRounds < 3) {
+    let emptyRounds = 0;
+    while (businesses.length < maxResults && staleRounds < 3 && emptyRounds < 8) {
       const response = await this.send({ type: GoogleMapsMessages.COLLECT_FEED, sourceQuery, limit: maxResults });
       if (response?.challenge) throw new GoogleMapsToolError('google_challenge', 'Google challenge detected.');
       if (!response?.ok) throw new GoogleMapsToolError(response?.code || 'page_structure_changed', 'Google Maps feed collection failed.');
+      if (!Array.isArray(response.businesses) || response.businesses.length === 0) {
+        if (response.endOfResults) break;
+        emptyRounds += 1;
+        await this.send({ type: GoogleMapsMessages.SCROLL, timeoutMs: this.controller.scrollTimeoutMs });
+        await sleep(800);
+        continue;
+      }
+      emptyRounds = 0;
       const enriched = await this.enrichDetails(response.businesses.slice(0, maxResults));
       businesses.splice(0, businesses.length, ...enriched);
       if (businesses.length >= maxResults || response.endOfResults) break;
       await this.send({ type: GoogleMapsMessages.SCROLL, timeoutMs: this.controller.scrollTimeoutMs });
       if (businesses.length <= previousCount) staleRounds += 1;
       previousCount = businesses.length;
+    }
+    if (businesses.length === 0) {
+      throw new GoogleMapsToolError('results_not_loaded', 'Google Maps did not expose recognizable business cards in time.');
     }
     return { businesses: businesses.slice(0, maxResults), found: businesses.length };
   }
