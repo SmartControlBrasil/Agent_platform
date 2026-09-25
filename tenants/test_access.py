@@ -16,6 +16,7 @@ from tenants.access import (
     CAPABILITY_TENANT_MANAGE,
     CAPABILITY_TENANT_VIEW,
     get_accessible_tenants,
+    get_membership_tenants,
     require_tenant_capability,
     user_has_tenant_capability,
 )
@@ -48,6 +49,7 @@ class TenantMembershipModelTests(TestCase):
 
         self.assertFalse(user_has_tenant_capability(self.user, self.tenant, CAPABILITY_PORTAL_VIEW_DASHBOARD))
         self.assertEqual(list(get_accessible_tenants(self.user)), [])
+        self.assertEqual(list(get_membership_tenants(self.user)), [])
 
 
 class TenantCapabilityMatrixTests(TestCase):

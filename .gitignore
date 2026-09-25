@@ -16,3 +16,4 @@ staticfiles/
 *.sql
 backups/
 dumps/
+.tmp/

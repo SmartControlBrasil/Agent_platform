@@ -283,7 +283,13 @@ class CommercialPortalTests(TestCase):
 
     def test_superuser_global_sees_both_tenants(self):
         self._login(self.superuser)
-        resp = self.client.get(reverse("operations_portal:commercial_lead_list"))
+        session = self.client.session
+        session["operations_portal_tenant_catalog"] = "all"
+        session.save()
+        resp = self.client.get(
+            reverse("operations_portal:commercial_lead_list"),
+            {"tenant": "global"},
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Cliente TESTE SCB")
         self.assertContains(resp, "Cliente TESTE Pitondo")

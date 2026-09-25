@@ -92,16 +92,22 @@ ROLE_CAPABILITIES = {
 }
 
 
-def get_accessible_tenants(user):
+def get_membership_tenants(user):
     if not getattr(user, "is_authenticated", False):
         return Tenant.objects.none()
-    if user.is_superuser:
-        return Tenant.objects.filter(is_active=True).order_by("name")
     return (
         Tenant.objects.filter(memberships__user=user, memberships__is_active=True, is_active=True)
         .distinct()
         .order_by("name")
     )
+
+
+def get_accessible_tenants(user):
+    if not getattr(user, "is_authenticated", False):
+        return Tenant.objects.none()
+    if user.is_superuser:
+        return Tenant.objects.filter(is_active=True).order_by("name")
+    return get_membership_tenants(user)
 
 
 def get_active_membership(user, tenant):

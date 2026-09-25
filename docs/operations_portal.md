@@ -5,13 +5,30 @@ A rota `/painel/` entrega o painel operacional próprio da Lívia Platform usand
 ## Acesso
 
 - usuário anônimo é redirecionado para `/admin/login/?next=/painel/` ou para a rota específica acessada;
-- superuser mantém visão global consolidada e pode selecionar qualquer tenant ativo;
 - usuário comum acessa o portal somente quando possui `TenantMembership` ativo;
 - membership inativo ou inexistente retorna 403;
 - staff sem membership não ganha acesso automático;
 - cada rota valida a capability exigida e cada detalhe usa `pk + tenant` no mesmo queryset para evitar acesso cruzado por ID.
 
 A seleção de tenant ativo é revalidada a cada requisição, mesmo quando vem de query string, POST ou sessão. A ocultação de menus e botões no template não substitui a autorização no backend.
+
+### Escopo operacional de tenants (Hando)
+
+No `/painel/`, o seletor de tenant favorece o **modo operacional**: por padrão, todos os usuários (incluindo superuser) veem apenas tenants com `TenantMembership` ativa. Isso evita listar dezenas de tenants técnicos de acceptance/smoke no uso diário.
+
+- **Usuário comum:** somente tenants com membership ativa; troca de tenant e autorização server-side continuam baseadas em membership/capabilities.
+- **Superuser:** mesmo padrão operacional por default; link **Mostrar todos os tenants** na topbar ativa o catálogo administrativo (sessão) e passa a listar todos os tenants ativos, incluindo a opção **Todos os tenants** para visão global consolidada onde a rota permite `allow_global=True`.
+- **Modo operacional:** link **Modo operacional** restaura o catálogo por membership.
+- Esconder um tenant do seletor **não** remove permissões: superuser continua podendo abrir um tenant via `?tenant=<id>` quando autorizado; usuários comuns continuam bloqueados sem membership.
+- `/platform/` (Control Plane) e `/admin/` (Django Admin) não usam esse seletor; `get_accessible_tenants` permanece inalterado para APIs e Control Plane.
+
+Provisionamento operacional opcional de membership no tenant canônico:
+
+```bash
+python manage.py bootstrap_prospecting_operations --apply \
+  --tenant-slug smart-control-brasil \
+  --user <username>
+```
 
 ## Primeira fase
 

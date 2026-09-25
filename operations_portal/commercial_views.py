@@ -154,6 +154,8 @@ def commercial_lead_list(request):
     origin = (request.GET.get("origin") or "").strip()
     q = (request.GET.get("q") or "").strip()
     tenant_slug = (request.GET.get("tenant") or "").strip()
+    if tenant_slug == "global":
+        tenant_slug = ""
     if status:
         qs = qs.filter(commercial_status=status)
     if assignee == "me":

@@ -13,16 +13,24 @@
       </ul>
 
       <ul class="list-unstyled topnav-menu mb-0 d-flex align-items-center">
-        {% if accessible_tenants %}
+        {% if accessible_tenants or request.user.is_superuser %}
         <li class="d-none d-md-flex align-items-center me-2">
           <form method="get" class="d-flex align-items-center gap-2" aria-label="Selecionar tenant ativo">
-            <select name="tenant" class="form-select form-select-sm" onchange="this.form.submit()" aria-label="Tenant ativo">
-              {% if request.user.is_superuser %}<option value="global" {% if portal_is_global %}selected{% endif %}>Todos os tenants</option>{% endif %}
+            <label class="form-label mb-0 text-muted small d-none d-lg-inline" for="portal-active-tenant">Tenant</label>
+            <select id="portal-active-tenant" name="tenant" class="form-select form-select-sm" onchange="this.form.submit()" aria-label="Tenant ativo">
+              {% if request.user.is_superuser and portal_show_all_tenants %}<option value="global" {% if portal_is_global %}selected{% endif %}>Todos os tenants</option>{% endif %}
               {% for tenant in accessible_tenants %}
               <option value="{{ tenant.pk }}" {% if active_tenant and tenant.pk == active_tenant.pk %}selected{% endif %}>{{ tenant.name }}</option>
               {% endfor %}
             </select>
           </form>
+          {% if request.user.is_superuser %}
+            {% if portal_show_all_tenants %}
+            <a class="btn btn-link btn-sm text-nowrap px-1" href="?portal_tenant_catalog=operational{% if active_tenant %}&amp;tenant={{ active_tenant.pk }}{% endif %}">Modo operacional</a>
+            {% else %}
+            <a class="btn btn-link btn-sm text-nowrap px-1" href="?portal_tenant_catalog=all{% if active_tenant %}&amp;tenant={{ active_tenant.pk }}{% endif %}">Mostrar todos os tenants</a>
+            {% endif %}
+          {% endif %}
         </li>
         {% endif %}
         <li class="d-none d-md-flex align-items-center me-2">

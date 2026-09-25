@@ -7,7 +7,9 @@ from django.db import transaction
 
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
-from tenants.models import Tenant
+from django.contrib.auth import get_user_model
+
+from tenants.models import Tenant, TenantMembership
 from tools.models import AgentToolBinding, ToolDefinition, ToolExecutor, ToolExecutorCapability
 
 
@@ -24,6 +26,16 @@ class Command(BaseCommand):
         parser.add_argument("--executor-public-id", default="")
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--apply", action="store_true")
+        parser.add_argument(
+            "--user",
+            default="",
+            help="Username opcional para garantir TenantMembership operacional ativa neste tenant.",
+        )
+        parser.add_argument(
+            "--membership-role",
+            default=TenantMembership.Role.TENANT_ADMIN,
+            choices=[choice[0] for choice in TenantMembership.Role.choices],
+        )
 
     def handle(self, *args, **options):
         if options["dry_run"] and options["apply"]:
@@ -90,6 +102,8 @@ class Command(BaseCommand):
             "Ready: "
             f"{'yes' if summary['ready'] else 'no'}"
         )
+        if summary.get("membership_state"):
+            self.stdout.write(f"Membership: {summary['membership_state']}")
 
     def _simulate(self, *, tenant, definition, version, plan_tool, maps_tool, options):
         project = Project.objects.filter(tenant=tenant, slug=options["project_slug"]).first()
@@ -117,6 +131,7 @@ class Command(BaseCommand):
             "plan_binding_state": "novo" if plan_binding is None else ("reativado" if not plan_binding.is_enabled else "ok"),
             "maps_binding_state": "novo" if maps_binding is None else ("reativado" if not maps_binding.is_enabled else "ok"),
             "executor_state": self._executor_state(executor=executor, capability=capability, ensure_requested=options["ensure_executor"]),
+            "membership_state": self._membership_state(tenant=tenant, options=options, dry_run=True),
             "ready": bool(
                 project is not None
                 and project.is_active
@@ -245,6 +260,7 @@ class Command(BaseCommand):
                 and capability is not None
                 and capability.is_enabled
             )
+            membership_state = self._ensure_operational_membership(tenant=tenant, options=options)
             return {
                 "project_slug": project.slug,
                 "project_created": project_created,
@@ -253,6 +269,7 @@ class Command(BaseCommand):
                 "plan_binding_state": "criado" if plan_created else ("reativado" if plan_was_disabled else "ok"),
                 "maps_binding_state": "criado" if maps_created else ("reativado" if maps_was_disabled else "ok"),
                 "executor_state": executor_state,
+                "membership_state": membership_state,
                 "ready": ready,
             }
 
@@ -278,6 +295,49 @@ class Command(BaseCommand):
             .order_by("-is_active", "-last_seen_at", "created_at")
             .first()
         )
+
+    def _membership_state(self, *, tenant, options, dry_run):
+        username = (options.get("user") or "").strip()
+        if not username:
+            return "omitido (--user não informado)"
+        user = get_user_model().objects.filter(username=username).first()
+        if user is None:
+            return f"usuário {username} não encontrado"
+        membership = TenantMembership.objects.filter(tenant=tenant, user=user).first()
+        if membership is None:
+            return f"será criada ({options['membership_role']})" if not dry_run else f"será criada ({options['membership_role']})"
+        if not membership.is_active:
+            return f"será reativada ({membership.role})"
+        if membership.role != options["membership_role"]:
+            return f"ok ({membership.role}, role solicitada {options['membership_role']})"
+        return f"ok ({membership.role})"
+
+    def _ensure_operational_membership(self, *, tenant, options):
+        username = (options.get("user") or "").strip()
+        if not username:
+            return "omitido (--user não informado)"
+        user = get_user_model().objects.filter(username=username).first()
+        if user is None:
+            raise CommandError(f"Usuário não encontrado: {username}")
+        membership, created = TenantMembership.objects.get_or_create(
+            tenant=tenant,
+            user=user,
+            defaults={"role": options["membership_role"], "is_active": True},
+        )
+        updated_fields = []
+        if not membership.is_active:
+            membership.is_active = True
+            updated_fields.append("is_active")
+        if membership.role != options["membership_role"]:
+            membership.role = options["membership_role"]
+            updated_fields.append("role")
+        if updated_fields:
+            membership.save(update_fields=[*updated_fields, "updated_at"])
+        if created:
+            return f"criada ({membership.role})"
+        if updated_fields:
+            return f"atualizada ({membership.role})"
+        return f"reutilizada ({membership.role})"
 
     @staticmethod
     def _executor_state(*, executor, capability, ensure_requested):
