@@ -16,7 +16,7 @@ Agentes disponiveis:
 
 A Livia permanece como implementacao legada compativel e e executada por um adapter (`LiviaAgentAdapter`) atras do `AgentRuntimePort`. O Prospecting Agent e o segundo runtime real da plataforma e valida a extensibilidade do registry sem acoplamento com `smart_sales`.
 
-Produtos clientes futuros podem consumir a plataforma por HTTP/API/eventos, incluindo `smart_sales`, websites e outros sistemas. `smart_sales` e um produto cliente futuro, nao o Prospecting Agent em si. O projeto original da Livia continua independente em producao e nao deve ser alterado a partir deste repositorio.
+Produtos clientes podem consumir a plataforma por HTTP/API/eventos, incluindo `smart_sales`, websites e outros sistemas. `smart_sales` e um produto cliente externo, nao o Prospecting Agent em si. O projeto original da Livia continua independente em producao e nao deve ser alterado a partir deste repositorio.
 
 ## Seguranca local
 
@@ -69,3 +69,5 @@ A primeira tool e `prospecting.build_search_plan`, usada pelo Prospecting Agent 
 Na Fase 6, `ToolDefinition` passa a declarar `execution_mode`: `LOCAL` ou `DELEGATED`. Tools locais continuam usando `ToolRuntimeRegistry`; tools delegadas criam `ToolExecution` persistente para claim futuro por `ToolExecutor` autorizado.
 
 A prova de infraestrutura é `prospecting.external_search_probe`, uma tool delegada de laboratório sem busca real e sem runtime local.
+
+O fluxo real `smart_sales -> Agent Platform -> Agent_executor_chrome -> Google Maps -> Agent Platform -> smart_sales` esta documentado em `docs/integrations/smart-sales-executor-e2e.md`. O codigo do Chrome Executor nao reside neste repositorio; ele e mantido separadamente em `Agent_executor_chrome`.

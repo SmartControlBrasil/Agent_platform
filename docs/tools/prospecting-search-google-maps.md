@@ -2,6 +2,8 @@
 
 `prospecting.search_google_maps` is a delegated prospecting tool contract for browser executors. It defines the backend registration, input and output contracts, lifecycle validation, capability gating, and Control Plane presentation. It does not implement Google Maps scraping, selectors, browser automation, enrichment, coordinates, or any Google API integration.
 
+The real browser implementation lives outside this repository in `Agent_executor_chrome`. Agent Platform owns the contract, validation, `ToolExecution` lifecycle, tenant/capability gating, queue, claim, complete, and fail endpoints.
+
 ## Tool Definition
 
 - Slug: `prospecting.search_google_maps`
@@ -73,6 +75,7 @@ Rules:
 - Each business requires `name` and either `maps_url` or `external_id`.
 - `category`, `address`, `phone`, `website`, and `source_query` may be null when Google Maps does not expose them.
 - URL fields must be absolute HTTP or HTTPS URLs.
+- Real Google Maps URLs can be longer than Django's default `URLField` length. Consumers should allow at least 1000 characters for `website` and `maps_url`.
 - The contract does not require phone or website and must not invent them.
 - Results are deduplicated within one payload by `external_id`, then normalized `maps_url`, then normalized `name + address`.
 - Stats are accepted only as non-negative integers. Critical rules are enforced from the validated payload, not trusted stats.

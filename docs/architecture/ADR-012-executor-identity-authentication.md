@@ -26,6 +26,8 @@ Credentials support revocation, expiration, last-used tracking, and simple rotat
 
 The platform records pairing, executor creation, credential creation/rotation/revocation, auth failures, and heartbeat events. Credential secrets are never included in audit metadata.
 
-## Future Chrome Flow
+## Chrome Flow
 
-A Chrome Extension will request pairing, show the pairing code to a human, poll status, consume once after approval, store the credential locally, send heartbeat, poll `/api/v1/executors/tool-executions/`, claim explicitly, and complete or fail executions.
+A Chrome Extension requests pairing, shows the pairing code to a human, polls status, consumes once after approval, stores the credential locally, sends heartbeat, polls `/api/v1/executors/tool-executions/`, claims explicitly, and completes or fails executions.
+
+The Chrome Executor is an `AgentExecutor`, not an `AgentClient`. Service clients such as `smart_sales` authenticate separately with `Authorization: AgentClient <credential>` and credentials prefixed with `apc_`.
