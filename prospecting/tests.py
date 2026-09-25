@@ -3,7 +3,9 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.test import TestCase, override_settings
+from io import StringIO
 
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
@@ -27,7 +29,14 @@ from prospecting.interfaces.website import WebsiteFetchResult
 from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun
 from tenants.models import Tenant
 from tools.application.lifecycle import claim_tool_execution, complete_tool_execution, fail_tool_execution
-from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
+from tools.models import (
+    AgentToolBinding,
+    ToolDefinition,
+    ToolExecution,
+    ToolExecutor,
+    ToolExecutorCapability,
+    ToolExecutorCredential,
+)
 
 
 class ProspectingDomainTests(TestCase):
@@ -536,3 +545,77 @@ class ProspectingSearchRunExecutionTests(TestCase):
 
         self.assertEqual(synced.status, SearchRun.Status.FAILED)
         self.assertNotEqual(synced.status, SearchRun.Status.COMPLETED)
+
+
+class ProspectingBootstrapCommandTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        self.definition = AgentDefinition.objects.get(slug="prospecting")
+        self.version = AgentVersion.objects.get(agent_definition=self.definition, status=AgentVersion.Status.ACTIVE)
+        self.plan_tool = ToolDefinition.objects.get(slug="prospecting.build_search_plan")
+        self.maps_tool = ToolDefinition.objects.get(slug="prospecting.search_google_maps")
+
+    def test_bootstrap_is_idempotent_and_tenant_scoped(self):
+        call_command(
+            "bootstrap_prospecting_operations",
+            tenant_slug=self.tenant.slug,
+            project_slug="prospeccao-comercial",
+            project_name="Prospecção Comercial",
+            ensure_executor=True,
+            apply=True,
+        )
+        call_command(
+            "bootstrap_prospecting_operations",
+            tenant_slug=self.tenant.slug,
+            project_slug="prospeccao-comercial",
+            project_name="Prospecção Comercial",
+            ensure_executor=True,
+            apply=True,
+        )
+
+        project = Project.objects.get(tenant=self.tenant, slug="prospeccao-comercial")
+        installation = AgentInstallation.objects.get(tenant=self.tenant, project=project, agent_definition=self.definition)
+        self.assertTrue(installation.is_enabled)
+        self.assertEqual(AgentInstallation.objects.filter(tenant=self.tenant, project=project, agent_definition=self.definition).count(), 1)
+
+        plan_bindings = AgentToolBinding.objects.filter(
+            tenant=self.tenant,
+            project=project,
+            agent_installation=installation,
+            tool_definition=self.plan_tool,
+            is_enabled=True,
+        )
+        maps_bindings = AgentToolBinding.objects.filter(
+            tenant=self.tenant,
+            project=project,
+            agent_installation=installation,
+            tool_definition=self.maps_tool,
+            is_enabled=True,
+        )
+        self.assertEqual(plan_bindings.count(), 1)
+        self.assertEqual(maps_bindings.count(), 1)
+
+        executor = ToolExecutor.objects.get(tenant=self.tenant, name="SCB Chrome Executor Operacional")
+        self.assertTrue(executor.is_active)
+        self.assertTrue(
+            ToolExecutorCapability.objects.filter(
+                executor=executor,
+                tool_definition=self.maps_tool,
+                is_enabled=True,
+            ).exists()
+        )
+        self.assertEqual(ToolExecutorCredential.objects.filter(executor=executor).count(), 0)
+
+    def test_bootstrap_dry_run_does_not_persist(self):
+        output = StringIO()
+        call_command(
+            "bootstrap_prospecting_operations",
+            tenant_slug=self.tenant.slug,
+            project_slug="prospeccao-comercial",
+            project_name="Prospecção Comercial",
+            ensure_executor=True,
+            dry_run=True,
+            stdout=output,
+        )
+        self.assertIn("DRY RUN - nenhuma alteração gravada", output.getvalue())
+        self.assertFalse(Project.objects.filter(tenant=self.tenant, slug="prospeccao-comercial").exists())
