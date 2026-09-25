@@ -257,6 +257,17 @@ EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=False, cast=bool)
 EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=False, cast=bool)
+PROSPECTING_OUTREACH_EMAIL_ENABLED = config(
+    "PROSPECTING_OUTREACH_EMAIL_ENABLED",
+    default=True,
+    cast=bool,
+)
+PROSPECTING_OUTREACH_EMAIL_DRY_RUN = config(
+    "PROSPECTING_OUTREACH_EMAIL_DRY_RUN",
+    default=False,
+    cast=bool,
+)
+
 DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="Lívia - Smart Control Brasil <comercial@smartcontrolbrasil.com.br>",

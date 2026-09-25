@@ -519,6 +519,7 @@ class ProspectActivity(models.Model):
         CALL = "CALL", "Ligação"
         MEETING = "MEETING", "Reunião"
         CONTACT_ATTEMPT = "CONTACT_ATTEMPT", "Tentativa de contato"
+        EMAIL_SENT = "EMAIL_SENT", "E-mail enviado"
         REPLY_RECEIVED = "REPLY_RECEIVED", "Retorno recebido"
         VISIT = "VISIT", "Visita"
         OTHER = "OTHER", "Outro"
@@ -656,3 +657,104 @@ class ProspectOutreachDraft(models.Model):
     def __str__(self):
         label = self.subject or self.get_channel_display()
         return f"{self.prospect.display_name}: {label} ({self.get_status_display()})"
+
+
+class ProspectOutreachSend(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pendente"
+        SENDING = "SENDING", "Enviando"
+        SENT = "SENT", "Enviado"
+        FAILED = "FAILED", "Falha"
+        CANCELLED = "CANCELLED", "Cancelado"
+
+    class Provider(models.TextChoices):
+        DJANGO_EMAIL = "DJANGO_EMAIL", "Django email"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospect_outreach_sends")
+    draft = models.OneToOneField(
+        "prospecting.ProspectOutreachDraft",
+        on_delete=models.PROTECT,
+        related_name="outreach_send",
+    )
+    prospect = models.ForeignKey("prospecting.Prospect", on_delete=models.CASCADE, related_name="outreach_sends")
+    contact = models.ForeignKey(
+        "prospecting.ProspectContact",
+        on_delete=models.PROTECT,
+        related_name="outreach_sends",
+    )
+    channel = models.CharField(max_length=16, choices=ProspectOutreachDraft.Channel.choices)
+    destination = models.CharField(max_length=320)
+    subject_snapshot = models.CharField(max_length=220, blank=True, default="")
+    body_snapshot = models.TextField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    provider = models.CharField(max_length=32, choices=Provider.choices, default=Provider.DJANGO_EMAIL)
+    provider_message_id = models.CharField(max_length=220, blank=True, default="")
+    idempotency_key = models.CharField(max_length=220, unique=True)
+    requested_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prospect_outreach_sends_requested",
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=120, blank=True, default="")
+    error_message = models.CharField(max_length=500, blank=True, default="")
+    prospect_activity = models.OneToOneField(
+        "prospecting.ProspectActivity",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_outreach_send",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-requested_at", "-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "prospect", "status"]),
+            models.Index(fields=["tenant", "draft"]),
+        ]
+
+    def clean(self):
+        if self.prospect_id and self.tenant_id and self.prospect.tenant_id != self.tenant_id:
+            raise ValidationError({"prospect": "Prospect must belong to the same tenant."})
+        if self.draft_id:
+            if self.draft.tenant_id != self.tenant_id:
+                raise ValidationError({"draft": "Draft must belong to the same tenant."})
+            if self.draft.prospect_id != self.prospect_id:
+                raise ValidationError({"draft": "Draft must belong to the same prospect."})
+        if self.contact_id:
+            if self.contact.tenant_id != self.tenant_id:
+                raise ValidationError({"contact": "Contact must belong to the same tenant."})
+            if self.contact.prospect_id != self.prospect_id:
+                raise ValidationError({"contact": "Contact must belong to the same prospect."})
+        self.channel = (self.channel or "").upper()
+        if self.channel != ProspectOutreachDraft.Channel.EMAIL:
+            raise ValidationError({"channel": "Only EMAIL outreach sends are supported."})
+        self.destination = (self.destination or "").strip()
+        if not self.destination:
+            raise ValidationError({"destination": "Destination email is required."})
+        EmailValidator()(self.destination)
+        self.body_snapshot = (self.body_snapshot or "").strip()
+        if not self.body_snapshot:
+            raise ValidationError({"body_snapshot": "Body snapshot is required."})
+        self.subject_snapshot = " ".join((self.subject_snapshot or "").split())
+        if not self.subject_snapshot:
+            raise ValidationError({"subject_snapshot": "Subject snapshot is required for email sends."})
+        if contains_forbidden_secret(self.body_snapshot) or contains_forbidden_secret(self.subject_snapshot):
+            raise ValidationError("Outreach send cannot store credentials, tokens, cookies, or Authorization data.")
+        if contains_forbidden_secret(self.error_message):
+            raise ValidationError("Outreach send error message cannot store secrets.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.prospect.display_name}: {self.destination} ({self.get_status_display()})"

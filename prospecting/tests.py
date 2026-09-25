@@ -27,6 +27,7 @@ from prospecting.application.contacts import (
     delete_prospect_contact,
     update_prospect_contact,
 )
+from prospecting.application.ports.email_sender import EmailSendResult
 from prospecting.application.outreach_drafts import (
     ACTION_OUTREACH_DRAFT_ARCHIVED,
     ACTION_OUTREACH_DRAFT_CREATED,
@@ -37,6 +38,14 @@ from prospecting.application.outreach_drafts import (
     mark_outreach_draft_ready,
     revert_outreach_draft_to_draft,
     update_outreach_draft,
+)
+from prospecting.application.outreach_sends import (
+    ACTION_OUTREACH_SEND_FAILED,
+    ACTION_OUTREACH_SEND_REQUESTED,
+    ACTION_OUTREACH_SEND_RETRY_REQUESTED,
+    ACTION_OUTREACH_SEND_SENT,
+    retry_outreach_send,
+    send_outreach_draft_email,
 )
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.review import (
@@ -66,6 +75,7 @@ from prospecting.models import (
     ProspectContact,
     ProspectEnrichment,
     ProspectOutreachDraft,
+    ProspectOutreachSend,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -1464,6 +1474,201 @@ class ProspectingOutreachDraftTests(TestCase):
                 body="Corpo",
                 actor=self.user,
             )
+
+
+class FakeOutreachEmailSender:
+    def __init__(self, *results: EmailSendResult):
+        self.results = list(results)
+        self.calls: list[dict] = []
+
+    def send_plain_email(self, *, to, subject, body, idempotency_key):
+        self.calls.append(
+            {"to": to, "subject": subject, "body": body, "idempotency_key": idempotency_key}
+        )
+        if not self.results:
+            return EmailSendResult(success=True)
+        return self.results.pop(0)
+
+
+class ProspectingOutreachSendTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-send", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-send")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-send")
+        self.prospect = Prospect.objects.create(tenant=self.tenant, display_name="Hospital ABC", identity_key="hospital-abc-send")
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self.email_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.phone_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="João Souza",
+            phone="11999990000",
+        )
+
+    def _ready_email_draft(self, **kwargs):
+        defaults = {
+            "tenant": self.tenant,
+            "prospect": self.prospect,
+            "contact": self.email_contact,
+            "channel": ProspectOutreachDraft.Channel.EMAIL,
+            "subject": "Assunto comercial",
+            "body": "Corpo da mensagem.",
+            "status": ProspectOutreachDraft.Status.READY,
+            "actor": self.user,
+        }
+        defaults.update(kwargs)
+        return create_outreach_draft(**defaults)
+
+    def test_ready_email_send_success_and_activity(self):
+        draft = self._ready_email_draft()
+        sender = FakeOutreachEmailSender(EmailSendResult(success=True, provider_message_id="msg-1"))
+        send, delivered = send_outreach_draft_email(
+            tenant=self.tenant,
+            draft=draft,
+            actor=self.user,
+            email_sender=sender,
+        )
+        self.assertTrue(delivered)
+        self.assertEqual(send.status, ProspectOutreachSend.Status.SENT)
+        self.assertEqual(send.destination, "maria@hospital.example.com")
+        self.assertEqual(send.subject_snapshot, "Assunto comercial")
+        self.assertEqual(len(sender.calls), 1)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_SEND_REQUESTED).exists())
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_SEND_SENT).exists())
+        self.assertEqual(self.prospect.activities.filter(activity_type=ProspectActivity.ActivityType.EMAIL_SENT).count(), 1)
+
+    def test_draft_archived_and_phone_do_not_send(self):
+        draft = self._ready_email_draft(status=ProspectOutreachDraft.Status.DRAFT)
+        with self.assertRaises(ValidationError):
+            send_outreach_draft_email(tenant=self.tenant, draft=draft, actor=self.user, email_sender=FakeOutreachEmailSender())
+        phone = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.phone_contact,
+            channel=ProspectOutreachDraft.Channel.PHONE,
+            body="Roteiro",
+            status=ProspectOutreachDraft.Status.READY,
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            send_outreach_draft_email(tenant=self.tenant, draft=phone, actor=self.user, email_sender=FakeOutreachEmailSender())
+
+    def test_double_send_is_idempotent(self):
+        draft = self._ready_email_draft()
+        sender = FakeOutreachEmailSender(EmailSendResult(success=True))
+        send_outreach_draft_email(tenant=self.tenant, draft=draft, actor=self.user, email_sender=sender)
+        _, delivered_again = send_outreach_draft_email(tenant=self.tenant, draft=draft, actor=self.user, email_sender=sender)
+        self.assertFalse(delivered_again)
+        self.assertEqual(len(sender.calls), 1)
+        self.assertEqual(ProspectOutreachSend.objects.filter(draft=draft).count(), 1)
+        self.assertEqual(self.prospect.activities.filter(activity_type=ProspectActivity.ActivityType.EMAIL_SENT).count(), 1)
+
+    def test_technical_failure_and_retry_preserves_snapshot(self):
+        draft = self._ready_email_draft()
+        sender = FakeOutreachEmailSender(
+            EmailSendResult(success=False, error_code="SMTPException", error_message="timeout"),
+            EmailSendResult(success=True),
+        )
+        send, _ = send_outreach_draft_email(tenant=self.tenant, draft=draft, actor=self.user, email_sender=sender)
+        self.assertEqual(send.status, ProspectOutreachSend.Status.FAILED)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_SEND_FAILED).exists())
+        self.assertEqual(self.prospect.activities.count(), 0)
+
+        update_outreach_draft(
+            tenant=self.tenant,
+            draft=draft,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto alterado depois",
+            body="Corpo alterado depois",
+            actor=self.user,
+        )
+        retried, _ = retry_outreach_send(tenant=self.tenant, send=send, actor=self.user, email_sender=sender)
+        self.assertEqual(retried.status, ProspectOutreachSend.Status.SENT)
+        self.assertEqual(retried.subject_snapshot, "Assunto comercial")
+        self.assertEqual(len(sender.calls), 2)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_SEND_RETRY_REQUESTED).exists())
+
+    def test_cross_tenant_rejected(self):
+        draft = self._ready_email_draft()
+        sender = FakeOutreachEmailSender(EmailSendResult(success=True))
+        send, _ = send_outreach_draft_email(tenant=self.tenant, draft=draft, actor=self.user, email_sender=sender)
+        with self.assertRaises(ValidationError):
+            retry_outreach_send(tenant=self.other_tenant, send=send, actor=self.user, email_sender=sender)
+
+    def test_unqualified_prospect_blocks_send(self):
+        draft = self._ready_email_draft()
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.ON_HOLD,
+            priority=Prospect.Priority.LOW,
+            qualification_note="",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            send_outreach_draft_email(
+                tenant=self.tenant,
+                draft=draft,
+                actor=self.user,
+                email_sender=FakeOutreachEmailSender(EmailSendResult(success=True)),
+            )
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="comercial@example.com",
+    PROSPECTING_OUTREACH_EMAIL_ENABLED=True,
+    PROSPECTING_OUTREACH_EMAIL_DRY_RUN=False,
+)
+class ProspectingOutreachSendIntegrationTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-send-int", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-send-int")
+        self.prospect = Prospect.objects.create(tenant=self.tenant, display_name="Hospital ABC", identity_key="hospital-abc-send-int")
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self.email_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+
+    def test_django_email_backend_used_without_real_network(self):
+        from django.core import mail
+
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Teste",
+            body="Olá",
+            status=ProspectOutreachDraft.Status.READY,
+            actor=self.user,
+        )
+        send_outreach_draft_email(tenant=self.tenant, draft=draft, actor=self.user)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["maria@hospital.example.com"])
 
 
 class ProspectingBootstrapCommandTests(TestCase):

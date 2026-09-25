@@ -119,6 +119,21 @@ urlpatterns = [
         prospecting_views.prospecting_restore_outreach_draft,
         name="prospecting_restore_outreach_draft",
     ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/enviar-email/",
+        prospecting_views.prospecting_outreach_email_send_confirm,
+        name="prospecting_outreach_email_send_confirm",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/enviar-email/confirmar/",
+        prospecting_views.prospecting_outreach_email_send_execute,
+        name="prospecting_outreach_email_send_execute",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/envios/<uuid:send_id>/tentar-novamente/",
+        prospecting_views.prospecting_outreach_email_send_retry,
+        name="prospecting_outreach_email_send_retry",
+    ),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/adicionar/", prospecting_views.prospecting_add_enrichment, name="prospecting_add_enrichment"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/website/", prospecting_views.prospecting_website_enrichment, name="prospecting_website_enrichment"),
     path("configuracao/tenants/", tenant_config_views.tenant_config_list, name="tenant_config_list"),

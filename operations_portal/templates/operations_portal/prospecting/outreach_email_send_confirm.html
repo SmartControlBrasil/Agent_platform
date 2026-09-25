@@ -1,0 +1,50 @@
+{% extends "operations_portal/base.html" %}
+{% block title %}Confirmar envio de e-mail{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid py-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'operations_portal:prospecting_prospect_list' %}">Prospecção · Prospects</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">{{ prospect.display_name }}</a></li>
+    <li class="breadcrumb-item active">Confirmar envio</li>
+  </ol>
+
+  <div class="card border-warning">
+    <div class="card-header bg-warning-subtle">
+      <h5 class="mb-0">Envio real de e-mail</h5>
+    </div>
+    <div class="card-body">
+      <p class="mb-3">Esta ação enviará um e-mail externo. Revise o destino e o conteúdo antes de confirmar.</p>
+      <dl class="row mb-0">
+        <dt class="col-sm-3">Para</dt>
+        <dd class="col-sm-9">{{ draft.destination_email }}</dd>
+        <dt class="col-sm-3">Contato</dt>
+        <dd class="col-sm-9">{{ draft.contact.name|default:"—" }}</dd>
+        <dt class="col-sm-3">Assunto</dt>
+        <dd class="col-sm-9">{{ draft.subject }}</dd>
+        <dt class="col-sm-3">Mensagem</dt>
+        <dd class="col-sm-9"><pre class="mb-0 small bg-light p-2 rounded">{{ draft.body }}</pre></dd>
+      </dl>
+      {% if send and send.status == 'SENT' %}
+      <div class="alert alert-info mt-3 mb-0">Este rascunho já possui envio concluído em {{ send.sent_at|date:"d/m/Y H:i" }}.</div>
+      {% elif send and send.status == 'FAILED' %}
+      <div class="alert alert-danger mt-3">Última tentativa falhou: {{ send.error_message|default:"Erro desconhecido" }}</div>
+      {% endif %}
+      <div class="d-flex flex-wrap gap-2 mt-4">
+        {% if send and send.status == 'FAILED' %}
+        <form method="post" action="{% url 'operations_portal:prospecting_outreach_email_send_retry' prospect.id send.id %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-warning">Tentar envio novamente</button>
+        </form>
+        {% elif not send or send.status != 'SENT' %}
+        <form method="post" action="{% url 'operations_portal:prospecting_outreach_email_send_execute' prospect.id draft.id %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-warning">Confirmar envio</button>
+        </form>
+        {% endif %}
+        <a class="btn btn-light border" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Cancelar</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

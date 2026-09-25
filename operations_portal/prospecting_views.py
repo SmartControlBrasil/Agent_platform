@@ -42,6 +42,7 @@ from prospecting.application.outreach_drafts import (
     revert_outreach_draft_to_draft,
     update_outreach_draft,
 )
+from prospecting.application.outreach_sends import retry_outreach_send, send_outreach_draft_email
 from prospecting.application.contacts import (
     create_prospect_contact,
     delete_prospect_contact,
@@ -75,6 +76,7 @@ from prospecting.models import (
     ProspectContact,
     ProspectEnrichment,
     ProspectOutreachDraft,
+    ProspectOutreachSend,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -164,10 +166,31 @@ def _activity_queryset(tenant):
 
 
 def _outreach_draft_queryset(tenant):
-    queryset = ProspectOutreachDraft.objects.select_related("prospect", "tenant", "contact", "created_by")
+    queryset = ProspectOutreachDraft.objects.select_related(
+        "prospect",
+        "tenant",
+        "contact",
+        "created_by",
+        "outreach_send",
+        "outreach_send__requested_by",
+    )
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
+
+
+def _outreach_send_queryset(tenant):
+    queryset = ProspectOutreachSend.objects.select_related("draft", "prospect", "tenant", "contact", "requested_by")
+    if tenant is not None:
+        queryset = queryset.filter(tenant=tenant)
+    return queryset
+
+
+def _resolve_viewing_outreach_send(tenant, prospect, send_id_raw):
+    send_id = (send_id_raw or "").strip()
+    if not send_id:
+        return None
+    return get_object_or_404(_outreach_send_queryset(tenant), pk=send_id, prospect=prospect)
 
 
 def _search_run_ui(status):
@@ -867,6 +890,7 @@ def prospecting_prospect_detail(request, prospect_id):
         "outreach_edit_form": ProspectOutreachDraftForm(prospect=prospect, draft=editing_outreach) if editing_outreach else None,
         "can_create_outreach": prospect.qualification_status == Prospect.QualificationStatus.QUALIFIED,
         "show_new_outreach": (request.GET.get("new_outreach") or "").strip() == "1",
+        "viewing_outreach_send": _resolve_viewing_outreach_send(access.tenant, prospect, request.GET.get("view_outreach_send")),
         "sources": list(prospect.sources.all().order_by("-created_at")),
         "enrichments": list(prospect.enrichments.all().order_by("-observed_at", "-created_at")),
         "manual_form": ProspectEnrichmentCreateForm(
@@ -1213,6 +1237,76 @@ def prospecting_archive_outreach_draft(request, prospect_id, draft_id):
         return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
     messages.success(request, "Abordagem arquivada.")
     return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+def prospecting_outreach_email_send_confirm(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    send = getattr(draft, "outreach_send", None)
+    context = {
+        "active_section": "prospeccao",
+        "prospect": prospect,
+        "draft": draft,
+        "send": send,
+        "can_manage": True,
+    }
+    context.update(portal_template_context(access))
+    return render(request, "operations_portal/prospecting/outreach_email_send_confirm.html", context)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_outreach_email_send_execute(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    try:
+        send, delivered = send_outreach_draft_email(
+            tenant=prospect.tenant,
+            draft=draft,
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(
+            reverse("operations_portal:prospecting_outreach_email_send_confirm", args=[prospect.id, draft.id])
+        )
+    if not delivered and send.status == ProspectOutreachSend.Status.SENT:
+        messages.info(request, "Este e-mail já havia sido enviado.")
+    elif send.status == ProspectOutreachSend.Status.SENT:
+        messages.success(request, f"E-mail enviado para {send.destination}.")
+    else:
+        messages.error(request, send.error_message or "Falha ao enviar e-mail.")
+    return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?view_outreach_send={send.id}")
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_outreach_email_send_retry(request, prospect_id, send_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    send = get_object_or_404(_outreach_send_queryset(access.tenant), pk=send_id, prospect=prospect)
+    try:
+        send, _delivered = retry_outreach_send(
+            tenant=prospect.tenant,
+            send=send,
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?view_outreach_send={send.id}")
+    if send.status == ProspectOutreachSend.Status.SENT:
+        messages.success(request, f"E-mail enviado para {send.destination}.")
+    else:
+        messages.error(request, send.error_message or "Falha ao reenviar e-mail.")
+    return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?view_outreach_send={send.id}")
 
 
 @login_required(login_url="/admin/login/")

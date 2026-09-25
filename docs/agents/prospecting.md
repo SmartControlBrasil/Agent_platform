@@ -53,7 +53,8 @@ Enrichment does **not** auto-create contacts in the current phase.
 
 Activity does not change qualification, send messages, or sync calendars.
 
-- **ProspectOutreachDraft** — commercial outreach **preparation** (contact, channel, subject/body, draft/ready/archived status) for qualified prospects only; stores destination snapshots from `ProspectContact` but does **not** send email, WhatsApp, or any external message, and does **not** create `ProspectActivity` when saved.
+- **ProspectOutreachDraft** — commercial outreach **preparation** (contact, channel, subject/body, draft/ready/archived status) for qualified prospects only; stores destination snapshots from `ProspectContact`; saving a draft does **not** create `ProspectActivity`.
+- **ProspectOutreachSend** — **actual transmission attempt** for EMAIL drafts (snapshots frozen at send time, idempotent single successful send per draft, manual retry on technical failure); on **SENT**, creates `ProspectActivity` with type **EMAIL_SENT**. Distinct from draft content and from leads/Lívia notification outbox.
 
 Qualification statuses:
 

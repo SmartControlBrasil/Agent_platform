@@ -14,7 +14,9 @@ from prospecting.application.outreach_drafts import (
     ACTION_OUTREACH_DRAFT_ARCHIVED,
     ACTION_OUTREACH_DRAFT_CREATED,
     ACTION_OUTREACH_DRAFT_READY,
+    create_outreach_draft,
 )
+from prospecting.application.outreach_sends import ACTION_OUTREACH_SEND_SENT
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
 from prospecting.models import (
@@ -23,6 +25,7 @@ from prospecting.models import (
     ProspectContact,
     ProspectEnrichment,
     ProspectOutreachDraft,
+    ProspectOutreachSend,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -1144,3 +1147,120 @@ class ProspectingOutreachDraftPortalTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 404)
         self.assertEqual(self.prospect.outreach_drafts.count(), 1)
+
+
+@override_settings(
+    SECURE_SSL_REDIRECT=False,
+    STORAGES=TEST_STORAGES,
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="comercial@example.com",
+    PROSPECTING_OUTREACH_EMAIL_ENABLED=True,
+    PROSPECTING_OUTREACH_EMAIL_DRY_RUN=False,
+)
+class ProspectingOutreachEmailPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-send", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-send", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-send-portal")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.project = Project.objects.create(tenant=self.tenant, name="Comercial", slug="comercial-send")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Send Portal",
+        )
+        run = SearchRun.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=installation,
+            target_region="São Paulo",
+            queries=["hospital privado"],
+            max_results=10,
+        )
+        result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=run,
+            name="Hospital Envio",
+            external_id="cid-send-1",
+            source_query="hospital privado",
+        )
+        self.prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=result)
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.admin,
+        )
+        self.email_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.ready_draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Apresentação comercial",
+            body="Prezada Maria, teste.",
+            status=ProspectOutreachDraft.Status.READY,
+            actor=self.admin,
+        )
+        self.client = Client()
+
+    def test_ready_shows_send_button_draft_does_not(self):
+        self.client.force_login(self.admin)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Enviar e-mail")
+        self.ready_draft.status = ProspectOutreachDraft.Status.DRAFT
+        self.ready_draft.save(update_fields=["status"])
+        detail_draft = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertNotContains(detail_draft, "Enviar e-mail")
+
+    def test_viewer_cannot_send_manager_can(self):
+        confirm_url = reverse(
+            "operations_portal:prospecting_outreach_email_send_confirm",
+            args=[self.prospect.id, self.ready_draft.id],
+        )
+        execute_url = reverse(
+            "operations_portal:prospecting_outreach_email_send_execute",
+            args=[self.prospect.id, self.ready_draft.id],
+        )
+        self.client.force_login(self.viewer)
+        self.assertEqual(self.client.post(execute_url).status_code, 403)
+        self.client.force_login(self.admin)
+        confirm = self.client.get(confirm_url)
+        self.assertContains(confirm, "Envio real de e-mail")
+        self.assertContains(confirm, "maria@hospital.example.com")
+        self.assertEqual(self.client.get(execute_url).status_code, 405)
+        from django.core import mail
+
+        response = self.client.post(execute_url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_SEND_SENT).exists())
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Enviado")
+        self.assertNotContains(detail, ">Enviar e-mail<")
+
+    def test_double_post_does_not_duplicate_email(self):
+        from django.core import mail
+
+        execute_url = reverse(
+            "operations_portal:prospecting_outreach_email_send_execute",
+            args=[self.prospect.id, self.ready_draft.id],
+        )
+        self.client.force_login(self.admin)
+        self.client.post(execute_url)
+        self.client.post(execute_url)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(ProspectOutreachSend.objects.filter(draft=self.ready_draft, status=ProspectOutreachSend.Status.SENT).count(), 1)

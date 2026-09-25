@@ -86,7 +86,11 @@ No detalhe do prospect, a seção **Contatos** registra pessoas ou canais (`Pros
 
 No detalhe do prospect qualificado (`QUALIFIED`), a seção **Abordagens** prepara `ProspectOutreachDraft`: contato (`ProspectContact`), canal conceitual (`EMAIL`, `PHONE`, `WHATSAPP`, `OTHER`), assunto (obrigatório para e-mail), corpo de texto e status (`DRAFT`, `READY`, `ARCHIVED`). O destino futuro é derivado do contato e gravado como snapshot (`destination_email` / `destination_phone`) no rascunho, mantendo a FK do contato.
 
-`commercial.view` lista e abre rascunhos; `commercial.manage` cria, edita, marca como pronto, volta para rascunho, arquiva e restaura (POST + CSRF, tenant-scoped). **Nenhum envio** (e-mail, WhatsApp, SMS, webhook) ocorre nesta fase — rascunho ≠ mensagem enviada. Salvar ou marcar pronto **não** cria `ProspectActivity`; atividades continuam reservadas a interações reais registradas manualmente.
+`commercial.view` lista e abre rascunhos; `commercial.manage` cria, edita, marca como pronto, volta para rascunho, arquiva e restaura (POST + CSRF, tenant-scoped). Salvar ou marcar pronto **não** cria `ProspectActivity`.
+
+### Envio controlado de e-mail (canal EMAIL)
+
+Rascunho **READY** + canal **EMAIL** + prospect ainda **QUALIFIED** pode ser enviado **uma vez** após confirmação explícita (GET de confirmação + POST). O registro `ProspectOutreachSend` guarda snapshots de destino/assunto/corpo (independente de edições posteriores ao draft), status (`PENDING`, `SENDING`, `SENT`, `FAILED`, …), idempotency key e metadados do provider (`DJANGO_EMAIL` / `DEFAULT_FROM_EMAIL`). Duplo POST não duplica envio; falha técnica permite **retry manual** reutilizando os snapshots. Quando o envio atinge **SENT**, cria-se `ProspectActivity` tipo **EMAIL_SENT** (uma por send). WhatsApp/telefone/outros canais continuam sem envio automático nesta fase.
 
 ## Prospecção · histórico comercial
 
