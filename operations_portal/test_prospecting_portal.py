@@ -8,6 +8,7 @@ from django.utils import timezone
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.contacts import ACTION_PROSPECT_CONTACT_CREATED, ACTION_PROSPECT_CONTACT_UPDATED
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED
 from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
 from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
@@ -764,3 +765,112 @@ class ProspectingQualificationPortalTests(TestCase):
             self._qualify_payload(),
         )
         self.assertEqual(forbidden.status_code, 404)
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingContactPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-contact", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-contact", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-contact")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.project = Project.objects.create(tenant=self.tenant, name="Comercial", slug="comercial-contact")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Contact Portal",
+        )
+        run = SearchRun.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=installation,
+            target_region="São Paulo",
+            queries=["hospital privado"],
+            max_results=10,
+        )
+        result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=run,
+            name="Hospital Contatos",
+            external_id="cid-contact-1",
+            source_query="hospital privado",
+        )
+        self.prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=result)
+        self.client = Client()
+
+    def _contact_payload(self, **overrides):
+        payload = {
+            "name": "Maria Silva",
+            "role_title": "Compras",
+            "email": "maria@hospital.example.com",
+            "phone": "(11) 99999-0000",
+            "note": "Canal comercial.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_viewer_sees_contacts_but_cannot_create(self):
+        self.client.force_login(self.viewer)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Contatos")
+        self.assertNotContains(detail, "+ Adicionar contato")
+        create = self.client.post(
+            reverse("operations_portal:prospecting_create_prospect_contact", args=[self.prospect.id]),
+            self._contact_payload(),
+        )
+        self.assertEqual(create.status_code, 403)
+
+    def test_manager_creates_edits_and_lists_contact_count(self):
+        self.client.force_login(self.admin)
+        create_url = reverse("operations_portal:prospecting_create_prospect_contact", args=[self.prospect.id])
+        self.assertEqual(self.client.get(create_url).status_code, 405)
+        response = self.client.post(create_url, self._contact_payload())
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_CONTACT_CREATED).exists())
+
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Maria Silva")
+        self.assertContains(detail, "maria@hospital.example.com")
+
+        contact = self.prospect.contacts.get()
+        edit = self.client.post(
+            reverse("operations_portal:prospecting_update_prospect_contact", args=[self.prospect.id, contact.id]),
+            self._contact_payload(role_title="Compras e suprimentos"),
+        )
+        self.assertEqual(edit.status_code, 302)
+        contact.refresh_from_db()
+        self.assertEqual(contact.role_title, "Compras e suprimentos")
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_CONTACT_UPDATED).exists())
+
+        listing = self.client.get(reverse("operations_portal:prospecting_prospect_list"))
+        self.assertContains(listing, "Hospital Contatos")
+        self.assertContains(listing, ">1<")
+
+    def test_invalid_post_and_cross_tenant_delete(self):
+        self.client.force_login(self.admin)
+        bad = self.client.post(
+            reverse("operations_portal:prospecting_create_prospect_contact", args=[self.prospect.id]),
+            {"name": "", "email": "", "phone": ""},
+        )
+        self.assertEqual(bad.status_code, 302)
+        self.assertEqual(self.prospect.contacts.count(), 0)
+
+        self.client.post(
+            reverse("operations_portal:prospecting_create_prospect_contact", args=[self.prospect.id]),
+            self._contact_payload(),
+        )
+        contact = self.prospect.contacts.get()
+
+        other_tenant = Tenant.objects.create(name="Outro", slug="outro-contact-x")
+        other_prospect = Prospect.objects.create(tenant=other_tenant, display_name="Outro", identity_key="outro-x")
+        forbidden = self.client.post(
+            reverse("operations_portal:prospecting_delete_prospect_contact", args=[other_prospect.id, contact.id]),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+        self.assertEqual(self.prospect.contacts.count(), 1)

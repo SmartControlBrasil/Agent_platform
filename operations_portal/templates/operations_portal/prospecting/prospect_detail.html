@@ -59,6 +59,81 @@
   </div>
 
   <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">Contatos</h5>
+          <span class="text-muted small">{{ contacts|length }} cadastrado(s)</span>
+        </div>
+        <div class="card-body">
+          {% if editing_contact and contact_edit_form %}
+          <div class="border rounded p-3 mb-3 bg-light-subtle">
+            <h6 class="mb-3">Editar contato</h6>
+            <form method="post" action="{% url 'operations_portal:prospecting_update_prospect_contact' prospect.id editing_contact.id %}">
+              {% csrf_token %}
+              <div class="row g-2">
+                <div class="col-md-6">{{ contact_edit_form.name.label_tag }}{{ contact_edit_form.name }}</div>
+                <div class="col-md-6">{{ contact_edit_form.role_title.label_tag }}{{ contact_edit_form.role_title }}</div>
+                <div class="col-md-6">{{ contact_edit_form.email.label_tag }}{{ contact_edit_form.email }}</div>
+                <div class="col-md-6">{{ contact_edit_form.phone.label_tag }}{{ contact_edit_form.phone }}</div>
+                <div class="col-12">{{ contact_edit_form.note.label_tag }}{{ contact_edit_form.note }}</div>
+              </div>
+              {% if can_manage %}
+              <div class="d-flex gap-2 mt-3">
+                <button type="submit" class="btn btn-primary btn-sm">Salvar contato</button>
+                <a class="btn btn-light border btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Cancelar</a>
+              </div>
+              {% endif %}
+            </form>
+          </div>
+          {% endif %}
+
+          {% for contact in contacts %}
+            {% if not editing_contact or contact.id != editing_contact.id %}
+            <div class="border-bottom pb-3 mb-3">
+              <div class="fw-semibold">{{ contact.name|default:"—" }}</div>
+              {% if contact.role_title %}<div class="text-muted">{{ contact.role_title }}</div>{% endif %}
+              <div class="small mt-1">
+                {% if contact.email %}<div>{{ contact.email }}</div>{% endif %}
+                {% if contact.phone %}<div>{{ contact.phone }}</div>{% endif %}
+              </div>
+              {% if contact.note %}<div class="small text-muted mt-1">{{ contact.note }}</div>{% endif %}
+              <div class="small text-muted mt-1">{{ contact.get_source_type_display }}{% if contact.source_reference %} · {{ contact.source_reference }}{% endif %}</div>
+              {% if can_manage %}
+              <div class="d-flex gap-2 mt-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?edit_contact={{ contact.id }}">Editar</a>
+                <form method="post" action="{% url 'operations_portal:prospecting_delete_prospect_contact' prospect.id contact.id %}" class="d-inline" onsubmit="return confirm('Remover este contato?');">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Remover</button>
+                </form>
+              </div>
+              {% endif %}
+            </div>
+            {% endif %}
+          {% empty %}
+            <p class="text-muted mb-0">Nenhum contato cadastrado.</p>
+          {% endfor %}
+
+          {% if can_manage %}
+          <h6 class="mt-2 mb-3">Adicionar contato</h6>
+          <form method="post" action="{% url 'operations_portal:prospecting_create_prospect_contact' prospect.id %}">
+            {% csrf_token %}
+            <div class="row g-2">
+              <div class="col-md-6">{{ contact_create_form.name.label_tag }}{{ contact_create_form.name }}</div>
+              <div class="col-md-6">{{ contact_create_form.role_title.label_tag }}{{ contact_create_form.role_title }}</div>
+              <div class="col-md-6">{{ contact_create_form.email.label_tag }}{{ contact_create_form.email }}</div>
+              <div class="col-md-6">{{ contact_create_form.phone.label_tag }}{{ contact_create_form.phone }}</div>
+              <div class="col-12">{{ contact_create_form.note.label_tag }}{{ contact_create_form.note }}</div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm mt-3">+ Adicionar contato</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
     <div class="col-lg-6">
       <div class="card h-100">
         <div class="card-header"><h5 class="mb-0">Dados principais</h5></div>

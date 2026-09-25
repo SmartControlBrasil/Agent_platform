@@ -6,13 +6,15 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from audit.services import record_audit_event
 from operations_portal.access import portal_template_context, require_portal_capability, resolve_portal_access
 from operations_portal.prospecting_forms import (
+    ProspectContactForm,
     ProspectEnrichmentCreateForm,
     ProspectFilterForm,
     ProspectQualificationForm,
@@ -24,6 +26,11 @@ from operations_portal.prospecting_forms import (
 )
 from operations_portal.selectors import clean_querystring
 from projects.models import Project
+from prospecting.application.contacts import (
+    create_prospect_contact,
+    delete_prospect_contact,
+    update_prospect_contact,
+)
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
 from prospecting.application.qualification import qualify_prospect
@@ -46,7 +53,15 @@ from prospecting.application.search_runs import (
     synchronize_search_run,
 )
 from prospecting.application.website_enrichment import enrich_prospect_from_website
-from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from prospecting.models import (
+    Prospect,
+    ProspectContact,
+    ProspectEnrichment,
+    ProspectSource,
+    SearchResult,
+    SearchRun,
+    SearchRunExecutionAttempt,
+)
 from tenants.access import CAPABILITY_COMMERCIAL_MANAGE, CAPABILITY_COMMERCIAL_VIEW
 from tools.application.executor_presence import executor_presence
 from tools.infrastructure.validation import summarize_tool_execution
@@ -110,7 +125,14 @@ def _build_search_result_queryset(search_run):
 
 
 def _prospect_queryset(tenant):
-    queryset = Prospect.objects.select_related("tenant").prefetch_related("sources", "enrichments")
+    queryset = Prospect.objects.select_related("tenant").prefetch_related("sources", "enrichments", "contacts")
+    if tenant is not None:
+        queryset = queryset.filter(tenant=tenant)
+    return queryset
+
+
+def _contact_queryset(tenant):
+    queryset = ProspectContact.objects.select_related("prospect", "tenant")
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
@@ -705,13 +727,18 @@ def prospecting_search_result_bulk_action(request, run_id):
 @login_required(login_url="/admin/login/")
 def prospecting_prospect_list(request):
     access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
-    queryset = _prospect_queryset(access.tenant)
+    queryset = _prospect_queryset(access.tenant).annotate(contact_count=Count("contacts", distinct=True))
     form = ProspectFilterForm(request.GET or None, project_queryset=_project_queryset_for_tenant(access.tenant))
     if form.is_valid():
         project = form.cleaned_data.get("project")
+        has_contacts = form.cleaned_data.get("has_contacts")
         query = (form.cleaned_data.get("q") or "").strip()
         if project:
             queryset = queryset.filter(sources__search_run__project=project)
+        if has_contacts == "yes":
+            queryset = queryset.filter(contact_count__gt=0)
+        elif has_contacts == "no":
+            queryset = queryset.filter(contact_count=0)
         qualification_status = form.cleaned_data.get("qualification_status")
         priority = form.cleaned_data.get("priority")
         if qualification_status:
@@ -752,9 +779,20 @@ def prospecting_prospect_detail(request, prospect_id):
         ),
         pk=prospect_id,
     )
+    contacts = list(prospect.contacts.all())
+    editing_contact = None
+    edit_contact_id = (request.GET.get("edit_contact") or "").strip()
+    if edit_contact_id:
+        editing_contact = next((item for item in contacts if str(item.pk) == edit_contact_id), None)
+        if editing_contact is None:
+            editing_contact = get_object_or_404(_contact_queryset(access.tenant), pk=edit_contact_id, prospect=prospect)
     context = {
         "active_section": "prospeccao",
         "prospect": prospect,
+        "contacts": contacts,
+        "editing_contact": editing_contact,
+        "contact_create_form": ProspectContactForm(),
+        "contact_edit_form": ProspectContactForm(contact=editing_contact) if editing_contact else None,
         "sources": list(prospect.sources.all().order_by("-created_at")),
         "enrichments": list(prospect.enrichments.all().order_by("-observed_at", "-created_at")),
         "manual_form": ProspectEnrichmentCreateForm(
@@ -800,6 +838,89 @@ def prospecting_qualify_prospect(request, prospect_id):
         messages.success(request, "Qualificação salva.")
     else:
         messages.info(request, "Qualificação já estava atualizada.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_create_prospect_contact(request, prospect_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    form = ProspectContactForm(request.POST)
+    if not form.is_valid():
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    try:
+        create_prospect_contact(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            name=form.cleaned_data.get("name") or "",
+            role_title=form.cleaned_data.get("role_title") or "",
+            email=form.cleaned_data.get("email") or "",
+            phone=form.cleaned_data.get("phone") or "",
+            note=form.cleaned_data.get("note") or "",
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    messages.success(request, "Contato adicionado.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_update_prospect_contact(request, prospect_id, contact_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    contact = get_object_or_404(_contact_queryset(access.tenant), pk=contact_id, prospect=prospect)
+    form = ProspectContactForm(request.POST, contact=contact)
+    if not form.is_valid():
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?edit_contact={contact.id}")
+    try:
+        _, changed = update_prospect_contact(
+            tenant=prospect.tenant,
+            contact=contact,
+            name=form.cleaned_data.get("name") or "",
+            role_title=form.cleaned_data.get("role_title") or "",
+            email=form.cleaned_data.get("email") or "",
+            phone=form.cleaned_data.get("phone") or "",
+            note=form.cleaned_data.get("note") or "",
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?edit_contact={contact.id}")
+    messages.success(request, "Contato atualizado." if changed else "Contato já estava atualizado.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_delete_prospect_contact(request, prospect_id, contact_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    contact = get_object_or_404(_contact_queryset(access.tenant), pk=contact_id, prospect=prospect)
+    try:
+        delete_prospect_contact(tenant=prospect.tenant, contact=contact, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    messages.success(request, "Contato removido.")
     return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
 
 

@@ -1,7 +1,9 @@
 import uuid
 
 from django.core.exceptions import ValidationError
+from django.core.validators import EmailValidator
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 from prospecting.domain.dedupe import build_search_result_dedupe_key
@@ -415,3 +417,97 @@ class ProspectEnrichment(models.Model):
 
     def __str__(self):
         return f"{self.prospect}: {self.field}={self.value}"
+
+
+class ProspectContact(models.Model):
+    class SourceType(models.TextChoices):
+        MANUAL = "MANUAL", "Manual"
+        WEBSITE = "WEBSITE", "Website"
+        ENRICHMENT = "ENRICHMENT", "Enrichment"
+        OTHER = "OTHER", "Other"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospect_contacts")
+    prospect = models.ForeignKey("prospecting.Prospect", on_delete=models.CASCADE, related_name="contacts")
+    name = models.CharField(max_length=220, blank=True, default="")
+    role_title = models.CharField(max_length=160, blank=True, default="")
+    email = models.CharField(max_length=320, blank=True, default="")
+    phone = models.CharField(max_length=80, blank=True, default="")
+    normalized_email = models.CharField(max_length=320, blank=True, default="")
+    normalized_phone = models.CharField(max_length=80, blank=True, default="")
+    note = models.TextField(blank=True, default="")
+    source_type = models.CharField(max_length=16, choices=SourceType.choices, default=SourceType.MANUAL)
+    source_reference = models.CharField(max_length=320, blank=True, default="")
+    source_url = models.URLField(max_length=1000, blank=True, default="")
+    source_enrichment = models.ForeignKey(
+        "prospecting.ProspectEnrichment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="derived_contacts",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "email", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "prospect", "normalized_email"],
+                condition=Q(normalized_email__gt=""),
+                name="unique_prospect_contact_email_per_prospect",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "prospect", "normalized_phone"],
+                condition=Q(normalized_phone__gt=""),
+                name="unique_prospect_contact_phone_per_prospect",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "prospect"]),
+            models.Index(fields=["tenant", "prospect", "normalized_email"]),
+            models.Index(fields=["tenant", "prospect", "normalized_phone"]),
+        ]
+
+    def clean(self):
+        if self.prospect_id and self.tenant_id and self.prospect.tenant_id != self.tenant_id:
+            raise ValidationError({"prospect": "Prospect must belong to the same tenant."})
+        if self.source_enrichment_id:
+            if self.source_enrichment.tenant_id != self.tenant_id:
+                raise ValidationError({"source_enrichment": "Enrichment source must belong to the same tenant."})
+            if self.source_enrichment.prospect_id != self.prospect_id:
+                raise ValidationError({"source_enrichment": "Enrichment must belong to the same prospect."})
+        self.name = " ".join((self.name or "").split())
+        self.role_title = " ".join((self.role_title or "").split())
+        self.phone = " ".join((self.phone or "").split())
+        if self.email:
+            self.email = normalize_enrichment_value(ProspectEnrichment.Field.EMAIL, self.email)
+        self.note = (self.note or "").strip()
+        if len(self.name) > 220:
+            raise ValidationError({"name": "Name is too long."})
+        if len(self.role_title) > 160:
+            raise ValidationError({"role_title": "Role title is too long."})
+        if len(self.note) > 2000:
+            raise ValidationError({"note": "Note must be at most 2000 characters."})
+        if not self.name and not self.email and not self.phone:
+            raise ValidationError("Contact requires at least name, email, or phone.")
+        if self.email:
+            EmailValidator()(self.email)
+        if any(contains_forbidden_secret(value) for value in [self.email, self.phone, self.note, self.source_reference]):
+            raise ValidationError("Contact cannot store credentials, tokens, cookies, or Authorization data.")
+        self.normalized_email = normalize_enrichment_value(ProspectEnrichment.Field.EMAIL, self.email) if self.email else ""
+        self.normalized_phone = normalize_enrichment_value(ProspectEnrichment.Field.PHONE, self.phone) if self.phone else ""
+        self.source_type = (self.source_type or "").upper()
+        if self.source_type not in self.SourceType.values:
+            raise ValidationError({"source_type": "Unsupported contact source type."})
+        if self.source_url:
+            self.source_url = normalize_website(self.source_url)
+        self.source_reference = " ".join((self.source_reference or "").split())
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        label = self.name or self.email or self.phone
+        return f"{self.prospect.display_name}: {label}"

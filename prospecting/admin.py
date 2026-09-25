@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from .models import Prospect, ProspectContact, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 
 
 @admin.register(SearchRun)
@@ -41,6 +41,14 @@ class ProspectSourceAdmin(admin.ModelAdmin):
     list_filter = ("tenant",)
     search_fields = ("prospect__display_name", "search_result__name", "search_run__id")
     readonly_fields = ("id", "created_at")
+
+
+@admin.register(ProspectContact)
+class ProspectContactAdmin(admin.ModelAdmin):
+    list_display = ("name", "role_title", "email", "phone", "tenant", "prospect", "source_type", "created_at")
+    list_filter = ("tenant", "source_type")
+    search_fields = ("name", "role_title", "email", "phone", "prospect__display_name")
+    readonly_fields = ("id", "normalized_email", "normalized_phone", "created_at", "updated_at")
 
 
 @admin.register(ProspectEnrichment)

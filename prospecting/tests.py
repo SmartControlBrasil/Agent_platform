@@ -11,6 +11,14 @@ from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from projects.models import Project
 from prospecting.application.enrichments import add_prospect_enrichment
 from prospecting.application.prospects import promote_search_result_to_prospect
+from prospecting.application.contacts import (
+    ACTION_PROSPECT_CONTACT_CREATED,
+    ACTION_PROSPECT_CONTACT_DELETED,
+    ACTION_PROSPECT_CONTACT_UPDATED,
+    create_prospect_contact,
+    delete_prospect_contact,
+    update_prospect_contact,
+)
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.review import (
     ProspectingReviewError,
@@ -33,7 +41,7 @@ from prospecting.application.search_runs import (
 from prospecting.application.website_enrichment import enrich_prospect_from_website
 from prospecting.infrastructure.website_fetcher import validate_public_http_url
 from prospecting.interfaces.website import WebsiteFetchResult
-from prospecting.models import Prospect, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
+from prospecting.models import Prospect, ProspectContact, ProspectEnrichment, ProspectSource, SearchResult, SearchRun, SearchRunExecutionAttempt
 from tenants.models import Tenant
 from audit.models import AuditEvent
 from django.contrib.auth import get_user_model
@@ -927,6 +935,193 @@ class ProspectingQualificationTests(TestCase):
         )
         self.assertFalse(changed)
         self.assertEqual(AuditEvent.objects.filter(action=ACTION_PROSPECT_QUALIFICATION_UPDATED).count(), 1)
+
+
+class ProspectingContactTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-contact", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-contact")
+        self.project = Project.objects.create(tenant=self.tenant, name="Projeto A", slug="project-a-contact")
+        self.other_project = Project.objects.create(tenant=self.other_tenant, name="Projeto B", slug="project-b-contact")
+        self.definition = AgentDefinition.objects.get(slug="prospecting")
+        self.version = AgentVersion.objects.get(agent_definition=self.definition, version="1.0.0")
+        self.installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting Contact",
+        )
+        self.other_installation = AgentInstallation.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_definition=self.definition,
+            agent_version=self.version,
+            name="Prospecting Other",
+        )
+        self.prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital ABC",
+            identity_key="hospital-abc",
+        )
+        self.other_prospect = Prospect.objects.create(
+            tenant=self.other_tenant,
+            display_name="Hospital XYZ",
+            identity_key="hospital-xyz",
+        )
+
+    def test_create_contact_and_normalize_email_phone(self):
+        contact = create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            role_title="Compras",
+            email=" Maria@HospitalABC.com ",
+            phone="(11) 99999-0000",
+            note="Canal principal.",
+            actor=self.user,
+        )
+        self.assertEqual(contact.normalized_email, "maria@hospitalabc.com")
+        self.assertEqual(contact.normalized_phone, "11999990000")
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_CONTACT_CREATED).exists())
+
+    def test_contact_requires_identifier(self):
+        with self.assertRaises(ValidationError):
+            create_prospect_contact(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                name="",
+                email="",
+                phone="",
+                actor=self.user,
+            )
+
+    def test_email_only_and_name_only_contacts(self):
+        email_only = create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            email="compras@empresa.com.br",
+            actor=self.user,
+        )
+        name_only = create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Recepção",
+            actor=self.user,
+        )
+        self.assertEqual(email_only.email, "compras@empresa.com.br")
+        self.assertEqual(name_only.name, "Recepção")
+
+    def test_duplicate_email_or_phone_on_same_prospect_rejected(self):
+        create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria",
+            email="maria@example.com",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            create_prospect_contact(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                name="Maria Silva",
+                email="MARIA@example.com",
+                actor=self.user,
+            )
+        create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Comercial",
+            phone="11988887777",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            create_prospect_contact(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                name="Outro",
+                phone="(11) 98888-7777",
+                actor=self.user,
+            )
+
+    def test_same_email_allowed_on_different_prospects_and_tenants(self):
+        create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            email="shared@example.com",
+            actor=self.user,
+        )
+        create_prospect_contact(
+            tenant=self.other_tenant,
+            prospect=self.other_prospect,
+            email="shared@example.com",
+            actor=self.user,
+        )
+        other = Prospect.objects.create(tenant=self.tenant, display_name="Clinica B", identity_key="clinica-b")
+        create_prospect_contact(
+            tenant=self.tenant,
+            prospect=other,
+            email="shared@example.com",
+            actor=self.user,
+        )
+        self.assertEqual(ProspectContact.objects.filter(normalized_email="shared@example.com").count(), 3)
+
+    def test_same_name_without_strong_identifier_does_not_dedupe(self):
+        create_prospect_contact(tenant=self.tenant, prospect=self.prospect, name="Maria Silva", actor=self.user)
+        create_prospect_contact(tenant=self.tenant, prospect=self.prospect, name="Maria Silva", actor=self.user)
+        self.assertEqual(ProspectContact.objects.filter(prospect=self.prospect, name="Maria Silva").count(), 2)
+
+    def test_update_edit_and_delete_with_audit(self):
+        contact = create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="João Souza",
+            role_title="TI",
+            email="joao@example.com",
+            actor=self.user,
+        )
+        before_name = self.prospect.display_name
+        updated, changed = update_prospect_contact(
+            tenant=self.tenant,
+            contact=contact,
+            name="João Souza",
+            role_title="Infraestrutura",
+            email="joao@example.com",
+            phone="11999991111",
+            note="",
+            actor=self.user,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(updated.role_title, "Infraestrutura")
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_CONTACT_UPDATED).exists())
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.display_name, before_name)
+
+        delete_prospect_contact(tenant=self.tenant, contact=updated, actor=self.user)
+        self.assertFalse(ProspectContact.objects.filter(pk=contact.pk).exists())
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_CONTACT_DELETED).exists())
+        self.assertEqual(ProspectEnrichment.objects.filter(prospect=self.prospect).count(), 0)
+
+    def test_cross_tenant_contact_mutation_rejected(self):
+        contact = create_prospect_contact(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Contato",
+            email="contato@example.com",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            update_prospect_contact(
+                tenant=self.other_tenant,
+                contact=contact,
+                name="Hack",
+                role_title="",
+                email="contato@example.com",
+                phone="",
+                note="",
+                actor=self.user,
+            )
 
 
 class ProspectingBootstrapCommandTests(TestCase):

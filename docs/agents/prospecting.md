@@ -38,7 +38,16 @@ The operational prospecting workflow lives in the same repository under the `pro
 - `ProspectSource` provenance history;
 - `ProspectEnrichment` manual observations;
 - optional website enrichment with strict SSRF controls;
-- manual prospect qualification in Hando (`qualification_status`, manual `priority`, `qualification_note`) — qualification is not a CRM pipeline and priority is not an automated score.
+- manual prospect qualification in Hando (`qualification_status`, manual `priority`, `qualification_note`) — qualification is not a CRM pipeline and priority is not an automated score;
+- `ProspectContact` for people/channels linked to a prospect company (`name`, `role_title`, email, phone, note, provenance).
+
+Conceptual split:
+
+- **Prospect** — company/account discovered in prospection;
+- **ProspectContact** — person or identifiable channel (e.g. “Recepção”, “Compras”) within that company;
+- **ProspectEnrichment** — observed data point (email/phone from website, manual note on a field) without implying a contact record.
+
+Enrichment does **not** auto-create contacts in the current phase.
 
 Qualification statuses:
 

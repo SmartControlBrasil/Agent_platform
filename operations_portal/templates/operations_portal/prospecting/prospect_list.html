@@ -19,7 +19,8 @@
         <div class="col-md-2">{{ form.project.label_tag }}{{ form.project }}</div>
         <div class="col-md-2">{{ form.qualification_status.label_tag }}{{ form.qualification_status }}</div>
         <div class="col-md-2">{{ form.priority.label_tag }}{{ form.priority }}</div>
-        <div class="col-md-4">{{ form.q.label_tag }}{{ form.q }}</div>
+        <div class="col-md-2">{{ form.has_contacts.label_tag }}{{ form.has_contacts }}</div>
+        <div class="col-md-3">{{ form.q.label_tag }}{{ form.q }}</div>
         <div class="col-md-2 d-flex align-items-end">
           <button class="btn btn-primary w-100" type="submit">Filtrar</button>
         </div>
@@ -38,6 +39,7 @@
               <th>Prioridade</th>
               <th>Contato</th>
               <th>Website</th>
+              <th>Contatos</th>
               <th>Fontes</th>
               <th>Enrichments</th>
               <th></th>
@@ -57,6 +59,7 @@
                 <div class="small text-muted">{{ prospect.external_id|default:"—" }}</div>
               </td>
               <td>{% if prospect.website %}<a href="{{ prospect.website }}" target="_blank" rel="noopener">{{ prospect.website }}</a>{% else %}—{% endif %}</td>
+              <td>{{ prospect.contact_count }}</td>
               <td>{{ prospect.sources.count }}</td>
               <td>{{ prospect.enrichments.count }}</td>
               <td class="text-end">
@@ -64,7 +67,7 @@
               </td>
             </tr>
             {% empty %}
-            <tr><td colspan="8" class="text-center text-muted py-4">Nenhum prospect encontrado.</td></tr>
+            <tr><td colspan="9" class="text-center text-muted py-4">Nenhum prospect encontrado.</td></tr>
             {% endfor %}
           </tbody>
         </table>

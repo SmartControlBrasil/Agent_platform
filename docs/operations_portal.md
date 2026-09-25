@@ -78,6 +78,10 @@ Em `/painel/prospeccao/prospects/<id>/`, operadores com `commercial.manage` regi
 
 `commercial.view` permite visualizar; alterações exigem POST com `commercial.manage`. Qualificação não altera dados principais do prospect (nome, telefone, website, proveniência). **Qualificação ≠ pipeline comercial; prioridade ≠ score automático.**
 
+## Prospecção · contatos
+
+No detalhe do prospect, a seção **Contatos** registra pessoas ou canais (`ProspectContact`) com nome/função, e-mail, telefone e observação. `commercial.view` visualiza; `commercial.manage` cria, edita e remove (remoção física com auditoria — sem outreach associado ainda). Deduplicação conservadora: mesmo e-mail ou telefone normalizado no mesmo prospect é rejeitado; nomes iguais sem identificador forte não são fundidos. Enrichments permanecem separados e não viram contato automaticamente.
+
 ## Terceira fase
 
 A visão geral em `/painel/` passou a ser um dashboard analítico com dados reais e seletor de período.

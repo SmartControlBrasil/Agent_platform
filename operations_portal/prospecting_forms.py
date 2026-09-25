@@ -3,7 +3,7 @@ from __future__ import annotations
 from django import forms
 
 from projects.models import Project
-from prospecting.models import Prospect, ProspectEnrichment, SearchResult, SearchRun
+from prospecting.models import Prospect, ProspectContact, ProspectEnrichment, SearchResult, SearchRun
 
 
 class _StyledForm(forms.Form):
@@ -44,12 +44,43 @@ class ProspectFilterForm(_StyledForm):
             (Prospect.Priority.LOW, "Baixa"),
         ],
     )
+    has_contacts = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Contatos: todos"),
+            ("yes", "Com contato"),
+            ("no", "Sem contato"),
+        ],
+    )
     q = forms.CharField(required=False, max_length=220)
 
     def __init__(self, *args, project_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["project"].queryset = project_queryset or Project.objects.none()
         self.fields["q"].widget.attrs.setdefault("placeholder", "Nome, endereço, website, telefone")
+
+
+class ProspectContactForm(_StyledForm):
+    name = forms.CharField(required=False, max_length=220)
+    role_title = forms.CharField(required=False, max_length=160, label="Cargo/Função")
+    email = forms.EmailField(required=False, max_length=320)
+    phone = forms.CharField(required=False, max_length=80)
+    note = forms.CharField(required=False, max_length=2000, widget=forms.Textarea(attrs={"rows": 2}))
+
+    def clean(self):
+        cleaned = super().clean()
+        if not (cleaned.get("name") or cleaned.get("email") or cleaned.get("phone")):
+            raise forms.ValidationError("Informe ao menos nome, e-mail ou telefone.")
+        return cleaned
+
+    def __init__(self, *args, contact=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if contact is not None and not self.is_bound:
+            self.fields["name"].initial = contact.name
+            self.fields["role_title"].initial = contact.role_title
+            self.fields["email"].initial = contact.email
+            self.fields["phone"].initial = contact.phone
+            self.fields["note"].initial = contact.note
 
 
 class ProspectQualificationForm(_StyledForm):
