@@ -238,3 +238,29 @@ Documentação: `docs/phase16_operational_analytics.md`.
 ## Assets
 
 Os assets do Hando copiados ficam sob `static/operations_portal/hando/`. O runtime não lê arquivos de `./hando/`.
+
+## Prospecção operacional no Hando
+
+A prospecção operacional faz parte do `Agent_platform` e usa exclusivamente o Hando em `/painel/`.
+
+Rotas principais:
+
+- `/painel/prospeccao/pesquisas/`
+- `/painel/prospeccao/pesquisas/<uuid>/`
+- `/painel/prospeccao/prospects/`
+- `/painel/prospeccao/prospects/<uuid>/`
+
+Escopo desta integração:
+
+- `SearchRun` e `SearchResult` para descoberta;
+- promoção explícita de `SearchResult` para `Prospect` via POST;
+- `ProspectSource` para proveniência;
+- `ProspectEnrichment` manual e por website com proteções SSRF;
+- isolamento estrito por tenant e validação de capability.
+
+Limites arquiteturais mantidos:
+
+- `/platform/` continua sendo o Control Plane técnico;
+- `/admin/` continua sendo o Django Admin técnico;
+- não existe UI operacional paralela oficial fora do Hando;
+- não foram adicionados CRM pipeline, scoring, IA comercial ou automações de outreach nesta fase.

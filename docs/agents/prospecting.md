@@ -4,12 +4,7 @@
 
 Prospecting Agent is the second concrete runtime of the Agent Platform.
 
-Its current purpose is to validate that a non-Lívia agent can be:
-
-- registered in the catalog,
-- installed through the Control Plane,
-- configured with its own schema,
-- executed through the generic installation execution API.
+Its initial role is architectural: prove that a non-Lívia agent can be registered, installed, configured, and executed through the generic runtime registry and ports without changing the generic execution endpoint.
 
 ## Configuration
 
@@ -33,19 +28,24 @@ Validation rules:
 - AgentVersion: `1.0.0`
 - Runtime handler: `prospecting`
 
+## Operational Context
+
+The operational prospecting workflow lives in the same repository under the `prospecting` app and is exposed in the Hando portal (`/painel/prospeccao/...`), not in a parallel UI. This workflow includes:
+
+- `SearchRun` and `SearchResult` for discovery records;
+- explicit promotion `SearchResult -> Prospect`;
+- `ProspectSource` provenance history;
+- `ProspectEnrichment` manual observations;
+- optional website enrichment with strict SSRF controls.
+
 ## Current Limitations
 
-This phase does not implement:
+Still out of scope in the current platform phase:
 
-- external APIs,
-- scraping,
-- Google Maps or Google Search,
-- smart_sales integration,
-- AI or LLM generation,
-- lead import,
-- execution jobs or async orchestration.
-
-The runtime only returns a structured readiness response proving correct runtime resolution and configuration isolation.
+- Google Maps scraping or browser automation from this app;
+- smart_sales runtime coupling;
+- AI/LLM scoring or autonomous qualification;
+- CRM pipeline management and outreach orchestration.
 
 ## Future Planned Tools
 

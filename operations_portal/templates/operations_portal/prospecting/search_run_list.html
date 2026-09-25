@@ -1,0 +1,71 @@
+{% extends "operations_portal/base.html" %}
+{% block title %}Prospecção · Pesquisas{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+      <h4 class="mb-1">Pesquisas de prospecção</h4>
+      <ol class="breadcrumb m-0 mt-1 py-0">
+        <li class="breadcrumb-item"><a href="{% url 'operations_portal:dashboard' %}">Painel</a></li>
+        <li class="breadcrumb-item active">Prospecção · Pesquisas</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <form method="get" class="row g-2">
+        <div class="col-md-3">{{ form.status.label_tag }}{{ form.status }}</div>
+        <div class="col-md-3">{{ form.project.label_tag }}{{ form.project }}</div>
+        <div class="col-md-4">{{ form.q.label_tag }}{{ form.q }}</div>
+        <div class="col-md-2 d-flex align-items-end gap-2">
+          <button class="btn btn-primary w-100" type="submit">Filtrar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Projeto</th>
+              <th>Região</th>
+              <th>Status</th>
+              <th>Queries</th>
+              <th>Resultados</th>
+              <th>Criado em</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for run in page_obj.object_list %}
+            <tr>
+              <td>
+                <div class="fw-semibold">{{ run.project.name }}</div>
+                <div class="text-muted small">{{ run.tenant.name }}</div>
+              </td>
+              <td>{{ run.target_region }}</td>
+              <td><span class="badge bg-light text-dark">{{ run.get_status_display }}</span></td>
+              <td>{{ run.queries|length }}</td>
+              <td>{{ run.results.count }}</td>
+              <td>{{ run.created_at }}</td>
+              <td class="text-end">
+                <a class="btn btn-sm btn-outline-primary" href="{% url 'operations_portal:prospecting_search_run_detail' run.id %}">Detalhar</a>
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="7" class="text-center text-muted py-4">Nenhuma pesquisa encontrada.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% include "operations_portal/partials/pagination.html" with page_obj=page_obj querystring=querystring %}
+</div>
+{% endblock %}

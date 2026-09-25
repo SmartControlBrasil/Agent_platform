@@ -81,6 +81,7 @@ INSTALLED_APPS = [
     "assistant_core",
     "conversations",
     "leads",
+    "prospecting",
     "knowledge_base",
     "widget",
     "integrations",
@@ -469,6 +470,13 @@ LIVIA_CHAT_RATE_LIMIT_REQUESTS = config("LIVIA_CHAT_RATE_LIMIT_REQUESTS", defaul
 LIVIA_CHAT_RATE_LIMIT_WINDOW_SECONDS = config("LIVIA_CHAT_RATE_LIMIT_WINDOW_SECONDS", default=300, cast=int)
 LIVIA_CHAT_PROCESSING_TIMEOUT_SECONDS = config("LIVIA_CHAT_PROCESSING_TIMEOUT_SECONDS", default=30, cast=int)
 LIVIA_SPAM_GUARD_ENABLED = config("LIVIA_SPAM_GUARD_ENABLED", default=True, cast=bool)
+
+WEBSITE_ENRICHMENT_MAX_PAGES = config("WEBSITE_ENRICHMENT_MAX_PAGES", default=3, cast=int)
+WEBSITE_ENRICHMENT_CONNECT_TIMEOUT = config("WEBSITE_ENRICHMENT_CONNECT_TIMEOUT", default=3, cast=int)
+WEBSITE_ENRICHMENT_READ_TIMEOUT = config("WEBSITE_ENRICHMENT_READ_TIMEOUT", default=5, cast=int)
+WEBSITE_ENRICHMENT_MAX_REDIRECTS = config("WEBSITE_ENRICHMENT_MAX_REDIRECTS", default=3, cast=int)
+WEBSITE_ENRICHMENT_MAX_BODY_BYTES = config("WEBSITE_ENRICHMENT_MAX_BODY_BYTES", default=500000, cast=int)
+WEBSITE_ENRICHMENT_USER_AGENT = config("WEBSITE_ENRICHMENT_USER_AGENT", default="AgentPlatformWebsiteEnrichment/1.0")
 
 LIVIA_WEBHOOKS_ENABLED = config("LIVIA_WEBHOOKS_ENABLED", default=False, cast=bool)
 LIVIA_WEBHOOKS_DRY_RUN = config("LIVIA_WEBHOOKS_DRY_RUN", default=True, cast=bool)

@@ -1,0 +1,124 @@
+{% extends "operations_portal/base.html" %}
+{% block title %}Prospecção · Prospect{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+      <h4 class="mb-1">{{ prospect.display_name }}</h4>
+      <ol class="breadcrumb m-0 mt-1 py-0">
+        <li class="breadcrumb-item"><a href="{% url 'operations_portal:prospecting_prospect_list' %}">Prospecção · Prospects</a></li>
+        <li class="breadcrumb-item active">Detalhe</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-lg-6">
+      <div class="card h-100">
+        <div class="card-header"><h5 class="mb-0">Dados principais</h5></div>
+        <div class="card-body">
+          <dl class="row mb-0">
+            <dt class="col-sm-4">Endereço</dt><dd class="col-sm-8">{{ prospect.address|default:"—" }}</dd>
+            <dt class="col-sm-4">Telefone</dt><dd class="col-sm-8">{{ prospect.phone|default:"—" }}</dd>
+            <dt class="col-sm-4">Website</dt><dd class="col-sm-8">{% if prospect.website %}<a href="{{ prospect.website }}" target="_blank" rel="noopener">{{ prospect.website }}</a>{% else %}—{% endif %}</dd>
+            <dt class="col-sm-4">Maps</dt><dd class="col-sm-8">{% if prospect.maps_url %}<a href="{{ prospect.maps_url }}" target="_blank" rel="noopener">{{ prospect.maps_url }}</a>{% else %}—{% endif %}</dd>
+            <dt class="col-sm-4">External ID</dt><dd class="col-sm-8">{{ prospect.external_id|default:"—" }}</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="card h-100">
+        <div class="card-header"><h5 class="mb-0">Proveniência</h5></div>
+        <div class="card-body">
+          {% if sources %}
+            <ul class="list-group list-group-flush">
+              {% for source in sources %}
+              <li class="list-group-item px-0">
+                <div class="fw-semibold">{{ source.search_result.name }}</div>
+                <div class="small text-muted">
+                  SearchRun {{ source.search_run.id }} · Projeto {{ source.search_run.project.name }} · {{ source.created_at }}
+                </div>
+              </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="text-muted mb-0">Sem fontes registradas.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-7">
+      <div class="card">
+        <div class="card-header"><h5 class="mb-0">Enrichments</h5></div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>Campo</th>
+                  <th>Valor</th>
+                  <th>Fonte</th>
+                  <th>Observado em</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for enrichment in enrichments %}
+                <tr>
+                  <td><span class="badge bg-light text-dark">{{ enrichment.get_field_display }}</span></td>
+                  <td>{{ enrichment.value }}</td>
+                  <td>
+                    <div>{{ enrichment.get_source_type_display }}</div>
+                    {% if enrichment.source_url %}<div class="small"><a href="{{ enrichment.source_url }}" target="_blank" rel="noopener">{{ enrichment.source_url }}</a></div>{% endif %}
+                    {% if enrichment.source_reference %}<div class="small text-muted">{{ enrichment.source_reference }}</div>{% endif %}
+                  </td>
+                  <td>{{ enrichment.observed_at }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="4" class="text-center text-muted py-4">Nenhum enrichment registrado.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-5">
+      <div class="card mb-3">
+        <div class="card-header"><h5 class="mb-0">Adicionar enrichment manual</h5></div>
+        <div class="card-body">
+          <form method="post" action="{% url 'operations_portal:prospecting_add_enrichment' prospect.id %}">
+            {% csrf_token %}
+            <div class="mb-2">{{ manual_form.field.label_tag }}{{ manual_form.field }}</div>
+            <div class="mb-2">{{ manual_form.value.label_tag }}{{ manual_form.value }}</div>
+            <div class="mb-2">{{ manual_form.source_type.label_tag }}{{ manual_form.source_type }}</div>
+            <div class="mb-2">{{ manual_form.source_reference.label_tag }}{{ manual_form.source_reference }}</div>
+            <div class="mb-3">{{ manual_form.source_url.label_tag }}{{ manual_form.source_url }}</div>
+            {% if can_manage %}
+            <button type="submit" class="btn btn-primary">Registrar enrichment</button>
+            {% endif %}
+          </form>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h5 class="mb-0">Website enrichment</h5></div>
+        <div class="card-body">
+          <p class="text-muted mb-3">Busca dados públicos básicos do site oficial com proteções SSRF e escopo restrito.</p>
+          {% if can_manage %}
+          <form method="post" action="{% url 'operations_portal:prospecting_website_enrichment' prospect.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-primary">Executar website enrichment</button>
+          </form>
+          {% else %}
+          <span class="text-muted">Sem permissão para executar.</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

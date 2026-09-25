@@ -1,0 +1,92 @@
+{% extends "operations_portal/base.html" %}
+{% block title %}Prospecção · Pesquisa{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+      <h4 class="mb-1">Pesquisa {{ search_run.id }}</h4>
+      <ol class="breadcrumb m-0 mt-1 py-0">
+        <li class="breadcrumb-item"><a href="{% url 'operations_portal:prospecting_search_run_list' %}">Prospecção · Pesquisas</a></li>
+        <li class="breadcrumb-item active">Detalhe</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Projeto</div><div class="fw-semibold">{{ search_run.project.name }}</div></div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Região</div><div class="fw-semibold">{{ search_run.target_region }}</div></div></div></div>
+    <div class="col-md-4"><div class="card"><div class="card-body"><div class="text-muted small">Status</div><div class="fw-semibold">{{ search_run.get_status_display }}</div></div></div></div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-3"><div class="text-muted small">Target market</div><div>{{ search_run.target_market|default:"—" }}</div></div>
+        <div class="col-md-3"><div class="text-muted small">Target profile</div><div>{{ search_run.target_profile|default:"—" }}</div></div>
+        <div class="col-md-3"><div class="text-muted small">Max results</div><div>{{ search_run.max_results }}</div></div>
+        <div class="col-md-3"><div class="text-muted small">Locale</div><div>{{ search_run.locale }}</div></div>
+      </div>
+      <div class="mt-3">
+        <div class="text-muted small mb-1">Queries</div>
+        {% for query in search_run.queries %}
+          <span class="badge bg-soft-primary text-primary me-1 mb-1">{{ query }}</span>
+        {% empty %}
+          <span class="text-muted">Sem queries</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h5 class="mb-0">SearchResults</h5></div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Empresa</th>
+              <th>Contato</th>
+              <th>Origem</th>
+              <th>Prospecção</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for result in results %}
+            <tr>
+              <td>
+                <div class="fw-semibold">{{ result.name }}</div>
+                <div class="text-muted small">{{ result.address|default:"Endereço não informado" }}</div>
+              </td>
+              <td>
+                <div>{{ result.phone|default:"—" }}</div>
+                {% if result.website %}<div class="small"><a href="{{ result.website }}" target="_blank" rel="noopener">{{ result.website }}</a></div>{% endif %}
+              </td>
+              <td>
+                <div class="small text-muted">{{ result.source_query|default:"—" }}</div>
+                {% if result.maps_url %}<a class="small" href="{{ result.maps_url }}" target="_blank" rel="noopener">Maps</a>{% endif %}
+              </td>
+              <td>
+                {% if result.promoted_source %}
+                  <span class="badge bg-success-subtle text-success">Prospect criado</span>
+                  <div class="mt-1"><a class="small" href="{% url 'operations_portal:prospecting_prospect_detail' result.promoted_source.prospect_id %}">Abrir prospect</a></div>
+                {% elif can_manage %}
+                  <form method="post" action="{% url 'operations_portal:prospecting_promote_search_result' result.id %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-primary">Promover para Prospect</button>
+                  </form>
+                {% else %}
+                  <span class="text-muted small">Sem permissão</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="4" class="text-center text-muted py-4">Nenhum resultado registrado.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
