@@ -92,6 +92,10 @@ No detalhe do prospect qualificado (`QUALIFIED`), a seção **Abordagens** prepa
 
 Rascunho **READY** + canal **EMAIL** + prospect ainda **QUALIFIED** pode ser enviado **uma vez** após confirmação explícita (GET de confirmação + POST). O registro `ProspectOutreachSend` guarda snapshots de destino/assunto/corpo (independente de edições posteriores ao draft), status (`PENDING`, `SENDING`, `SENT`, `FAILED`, …), idempotency key e metadados do provider (`DJANGO_EMAIL` / `DEFAULT_FROM_EMAIL`). Duplo POST não duplica envio; falha técnica permite **retry manual** reutilizando os snapshots. Quando o envio atinge **SENT**, cria-se `ProspectActivity` tipo **EMAIL_SENT** (uma por send). WhatsApp/telefone/outros canais continuam sem envio automático nesta fase.
 
+### Resultado do contato e próximas ações
+
+`ProspectContactOutcome` registra manualmente o resultado estruturado (interesse, pediu retorno, sem resposta, etc.), opcionalmente vinculado a um `ProspectOutreachSend` SENT, e gera `ProspectActivity` na timeline (ex.: `REPLY_RECEIVED` ou `NOTE`). `ProspectFollowUp` representa **próxima ação planejada** (`PENDING` / `COMPLETED` / `CANCELLED`) com `due_at` timezone-aware; atraso é **derivado** na UI (`PENDING` + `due_at` passado). Concluir follow-up **não** cria atividade automática. Qualificação do prospect **não** muda automaticamente. Sem scheduler, lembretes por e-mail ou captura de inbox.
+
 ## Prospecção · histórico comercial
 
 No detalhe do prospect, **Histórico comercial** registra `ProspectActivity` (nota, ligação, reunião, etc.) com data/hora (`occurred_at`), observação obrigatória e contato opcional. Timeline ordenada por `occurred_at` desc; `commercial.view` visualiza; `commercial.manage` cria/edita/remove (delete físico + audit). Isso é memória operacional — distinto de `AuditEvent` técnico. Não altera qualificação nem dispara outreach.

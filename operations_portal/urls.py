@@ -134,6 +134,31 @@ urlpatterns = [
         prospecting_views.prospecting_outreach_email_send_retry,
         name="prospecting_outreach_email_send_retry",
     ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/envios/<uuid:send_id>/registrar-resultado/",
+        prospecting_views.prospecting_record_contact_outcome,
+        name="prospecting_record_contact_outcome_from_send",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/resultados/registrar/",
+        prospecting_views.prospecting_record_contact_outcome,
+        name="prospecting_record_contact_outcome",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/proximas-acoes/adicionar/",
+        prospecting_views.prospecting_create_follow_up,
+        name="prospecting_create_follow_up",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/proximas-acoes/<uuid:follow_up_id>/concluir/",
+        prospecting_views.prospecting_complete_follow_up,
+        name="prospecting_complete_follow_up",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/proximas-acoes/<uuid:follow_up_id>/cancelar/",
+        prospecting_views.prospecting_cancel_follow_up,
+        name="prospecting_cancel_follow_up",
+    ),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/adicionar/", prospecting_views.prospecting_add_enrichment, name="prospecting_add_enrichment"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/website/", prospecting_views.prospecting_website_enrichment, name="prospecting_website_enrichment"),
     path("configuracao/tenants/", tenant_config_views.tenant_config_list, name="tenant_config_list"),

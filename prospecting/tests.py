@@ -39,6 +39,18 @@ from prospecting.application.outreach_drafts import (
     revert_outreach_draft_to_draft,
     update_outreach_draft,
 )
+from prospecting.application.contact_outcomes import (
+    ACTION_CONTACT_OUTCOME_CREATED,
+    record_prospect_contact_outcome,
+)
+from prospecting.application.follow_ups import (
+    ACTION_FOLLOW_UP_CANCELLED,
+    ACTION_FOLLOW_UP_COMPLETED,
+    ACTION_FOLLOW_UP_CREATED,
+    cancel_prospect_follow_up,
+    complete_prospect_follow_up,
+    create_prospect_follow_up,
+)
 from prospecting.application.outreach_sends import (
     ACTION_OUTREACH_SEND_FAILED,
     ACTION_OUTREACH_SEND_REQUESTED,
@@ -74,6 +86,8 @@ from prospecting.models import (
     ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
+    ProspectContactOutcome,
+    ProspectFollowUp,
     ProspectOutreachDraft,
     ProspectOutreachSend,
     ProspectSource,
@@ -1625,6 +1639,127 @@ class ProspectingOutreachSendTests(TestCase):
                 actor=self.user,
                 email_sender=FakeOutreachEmailSender(EmailSendResult(success=True)),
             )
+
+
+class ProspectingFollowUpWorkflowTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-follow", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-follow")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-follow")
+        self.prospect = Prospect.objects.create(tenant=self.tenant, display_name="Hospital ABC", identity_key="hospital-abc-follow")
+        self.other_prospect = Prospect.objects.create(tenant=self.other_tenant, display_name="Outro", identity_key="outro-follow")
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self.contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.other_contact = ProspectContact.objects.create(
+            tenant=self.other_tenant,
+            prospect=self.other_prospect,
+            name="Outro",
+            email="outro@example.com",
+        )
+
+    def test_outcome_creates_activity_and_optional_follow_up(self):
+        qual_before = Prospect.objects.get(pk=self.prospect.pk).qualification_status
+        due = timezone.now() + timedelta(days=3)
+        outcome, created, follow_up = record_prospect_contact_outcome(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.contact,
+            outcome=ProspectContactOutcome.Outcome.CALLBACK_REQUESTED,
+            note="Pediu retorno após reunião interna.",
+            idempotency_key="outcome-key-1",
+            actor=self.user,
+            follow_up_action_type=ProspectFollowUp.ActionType.CALL,
+            follow_up_due_at=due,
+            follow_up_note="Ligar após reunião.",
+            follow_up_idempotency_key="follow-key-1",
+        )
+        self.assertTrue(created)
+        self.assertEqual(outcome.outcome, ProspectContactOutcome.Outcome.CALLBACK_REQUESTED)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_CONTACT_OUTCOME_CREATED).exists())
+        self.assertEqual(self.prospect.activities.filter(activity_type=ProspectActivity.ActivityType.REPLY_RECEIVED).count(), 1)
+        self.assertIsNotNone(follow_up)
+        self.assertEqual(follow_up.status, ProspectFollowUp.Status.PENDING)
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, qual_before)
+
+        _, created_again, _ = record_prospect_contact_outcome(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.contact,
+            outcome=ProspectContactOutcome.Outcome.CALLBACK_REQUESTED,
+            note="Pediu retorno após reunião interna.",
+            idempotency_key="outcome-key-1",
+            actor=self.user,
+        )
+        self.assertFalse(created_again)
+        self.assertEqual(self.prospect.activities.filter(activity_type=ProspectActivity.ActivityType.REPLY_RECEIVED).count(), 1)
+
+    def test_no_response_uses_note_activity(self):
+        record_prospect_contact_outcome(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.contact,
+            outcome=ProspectContactOutcome.Outcome.NO_RESPONSE,
+            note="Sem retorno após 5 dias.",
+            idempotency_key="outcome-key-2",
+            actor=self.user,
+        )
+        activity = self.prospect.activities.get()
+        self.assertEqual(activity.activity_type, ProspectActivity.ActivityType.NOTE)
+
+    def test_cross_prospect_contact_rejected(self):
+        with self.assertRaises(ValidationError):
+            record_prospect_contact_outcome(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=self.other_contact,
+                outcome=ProspectContactOutcome.Outcome.INTERESTED,
+                idempotency_key="outcome-key-3",
+                actor=self.user,
+            )
+
+    def test_follow_up_complete_cancel_and_overdue(self):
+        past_due = timezone.now() - timedelta(hours=2)
+        follow_up, _ = create_prospect_follow_up(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            action_type=ProspectFollowUp.ActionType.REVIEW,
+            note="Revisar proposta",
+            due_at=past_due,
+            contact=self.contact,
+            idempotency_key="follow-key-2",
+            actor=self.user,
+        )
+        self.assertTrue(follow_up.is_overdue)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_FOLLOW_UP_CREATED).exists())
+        completed = complete_prospect_follow_up(tenant=self.tenant, follow_up=follow_up, actor=self.user)
+        self.assertEqual(completed.status, ProspectFollowUp.Status.COMPLETED)
+        self.assertIsNotNone(completed.completed_at)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_FOLLOW_UP_COMPLETED).exists())
+        self.assertEqual(self.prospect.activities.count(), 0)
+
+        follow_up2, _ = create_prospect_follow_up(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            action_type=ProspectFollowUp.ActionType.CALL,
+            idempotency_key="follow-key-3",
+            actor=self.user,
+        )
+        cancelled = cancel_prospect_follow_up(tenant=self.tenant, follow_up=follow_up2, actor=self.user)
+        self.assertEqual(cancelled.status, ProspectFollowUp.Status.CANCELLED)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_FOLLOW_UP_CANCELLED).exists())
 
 
 @override_settings(

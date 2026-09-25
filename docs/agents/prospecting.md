@@ -55,6 +55,8 @@ Activity does not change qualification, send messages, or sync calendars.
 
 - **ProspectOutreachDraft** — commercial outreach **preparation** (contact, channel, subject/body, draft/ready/archived status) for qualified prospects only; stores destination snapshots from `ProspectContact`; saving a draft does **not** create `ProspectActivity`.
 - **ProspectOutreachSend** — **actual transmission attempt** for EMAIL drafts (snapshots frozen at send time, idempotent single successful send per draft, manual retry on technical failure); on **SENT**, creates `ProspectActivity` with type **EMAIL_SENT**. Distinct from draft content and from leads/Lívia notification outbox.
+- **ProspectContactOutcome** — structured **manual** result after contact (interest, callback requested, no response, etc.); may link to a send; creates past-tense `ProspectActivity`; does not auto-change qualification.
+- **ProspectFollowUp** — **planned next action** (call, email intent, meeting, …) with optional `due_at`; overdue is derived in UI; completing a follow-up does not fake an activity.
 
 Qualification statuses:
 

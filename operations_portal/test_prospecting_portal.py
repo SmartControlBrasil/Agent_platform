@@ -3,6 +3,8 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from datetime import timedelta
+
 from django.utils import timezone
 
 from agents.models import AgentDefinition, AgentInstallation, AgentVersion
@@ -16,6 +18,8 @@ from prospecting.application.outreach_drafts import (
     ACTION_OUTREACH_DRAFT_READY,
     create_outreach_draft,
 )
+from prospecting.application.contact_outcomes import ACTION_CONTACT_OUTCOME_CREATED
+from prospecting.application.follow_ups import ACTION_FOLLOW_UP_COMPLETED, ACTION_FOLLOW_UP_CREATED
 from prospecting.application.outreach_sends import ACTION_OUTREACH_SEND_SENT
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
@@ -24,6 +28,8 @@ from prospecting.models import (
     ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
+    ProspectContactOutcome,
+    ProspectFollowUp,
     ProspectOutreachDraft,
     ProspectOutreachSend,
     ProspectSource,
@@ -1264,3 +1270,87 @@ class ProspectingOutreachEmailPortalTests(TestCase):
         self.client.post(execute_url)
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(ProspectOutreachSend.objects.filter(draft=self.ready_draft, status=ProspectOutreachSend.Status.SENT).count(), 1)
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingFollowUpPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-follow", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-follow", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-follow-portal")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital Follow",
+            identity_key="hospital-follow-portal",
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+        )
+        self.contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.client = Client()
+
+    def test_viewer_read_only_manager_records_outcome_and_follow_up(self):
+        self.client.force_login(self.viewer)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Próximas ações")
+        self.assertNotContains(detail, "Salvar resultado")
+        forbidden = self.client.post(
+            reverse("operations_portal:prospecting_record_contact_outcome", args=[self.prospect.id]),
+            {},
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        self.client.force_login(self.admin)
+        due = (timezone.now() + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M")
+        payload = {
+            "idempotency_key": "portal-outcome-1",
+            "follow_up_idempotency_key": "portal-follow-1",
+            "contact": str(self.contact.pk),
+            "outcome": ProspectContactOutcome.Outcome.CALLBACK_REQUESTED,
+            "occurred_at": timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M"),
+            "note": "Pediu retorno na terça.",
+            "create_follow_up": "on",
+            "follow_up_action_type": ProspectFollowUp.ActionType.CALL,
+            "follow_up_due_at": due,
+            "follow_up_note": "Ligar após reunião.",
+        }
+        response = self.client.post(reverse("operations_portal:prospecting_record_contact_outcome", args=[self.prospect.id]), payload)
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_CONTACT_OUTCOME_CREATED).exists())
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_FOLLOW_UP_CREATED).exists())
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Pediu retorno")
+        self.assertContains(detail, "Ligar após reunião")
+
+        follow_up = self.prospect.follow_ups.get()
+        complete = self.client.post(
+            reverse("operations_portal:prospecting_complete_follow_up", args=[self.prospect.id, follow_up.id]),
+        )
+        self.assertEqual(complete.status_code, 302)
+        follow_up.refresh_from_db()
+        self.assertEqual(follow_up.status, ProspectFollowUp.Status.COMPLETED)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_FOLLOW_UP_COMPLETED).exists())
+
+    def test_standalone_follow_up_and_overdue_badge(self):
+        self.client.force_login(self.admin)
+        past = (timezone.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M")
+        self.client.post(
+            reverse("operations_portal:prospecting_create_follow_up", args=[self.prospect.id]),
+            {
+                "idempotency_key": "portal-follow-2",
+                "action_type": ProspectFollowUp.ActionType.REVIEW,
+                "due_at": past,
+                "contact": str(self.contact.pk),
+                "note": "Revisar proposta",
+            },
+        )
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Atrasado")
+        listing = self.client.get(reverse("operations_portal:prospecting_prospect_list") + "?follow_up=overdue")
+        self.assertContains(listing, "Hospital Follow")

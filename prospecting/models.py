@@ -758,3 +758,198 @@ class ProspectOutreachSend(models.Model):
 
     def __str__(self):
         return f"{self.prospect.display_name}: {self.destination} ({self.get_status_display()})"
+
+
+class ProspectContactOutcome(models.Model):
+    class Outcome(models.TextChoices):
+        AWAITING_RESPONSE = "AWAITING_RESPONSE", "Aguardando retorno"
+        INTERESTED = "INTERESTED", "Interessado"
+        CALLBACK_REQUESTED = "CALLBACK_REQUESTED", "Pediu retorno"
+        NOT_INTERESTED = "NOT_INTERESTED", "Sem interesse"
+        NO_RESPONSE = "NO_RESPONSE", "Sem resposta"
+        OTHER = "OTHER", "Outro"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospect_contact_outcomes")
+    prospect = models.ForeignKey("prospecting.Prospect", on_delete=models.CASCADE, related_name="contact_outcomes")
+    contact = models.ForeignKey(
+        "prospecting.ProspectContact",
+        on_delete=models.PROTECT,
+        related_name="contact_outcomes",
+    )
+    outreach_send = models.ForeignKey(
+        "prospecting.ProspectOutreachSend",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contact_outcomes",
+    )
+    outcome = models.CharField(max_length=32, choices=Outcome.choices)
+    note = models.TextField(blank=True, default="")
+    occurred_at = models.DateTimeField(default=timezone.now)
+    recorded_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prospect_contact_outcomes_recorded",
+    )
+    idempotency_key = models.CharField(max_length=220, unique=True)
+    prospect_activity = models.OneToOneField(
+        "prospecting.ProspectActivity",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_contact_outcome",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-occurred_at", "-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "prospect", "outcome"]),
+            models.Index(fields=["tenant", "prospect", "occurred_at"]),
+        ]
+
+    def clean(self):
+        if self.prospect_id and self.tenant_id and self.prospect.tenant_id != self.tenant_id:
+            raise ValidationError({"prospect": "Prospect must belong to the same tenant."})
+        if self.contact_id:
+            if self.contact.tenant_id != self.tenant_id:
+                raise ValidationError({"contact": "Contact must belong to the same tenant."})
+            if self.contact.prospect_id != self.prospect_id:
+                raise ValidationError({"contact": "Contact must belong to the same prospect."})
+        if self.outreach_send_id:
+            if self.outreach_send.tenant_id != self.tenant_id:
+                raise ValidationError({"outreach_send": "Outreach send must belong to the same tenant."})
+            if self.outreach_send.prospect_id != self.prospect_id:
+                raise ValidationError({"outreach_send": "Outreach send must belong to the same prospect."})
+        self.outcome = (self.outcome or "").upper()
+        if self.outcome not in self.Outcome.values:
+            raise ValidationError({"outcome": "Invalid contact outcome."})
+        self.note = (self.note or "").strip()
+        if len(self.note) > 4000:
+            raise ValidationError({"note": "Outcome note must be at most 4000 characters."})
+        if contains_forbidden_secret(self.note):
+            raise ValidationError("Outcome note cannot store credentials, tokens, cookies, or Authorization data.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.prospect.display_name}: {self.get_outcome_display()}"
+
+
+class ProspectFollowUp(models.Model):
+    class ActionType(models.TextChoices):
+        CALL = "CALL", "Ligação"
+        EMAIL = "EMAIL", "E-mail"
+        MEETING = "MEETING", "Reunião"
+        VISIT = "VISIT", "Visita"
+        REVIEW = "REVIEW", "Revisar"
+        OTHER = "OTHER", "Outro"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pendente"
+        COMPLETED = "COMPLETED", "Concluído"
+        CANCELLED = "CANCELLED", "Cancelado"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospect_follow_ups")
+    prospect = models.ForeignKey("prospecting.Prospect", on_delete=models.CASCADE, related_name="follow_ups")
+    contact = models.ForeignKey(
+        "prospecting.ProspectContact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="follow_ups",
+    )
+    outreach_send = models.ForeignKey(
+        "prospecting.ProspectOutreachSend",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="follow_ups",
+    )
+    contact_outcome = models.ForeignKey(
+        "prospecting.ProspectContactOutcome",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="follow_ups",
+    )
+    action_type = models.CharField(max_length=16, choices=ActionType.choices)
+    note = models.TextField(blank=True, default="")
+    due_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    created_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prospect_follow_ups_created",
+    )
+    completed_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prospect_follow_ups_completed",
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+    idempotency_key = models.CharField(max_length=220, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["due_at", "-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "prospect", "status"]),
+            models.Index(fields=["tenant", "prospect", "due_at"]),
+        ]
+
+    @property
+    def is_overdue(self):
+        if self.status != self.Status.PENDING or self.due_at is None:
+            return False
+        return self.due_at < timezone.now()
+
+    def clean(self):
+        if self.prospect_id and self.tenant_id and self.prospect.tenant_id != self.tenant_id:
+            raise ValidationError({"prospect": "Prospect must belong to the same tenant."})
+        if self.contact_id:
+            if self.contact.tenant_id != self.tenant_id:
+                raise ValidationError({"contact": "Contact must belong to the same tenant."})
+            if self.contact.prospect_id != self.prospect_id:
+                raise ValidationError({"contact": "Contact must belong to the same prospect."})
+        if self.outreach_send_id:
+            if self.outreach_send.tenant_id != self.tenant_id:
+                raise ValidationError({"outreach_send": "Outreach send must belong to the same tenant."})
+            if self.outreach_send.prospect_id != self.prospect_id:
+                raise ValidationError({"outreach_send": "Outreach send must belong to the same prospect."})
+        if self.contact_outcome_id:
+            if self.contact_outcome.tenant_id != self.tenant_id:
+                raise ValidationError({"contact_outcome": "Contact outcome must belong to the same tenant."})
+            if self.contact_outcome.prospect_id != self.prospect_id:
+                raise ValidationError({"contact_outcome": "Contact outcome must belong to the same prospect."})
+        self.action_type = (self.action_type or "").upper()
+        if self.action_type not in self.ActionType.values:
+            raise ValidationError({"action_type": "Invalid follow-up action type."})
+        self.status = (self.status or "").upper()
+        if self.status not in self.Status.values:
+            raise ValidationError({"status": "Invalid follow-up status."})
+        self.note = (self.note or "").strip()
+        if len(self.note) > 4000:
+            raise ValidationError({"note": "Follow-up note must be at most 4000 characters."})
+        if contains_forbidden_secret(self.note):
+            raise ValidationError("Follow-up note cannot store credentials, tokens, cookies, or Authorization data.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        due = self.due_at.strftime("%Y-%m-%d %H:%M") if self.due_at else "sem data"
+        return f"{self.prospect.display_name}: {self.get_action_type_display()} @ {due}"

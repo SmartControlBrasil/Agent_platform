@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from django import forms
 from django.utils import timezone
 
@@ -8,8 +10,11 @@ from prospecting.models import (
     Prospect,
     ProspectActivity,
     ProspectContact,
+    ProspectContactOutcome,
     ProspectEnrichment,
+    ProspectFollowUp,
     ProspectOutreachDraft,
+    ProspectOutreachSend,
     SearchResult,
     SearchRun,
 )
@@ -68,6 +73,19 @@ class ProspectFilterForm(_StyledForm):
             ("yes", "Com atividade"),
             ("no", "Sem atividade"),
         ],
+    )
+    follow_up = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Próxima ação: todas"),
+            ("with", "Com próxima ação pendente"),
+            ("without", "Sem próxima ação pendente"),
+            ("overdue", "Com ação atrasada"),
+        ],
+    )
+    outcome = forms.ChoiceField(
+        required=False,
+        choices=[("", "Resultado: todos")] + list(ProspectContactOutcome.Outcome.choices),
     )
     q = forms.CharField(required=False, max_length=220)
 
@@ -160,6 +178,91 @@ class ProspectOutreachDraftForm(_StyledForm):
         if channel in {ProspectOutreachDraft.Channel.PHONE, ProspectOutreachDraft.Channel.WHATSAPP} and contact and not contact.phone:
             raise forms.ValidationError("O contato selecionado não possui telefone.")
         return cleaned
+
+
+class ProspectContactOutcomeForm(_StyledForm):
+    idempotency_key = forms.CharField(widget=forms.HiddenInput())
+    contact = forms.ModelChoiceField(queryset=ProspectContact.objects.none(), required=True, label="Contato")
+    outreach_send = forms.ModelChoiceField(
+        queryset=ProspectOutreachSend.objects.none(),
+        required=False,
+        empty_label="Sem envio vinculado",
+        label="Envio de e-mail",
+    )
+    outcome = forms.ChoiceField(choices=ProspectContactOutcome.Outcome.choices, label="Resultado")
+    occurred_at = forms.DateTimeField(
+        label="Data/hora",
+        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"),
+        input_formats=["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"],
+    )
+    note = forms.CharField(required=False, max_length=4000, widget=forms.Textarea(attrs={"rows": 3}), label="Observação")
+    create_follow_up = forms.BooleanField(required=False, initial=False, label="Criar próxima ação")
+    follow_up_action_type = forms.ChoiceField(
+        required=False,
+        choices=[("", "—")] + list(ProspectFollowUp.ActionType.choices),
+        label="Tipo da próxima ação",
+    )
+    follow_up_due_at = forms.DateTimeField(
+        required=False,
+        label="Data/hora da próxima ação",
+        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"),
+        input_formats=["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"],
+    )
+    follow_up_note = forms.CharField(required=False, max_length=4000, widget=forms.Textarea(attrs={"rows": 2}), label="Observação da próxima ação")
+    follow_up_idempotency_key = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def __init__(self, *args, prospect=None, initial_outreach_send=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if prospect is not None:
+            self.fields["contact"].queryset = ProspectContact.objects.filter(tenant=prospect.tenant, prospect=prospect).order_by(
+                "name", "email"
+            )
+            self.fields["outreach_send"].queryset = ProspectOutreachSend.objects.filter(
+                tenant=prospect.tenant,
+                prospect=prospect,
+                status=ProspectOutreachSend.Status.SENT,
+            ).order_by("-sent_at")
+        if not self.is_bound:
+            self.fields["occurred_at"].initial = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M")
+            self.fields["idempotency_key"].initial = str(uuid.uuid4())
+            self.fields["follow_up_idempotency_key"].initial = str(uuid.uuid4())
+            if initial_outreach_send is not None:
+                self.fields["outreach_send"].initial = initial_outreach_send.pk
+                if initial_outreach_send.contact_id:
+                    self.fields["contact"].initial = initial_outreach_send.contact_id
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("create_follow_up") and not cleaned.get("follow_up_action_type"):
+            raise forms.ValidationError("Informe o tipo da próxima ação ou desmarque a criação.")
+        return cleaned
+
+
+class ProspectFollowUpForm(_StyledForm):
+    idempotency_key = forms.CharField(widget=forms.HiddenInput())
+    contact = forms.ModelChoiceField(
+        queryset=ProspectContact.objects.none(),
+        required=False,
+        empty_label="Sem contato específico",
+        label="Contato",
+    )
+    action_type = forms.ChoiceField(choices=ProspectFollowUp.ActionType.choices, label="Próxima ação")
+    due_at = forms.DateTimeField(
+        required=False,
+        label="Data/hora",
+        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"),
+        input_formats=["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"],
+    )
+    note = forms.CharField(required=False, max_length=4000, widget=forms.Textarea(attrs={"rows": 2}), label="Observação")
+
+    def __init__(self, *args, prospect=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if prospect is not None:
+            self.fields["contact"].queryset = ProspectContact.objects.filter(tenant=prospect.tenant, prospect=prospect).order_by(
+                "name", "email"
+            )
+        if not self.is_bound:
+            self.fields["idempotency_key"].initial = str(uuid.uuid4())
 
 
 class ProspectQualificationForm(_StyledForm):

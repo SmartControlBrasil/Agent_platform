@@ -7,7 +7,8 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Count, Exists, Max, OuterRef, Q
+from django.db.models import Count, Exists, Max, OuterRef, Q, Subquery
+from django.utils import timezone
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -17,6 +18,8 @@ from operations_portal.access import portal_template_context, require_portal_cap
 from operations_portal.prospecting_forms import (
     ProspectActivityForm,
     ProspectContactForm,
+    ProspectContactOutcomeForm,
+    ProspectFollowUpForm,
     ProspectOutreachDraftForm,
     ProspectEnrichmentCreateForm,
     ProspectFilterForm,
@@ -43,6 +46,12 @@ from prospecting.application.outreach_drafts import (
     update_outreach_draft,
 )
 from prospecting.application.outreach_sends import retry_outreach_send, send_outreach_draft_email
+from prospecting.application.contact_outcomes import record_prospect_contact_outcome
+from prospecting.application.follow_ups import (
+    cancel_prospect_follow_up,
+    complete_prospect_follow_up,
+    create_prospect_follow_up,
+)
 from prospecting.application.contacts import (
     create_prospect_contact,
     delete_prospect_contact,
@@ -74,7 +83,9 @@ from prospecting.models import (
     Prospect,
     ProspectActivity,
     ProspectContact,
+    ProspectContactOutcome,
     ProspectEnrichment,
+    ProspectFollowUp,
     ProspectOutreachDraft,
     ProspectOutreachSend,
     ProspectSource,
@@ -181,6 +192,13 @@ def _outreach_draft_queryset(tenant):
 
 def _outreach_send_queryset(tenant):
     queryset = ProspectOutreachSend.objects.select_related("draft", "prospect", "tenant", "contact", "requested_by")
+    if tenant is not None:
+        queryset = queryset.filter(tenant=tenant)
+    return queryset
+
+
+def _follow_up_queryset(tenant):
+    queryset = ProspectFollowUp.objects.select_related("prospect", "tenant", "contact", "created_by", "completed_by")
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
@@ -782,10 +800,21 @@ def prospecting_search_result_bulk_action(request, run_id):
 @login_required(login_url="/admin/login/")
 def prospecting_prospect_list(request):
     access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
+    pending_follow_up_qs = ProspectFollowUp.objects.filter(
+        prospect_id=OuterRef("pk"),
+        status=ProspectFollowUp.Status.PENDING,
+    )
+    if access.tenant is not None:
+        pending_follow_up_qs = pending_follow_up_qs.filter(tenant=access.tenant)
     queryset = _prospect_queryset(access.tenant).annotate(
         contact_count=Count("contacts", distinct=True),
         activity_count=Count("activities", distinct=True),
         last_activity_at=Max("activities__occurred_at"),
+        next_follow_up_due_at=Subquery(pending_follow_up_qs.order_by("due_at").values("due_at")[:1]),
+        next_follow_up_action_type=Subquery(pending_follow_up_qs.order_by("due_at").values("action_type")[:1]),
+        next_follow_up_overdue=Exists(
+            pending_follow_up_qs.filter(due_at__lt=timezone.now(), due_at__isnull=False)
+        ),
     )
     form = ProspectFilterForm(request.GET or None, project_queryset=_project_queryset_for_tenant(access.tenant))
     if form.is_valid():
@@ -809,6 +838,21 @@ def prospecting_prospect_list(request):
             queryset = queryset.filter(qualification_status=qualification_status)
         if priority:
             queryset = queryset.filter(priority=priority)
+        follow_up = form.cleaned_data.get("follow_up")
+        if follow_up == "with":
+            queryset = queryset.filter(
+                follow_ups__status=ProspectFollowUp.Status.PENDING,
+            ).distinct()
+        elif follow_up == "without":
+            queryset = queryset.exclude(follow_ups__status=ProspectFollowUp.Status.PENDING)
+        elif follow_up == "overdue":
+            queryset = queryset.filter(
+                follow_ups__status=ProspectFollowUp.Status.PENDING,
+                follow_ups__due_at__lt=timezone.now(),
+            ).distinct()
+        outcome = form.cleaned_data.get("outcome")
+        if outcome:
+            queryset = queryset.filter(contact_outcomes__outcome=outcome).distinct()
         if query:
             queryset = queryset.filter(
                 Q(display_name__icontains=query)
@@ -872,6 +916,21 @@ def prospecting_prospect_detail(request, prospect_id):
         editing_outreach = next((item for item in outreach_drafts if str(item.pk) == edit_outreach_id), None)
         if editing_outreach is None:
             editing_outreach = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=edit_outreach_id, prospect=prospect)
+    pending_follow_ups = list(
+        _follow_up_queryset(access.tenant)
+        .filter(prospect=prospect, status=ProspectFollowUp.Status.PENDING)
+        .order_by("due_at", "-created_at")
+    )
+    record_outcome_send = None
+    record_outcome_send_id = (request.GET.get("record_outcome_send") or "").strip()
+    if record_outcome_send_id:
+        record_outcome_send = get_object_or_404(
+            _outreach_send_queryset(access.tenant),
+            pk=record_outcome_send_id,
+            prospect=prospect,
+            status=ProspectOutreachSend.Status.SENT,
+        )
+    show_record_outcome = (request.GET.get("record_outcome") or "").strip() == "1" or record_outcome_send is not None
     context = {
         "active_section": "prospeccao",
         "prospect": prospect,
@@ -891,6 +950,12 @@ def prospecting_prospect_detail(request, prospect_id):
         "can_create_outreach": prospect.qualification_status == Prospect.QualificationStatus.QUALIFIED,
         "show_new_outreach": (request.GET.get("new_outreach") or "").strip() == "1",
         "viewing_outreach_send": _resolve_viewing_outreach_send(access.tenant, prospect, request.GET.get("view_outreach_send")),
+        "pending_follow_ups": pending_follow_ups,
+        "show_record_outcome": show_record_outcome,
+        "outcome_form": ProspectContactOutcomeForm(prospect=prospect, initial_outreach_send=record_outcome_send),
+        "follow_up_create_form": ProspectFollowUpForm(prospect=prospect),
+        "show_new_follow_up": (request.GET.get("new_follow_up") or "").strip() == "1",
+        "now": timezone.now(),
         "sources": list(prospect.sources.all().order_by("-created_at")),
         "enrichments": list(prospect.enrichments.all().order_by("-observed_at", "-created_at")),
         "manual_form": ProspectEnrichmentCreateForm(
@@ -1322,6 +1387,122 @@ def prospecting_restore_outreach_draft(request, prospect_id, draft_id):
         messages.error(request, "; ".join(exc.messages))
         return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
     messages.success(request, "Abordagem restaurada para rascunho.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_record_contact_outcome(request, prospect_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    form = ProspectContactOutcomeForm(request.POST, prospect=prospect)
+    if not form.is_valid():
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?record_outcome=1")
+    contact = form.cleaned_data["contact"]
+    outreach_send = form.cleaned_data.get("outreach_send")
+    if contact.prospect_id != prospect.id:
+        raise PermissionDenied
+    if outreach_send is not None and outreach_send.prospect_id != prospect.id:
+        raise PermissionDenied
+    try:
+        follow_up_action = form.cleaned_data.get("follow_up_action_type") if form.cleaned_data.get("create_follow_up") else None
+        _, created, follow_up = record_prospect_contact_outcome(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            contact=contact,
+            outcome=form.cleaned_data["outcome"],
+            note=form.cleaned_data.get("note") or "",
+            occurred_at=form.cleaned_data["occurred_at"],
+            outreach_send=outreach_send,
+            idempotency_key=form.cleaned_data["idempotency_key"],
+            actor=request.user,
+            request=request,
+            follow_up_action_type=follow_up_action,
+            follow_up_due_at=form.cleaned_data.get("follow_up_due_at"),
+            follow_up_note=form.cleaned_data.get("follow_up_note") or "",
+            follow_up_idempotency_key=form.cleaned_data.get("follow_up_idempotency_key") or "",
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?record_outcome=1")
+    if created:
+        messages.success(request, "Resultado registrado." + (" Próxima ação criada." if follow_up else ""))
+    else:
+        messages.info(request, "Resultado já havia sido registrado.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_create_follow_up(request, prospect_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    form = ProspectFollowUpForm(request.POST, prospect=prospect)
+    if not form.is_valid():
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?new_follow_up=1")
+    contact = form.cleaned_data.get("contact")
+    if contact is not None and contact.prospect_id != prospect.id:
+        raise PermissionDenied
+    try:
+        _, created = create_prospect_follow_up(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            action_type=form.cleaned_data["action_type"],
+            note=form.cleaned_data.get("note") or "",
+            due_at=form.cleaned_data.get("due_at"),
+            contact=contact,
+            idempotency_key=form.cleaned_data["idempotency_key"],
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?new_follow_up=1")
+    messages.success(request, "Próxima ação criada." if created else "Próxima ação já existia.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_complete_follow_up(request, prospect_id, follow_up_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    follow_up = get_object_or_404(_follow_up_queryset(access.tenant), pk=follow_up_id, prospect=prospect)
+    try:
+        complete_prospect_follow_up(tenant=prospect.tenant, follow_up=follow_up, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    messages.success(request, "Próxima ação concluída.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_cancel_follow_up(request, prospect_id, follow_up_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    follow_up = get_object_or_404(_follow_up_queryset(access.tenant), pk=follow_up_id, prospect=prospect)
+    try:
+        cancel_prospect_follow_up(tenant=prospect.tenant, follow_up=follow_up, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+    messages.success(request, "Próxima ação cancelada.")
     return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
 
 

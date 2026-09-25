@@ -163,12 +163,17 @@
               {% if viewing_outreach_send.sent_at %}<dt class="col-sm-3">Enviado</dt><dd class="col-sm-9">{{ viewing_outreach_send.sent_at|date:"d/m/Y H:i" }}</dd>{% endif %}
               {% if viewing_outreach_send.error_message %}<dt class="col-sm-3">Erro</dt><dd class="col-sm-9 text-danger">{{ viewing_outreach_send.error_message }}</dd>{% endif %}
             </dl>
+            <div class="d-flex flex-wrap gap-2 mt-3">
             {% if can_manage and viewing_outreach_send.status == 'FAILED' %}
-            <form method="post" action="{% url 'operations_portal:prospecting_outreach_email_send_retry' prospect.id viewing_outreach_send.id %}" class="mt-3">
+            <form method="post" action="{% url 'operations_portal:prospecting_outreach_email_send_retry' prospect.id viewing_outreach_send.id %}" class="d-inline">
               {% csrf_token %}
               <button type="submit" class="btn btn-outline-warning btn-sm">Tentar envio novamente</button>
             </form>
             {% endif %}
+            {% if can_manage and viewing_outreach_send.status == 'SENT' %}
+            <a class="btn btn-outline-primary btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?record_outcome_send={{ viewing_outreach_send.id }}">Registrar resultado</a>
+            {% endif %}
+            </div>
           </div>
           {% endif %}
 
@@ -295,6 +300,100 @@
           {% endif %}
           {% elif can_manage and not can_create_outreach %}
           <p class="text-muted small mb-0 mt-2">Abordagens só podem ser preparadas para prospects qualificados.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">Próximas ações</h5>
+          <span class="text-muted small">{{ pending_follow_ups|length }} pendente(s)</span>
+        </div>
+        <div class="card-body">
+          {% for follow_up in pending_follow_ups %}
+          <div class="border-bottom pb-3 mb-3">
+            <div class="d-flex justify-content-between flex-wrap gap-2 align-items-start">
+              <div>
+                <div class="fw-semibold">
+                  {% if follow_up.due_at %}{{ follow_up.due_at|date:"d/m/Y H:i" }}{% else %}Sem data{% endif %}
+                  · {{ follow_up.get_action_type_display }}
+                </div>
+                {% if follow_up.contact %}
+                <div class="text-muted small">{{ follow_up.contact.name|default:follow_up.contact.email|default:follow_up.contact.phone }}</div>
+                {% endif %}
+                {% if follow_up.note %}<div class="small mt-1">{{ follow_up.note }}</div>{% endif %}
+              </div>
+              <div class="d-flex flex-wrap gap-1 align-items-center">
+                <span class="badge bg-warning text-dark">Pendente</span>
+                {% if follow_up.is_overdue %}<span class="badge bg-danger">Atrasado</span>{% endif %}
+              </div>
+            </div>
+            {% if can_manage %}
+            <div class="d-flex gap-2 mt-2">
+              <form method="post" action="{% url 'operations_portal:prospecting_complete_follow_up' prospect.id follow_up.id %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-success btn-sm">Concluir</button>
+              </form>
+              <form method="post" action="{% url 'operations_portal:prospecting_cancel_follow_up' prospect.id follow_up.id %}" class="d-inline" onsubmit="return confirm('Cancelar esta próxima ação?');">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-danger btn-sm">Cancelar</button>
+              </form>
+            </div>
+            {% endif %}
+          </div>
+          {% empty %}
+          <p class="text-muted mb-0">Nenhuma próxima ação pendente.</p>
+          {% endfor %}
+
+          {% if can_manage %}
+          {% if show_record_outcome %}
+          <h6 class="mt-3 mb-3">Registrar resultado do contato</h6>
+          <form method="post" action="{% url 'operations_portal:prospecting_record_contact_outcome' prospect.id %}">
+            {% csrf_token %}
+            {{ outcome_form.idempotency_key }}
+            {{ outcome_form.follow_up_idempotency_key }}
+            <div class="row g-2">
+              <div class="col-md-6">{{ outcome_form.contact.label_tag }}{{ outcome_form.contact }}</div>
+              <div class="col-md-6">{{ outcome_form.outreach_send.label_tag }}{{ outcome_form.outreach_send }}</div>
+              <div class="col-md-6">{{ outcome_form.outcome.label_tag }}{{ outcome_form.outcome }}</div>
+              <div class="col-md-6">{{ outcome_form.occurred_at.label_tag }}{{ outcome_form.occurred_at }}</div>
+              <div class="col-12">{{ outcome_form.note.label_tag }}{{ outcome_form.note }}</div>
+              <div class="col-12">
+                <div class="form-check">{{ outcome_form.create_follow_up }} {{ outcome_form.create_follow_up.label_tag }}</div>
+              </div>
+              <div class="col-md-4">{{ outcome_form.follow_up_action_type.label_tag }}{{ outcome_form.follow_up_action_type }}</div>
+              <div class="col-md-4">{{ outcome_form.follow_up_due_at.label_tag }}{{ outcome_form.follow_up_due_at }}</div>
+              <div class="col-12">{{ outcome_form.follow_up_note.label_tag }}{{ outcome_form.follow_up_note }}</div>
+            </div>
+            <div class="d-flex gap-2 mt-3">
+              <button type="submit" class="btn btn-primary btn-sm">Salvar resultado</button>
+              <a class="btn btn-light border btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Fechar</a>
+            </div>
+          </form>
+          {% else %}
+          <a class="btn btn-outline-secondary btn-sm mt-2" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?record_outcome=1">Registrar resultado</a>
+          {% endif %}
+
+          {% if show_new_follow_up or not pending_follow_ups %}
+          <h6 class="mt-3 mb-3">Nova próxima ação</h6>
+          <form method="post" action="{% url 'operations_portal:prospecting_create_follow_up' prospect.id %}">
+            {% csrf_token %}
+            {{ follow_up_create_form.idempotency_key }}
+            <div class="row g-2">
+              <div class="col-md-4">{{ follow_up_create_form.action_type.label_tag }}{{ follow_up_create_form.action_type }}</div>
+              <div class="col-md-4">{{ follow_up_create_form.due_at.label_tag }}{{ follow_up_create_form.due_at }}</div>
+              <div class="col-md-4">{{ follow_up_create_form.contact.label_tag }}{{ follow_up_create_form.contact }}</div>
+              <div class="col-12">{{ follow_up_create_form.note.label_tag }}{{ follow_up_create_form.note }}</div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm mt-3">+ Salvar próxima ação</button>
+          </form>
+          {% else %}
+          <a class="btn btn-outline-primary btn-sm mt-2" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?new_follow_up=1">+ Nova próxima ação</a>
+          {% endif %}
           {% endif %}
         </div>
       </div>
