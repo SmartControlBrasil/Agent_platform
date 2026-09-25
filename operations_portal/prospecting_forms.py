@@ -4,7 +4,15 @@ from django import forms
 from django.utils import timezone
 
 from projects.models import Project
-from prospecting.models import Prospect, ProspectActivity, ProspectContact, ProspectEnrichment, SearchResult, SearchRun
+from prospecting.models import (
+    Prospect,
+    ProspectActivity,
+    ProspectContact,
+    ProspectEnrichment,
+    ProspectOutreachDraft,
+    SearchResult,
+    SearchRun,
+)
 
 
 class _StyledForm(forms.Form):
@@ -120,6 +128,38 @@ class ProspectActivityForm(_StyledForm):
             self.fields["note"].initial = activity.note
         elif not self.is_bound:
             self.fields["occurred_at"].initial = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M")
+
+
+class ProspectOutreachDraftForm(_StyledForm):
+    contact = forms.ModelChoiceField(queryset=ProspectContact.objects.none(), required=True, label="Contato")
+    channel = forms.ChoiceField(choices=ProspectOutreachDraft.Channel.choices, label="Canal")
+    subject = forms.CharField(required=False, max_length=220, label="Assunto")
+    body = forms.CharField(required=True, max_length=16000, widget=forms.Textarea(attrs={"rows": 5}), label="Mensagem")
+
+    def __init__(self, *args, prospect=None, draft=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if prospect is not None:
+            self.fields["contact"].queryset = ProspectContact.objects.filter(tenant=prospect.tenant, prospect=prospect).order_by(
+                "name", "email"
+            )
+        if draft is not None and not self.is_bound:
+            self.fields["contact"].initial = draft.contact_id
+            self.fields["channel"].initial = draft.channel
+            self.fields["subject"].initial = draft.subject
+            self.fields["body"].initial = draft.body
+
+    def clean(self):
+        cleaned = super().clean()
+        channel = cleaned.get("channel")
+        subject = (cleaned.get("subject") or "").strip()
+        contact = cleaned.get("contact")
+        if channel == ProspectOutreachDraft.Channel.EMAIL and not subject:
+            raise forms.ValidationError("Assunto é obrigatório para abordagens por e-mail.")
+        if channel == ProspectOutreachDraft.Channel.EMAIL and contact and not contact.email:
+            raise forms.ValidationError("O contato selecionado não possui e-mail.")
+        if channel in {ProspectOutreachDraft.Channel.PHONE, ProspectOutreachDraft.Channel.WHATSAPP} and contact and not contact.phone:
+            raise forms.ValidationError("O contato selecionado não possui telefone.")
+        return cleaned
 
 
 class ProspectQualificationForm(_StyledForm):

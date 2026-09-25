@@ -136,6 +136,131 @@
   <div class="row g-3 mb-3">
     <div class="col-12">
       <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <h5 class="mb-0">Abordagens</h5>
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="text-muted small">{{ outreach_drafts|length }} rascunho(s)</span>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Filtrar abordagens">
+              <a class="btn btn-outline-secondary{% if not outreach_status_filter %} active{% endif %}" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Todos</a>
+              <a class="btn btn-outline-secondary{% if outreach_status_filter == 'DRAFT' %} active{% endif %}" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?outreach_status=DRAFT">Rascunhos</a>
+              <a class="btn btn-outline-secondary{% if outreach_status_filter == 'READY' %} active{% endif %}" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?outreach_status=READY">Prontos</a>
+              <a class="btn btn-outline-secondary{% if outreach_status_filter == 'ARCHIVED' %} active{% endif %}" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?outreach_status=ARCHIVED">Arquivados</a>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small">Preparação de mensagens — nenhum envio é feito nesta etapa.</p>
+
+          {% if editing_outreach and outreach_edit_form %}
+          <div class="border rounded p-3 mb-3 bg-light-subtle">
+            <h6 class="mb-3">{% if editing_outreach.status == 'ARCHIVED' %}Abordagem arquivada{% else %}Editar abordagem{% endif %}</h6>
+            {% if editing_outreach.status == 'ARCHIVED' %}
+            <div class="row g-2 mb-2">
+              <div class="col-md-6"><span class="text-muted small">Contato</span><div>{{ editing_outreach.contact.name|default:"—" }}</div></div>
+              <div class="col-md-6"><span class="text-muted small">Canal</span><div>{{ editing_outreach.get_channel_display }}</div></div>
+              {% if editing_outreach.subject %}<div class="col-12"><span class="text-muted small">Assunto</span><div>{{ editing_outreach.subject }}</div></div>{% endif %}
+              <div class="col-12"><span class="text-muted small">Mensagem</span><div>{{ editing_outreach.body|linebreaksbr }}</div></div>
+            </div>
+            {% if can_manage %}
+            <div class="d-flex gap-2 mt-3">
+              <form method="post" action="{% url 'operations_portal:prospecting_restore_outreach_draft' prospect.id editing_outreach.id %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-primary btn-sm">Restaurar para rascunho</button>
+              </form>
+              <a class="btn btn-light border btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Fechar</a>
+            </div>
+            {% endif %}
+            {% else %}
+            <form method="post" action="{% url 'operations_portal:prospecting_update_outreach_draft' prospect.id editing_outreach.id %}">
+              {% csrf_token %}
+              <div class="row g-2">
+                <div class="col-md-6">{{ outreach_edit_form.contact.label_tag }}{{ outreach_edit_form.contact }}</div>
+                <div class="col-md-6">{{ outreach_edit_form.channel.label_tag }}{{ outreach_edit_form.channel }}</div>
+                <div class="col-12">{{ outreach_edit_form.subject.label_tag }}{{ outreach_edit_form.subject }}</div>
+                <div class="col-12">{{ outreach_edit_form.body.label_tag }}{{ outreach_edit_form.body }}</div>
+              </div>
+              {% if editing_outreach.destination_email or editing_outreach.destination_phone %}
+              <div class="small text-muted mt-2">
+                Destino (snapshot):
+                {% if editing_outreach.destination_email %}{{ editing_outreach.destination_email }}{% endif %}
+                {% if editing_outreach.destination_phone %}{% if editing_outreach.destination_email %} · {% endif %}{{ editing_outreach.destination_phone }}{% endif %}
+              </div>
+              {% endif %}
+              {% if can_manage %}
+              <div class="d-flex flex-wrap gap-2 mt-3">
+                <button type="submit" class="btn btn-primary btn-sm">Salvar rascunho</button>
+                <a class="btn btn-light border btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Cancelar</a>
+                {% if editing_outreach.status == 'DRAFT' %}
+                <button type="submit" formaction="{% url 'operations_portal:prospecting_mark_outreach_draft_ready' prospect.id editing_outreach.id %}" class="btn btn-outline-success btn-sm">Marcar como pronta</button>
+                {% elif editing_outreach.status == 'READY' %}
+                <button type="submit" formaction="{% url 'operations_portal:prospecting_revert_outreach_draft' prospect.id editing_outreach.id %}" class="btn btn-outline-secondary btn-sm">Voltar para rascunho</button>
+                {% endif %}
+                <button type="submit" formaction="{% url 'operations_portal:prospecting_archive_outreach_draft' prospect.id editing_outreach.id %}" class="btn btn-outline-danger btn-sm" onclick="return confirm('Arquivar esta abordagem?');">Arquivar</button>
+              </div>
+              {% endif %}
+            </form>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          {% for draft in outreach_drafts %}
+            {% if not editing_outreach or draft.id != editing_outreach.id %}
+            <div class="border-bottom pb-3 mb-3">
+              <div class="d-flex justify-content-between flex-wrap gap-2 align-items-start">
+                <div>
+                  <div class="fw-semibold">{{ draft.get_channel_display }} · {{ draft.contact.name|default:draft.contact.email|default:draft.contact.phone }}</div>
+                  {% if draft.subject %}
+                  <div class="text-muted">"{{ draft.subject|truncatechars:80 }}"</div>
+                  {% elif draft.channel == 'PHONE' %}
+                  <div class="text-muted">Roteiro comercial</div>
+                  {% endif %}
+                </div>
+                <span class="badge bg-{% if draft.status == 'READY' %}success{% elif draft.status == 'ARCHIVED' %}secondary{% else %}warning text-dark{% endif %}">{{ draft.get_status_display }}</span>
+              </div>
+              {% if draft.destination_email or draft.destination_phone %}
+              <div class="small text-muted mt-1">
+                Destino: {% if draft.destination_email %}{{ draft.destination_email }}{% endif %}{% if draft.destination_phone %}{% if draft.destination_email %} · {% endif %}{{ draft.destination_phone }}{% endif %}
+              </div>
+              {% endif %}
+              <div class="d-flex gap-2 mt-2">
+                <a class="btn btn-outline-secondary btn-sm" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?edit_outreach={{ draft.id }}">Abrir</a>
+              </div>
+            </div>
+            {% endif %}
+          {% empty %}
+            <p class="text-muted mb-0">Nenhuma abordagem preparada.</p>
+          {% endfor %}
+
+          {% if can_manage and can_create_outreach %}
+          {% if show_new_outreach or not outreach_drafts %}
+          <h6 class="mt-2 mb-3">Nova abordagem</h6>
+          <form method="post" action="{% url 'operations_portal:prospecting_create_outreach_draft' prospect.id %}">
+            {% csrf_token %}
+            <div class="row g-2">
+              <div class="col-md-6">{{ outreach_create_form.contact.label_tag }}{{ outreach_create_form.contact }}</div>
+              <div class="col-md-6">{{ outreach_create_form.channel.label_tag }}{{ outreach_create_form.channel }}</div>
+              <div class="col-12">{{ outreach_create_form.subject.label_tag }}{{ outreach_create_form.subject }}</div>
+              <div class="col-12">{{ outreach_create_form.body.label_tag }}{{ outreach_create_form.body }}</div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+              <button type="submit" name="save_intent" value="draft" class="btn btn-primary btn-sm">Salvar rascunho</button>
+              <button type="submit" name="save_intent" value="ready" class="btn btn-outline-success btn-sm">Salvar como pronto</button>
+            </div>
+          </form>
+          {% else %}
+          <a class="btn btn-outline-primary btn-sm mt-2" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?new_outreach=1">+ Nova abordagem</a>
+          {% endif %}
+          {% elif can_manage and not can_create_outreach %}
+          <p class="text-muted small mb-0 mt-2">Abordagens só podem ser preparadas para prospects qualificados.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="mb-0">Histórico comercial</h5>
           <span class="text-muted small">{{ activities|length }} registro(s)</span>

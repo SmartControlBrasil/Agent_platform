@@ -80,7 +80,13 @@ Em `/painel/prospeccao/prospects/<id>/`, operadores com `commercial.manage` regi
 
 ## Prospecção · contatos
 
-No detalhe do prospect, a seção **Contatos** registra pessoas ou canais (`ProspectContact`) com nome/função, e-mail, telefone e observação. `commercial.view` visualiza; `commercial.manage` cria, edita e remove (remoção física com auditoria — sem outreach associado ainda). Deduplicação conservadora: mesmo e-mail ou telefone normalizado no mesmo prospect é rejeitado; nomes iguais sem identificador forte não são fundidos. Enrichments permanecem separados e não viram contato automaticamente.
+No detalhe do prospect, a seção **Contatos** registra pessoas ou canais (`ProspectContact`) com nome/função, e-mail, telefone e observação. `commercial.view` visualiza; `commercial.manage` cria, edita e remove (remoção física com auditoria; contatos com rascunhos de abordagem vinculados são protegidos pelo modelo). Deduplicação conservadora: mesmo e-mail ou telefone normalizado no mesmo prospect é rejeitado; nomes iguais sem identificador forte não são fundidos. Enrichments permanecem separados e não viram contato automaticamente.
+
+## Prospecção · abordagens (rascunhos)
+
+No detalhe do prospect qualificado (`QUALIFIED`), a seção **Abordagens** prepara `ProspectOutreachDraft`: contato (`ProspectContact`), canal conceitual (`EMAIL`, `PHONE`, `WHATSAPP`, `OTHER`), assunto (obrigatório para e-mail), corpo de texto e status (`DRAFT`, `READY`, `ARCHIVED`). O destino futuro é derivado do contato e gravado como snapshot (`destination_email` / `destination_phone`) no rascunho, mantendo a FK do contato.
+
+`commercial.view` lista e abre rascunhos; `commercial.manage` cria, edita, marca como pronto, volta para rascunho, arquiva e restaura (POST + CSRF, tenant-scoped). **Nenhum envio** (e-mail, WhatsApp, SMS, webhook) ocorre nesta fase — rascunho ≠ mensagem enviada. Salvar ou marcar pronto **não** cria `ProspectActivity`; atividades continuam reservadas a interações reais registradas manualmente.
 
 ## Prospecção · histórico comercial
 

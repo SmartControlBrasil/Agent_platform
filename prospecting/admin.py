@@ -5,6 +5,7 @@ from .models import (
     ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
+    ProspectOutreachDraft,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -58,6 +59,14 @@ class ProspectActivityAdmin(admin.ModelAdmin):
     list_filter = ("tenant", "activity_type")
     search_fields = ("note", "prospect__display_name", "contact__name", "contact__email")
     readonly_fields = ("id", "created_at", "updated_at")
+
+
+@admin.register(ProspectOutreachDraft)
+class ProspectOutreachDraftAdmin(admin.ModelAdmin):
+    list_display = ("channel", "status", "prospect", "contact", "tenant", "created_by", "updated_at")
+    list_filter = ("tenant", "channel", "status")
+    search_fields = ("subject", "body", "prospect__display_name", "contact__name", "destination_email", "destination_phone")
+    readonly_fields = ("id", "destination_email", "destination_phone", "prepared_at", "created_at", "updated_at")
 
 
 @admin.register(ProspectContact)

@@ -27,6 +27,17 @@ from prospecting.application.contacts import (
     delete_prospect_contact,
     update_prospect_contact,
 )
+from prospecting.application.outreach_drafts import (
+    ACTION_OUTREACH_DRAFT_ARCHIVED,
+    ACTION_OUTREACH_DRAFT_CREATED,
+    ACTION_OUTREACH_DRAFT_READY,
+    ACTION_OUTREACH_DRAFT_UPDATED,
+    archive_outreach_draft,
+    create_outreach_draft,
+    mark_outreach_draft_ready,
+    revert_outreach_draft_to_draft,
+    update_outreach_draft,
+)
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.review import (
     ProspectingReviewError,
@@ -54,6 +65,7 @@ from prospecting.models import (
     ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
+    ProspectOutreachDraft,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -1252,6 +1264,206 @@ class ProspectingActivityTests(TestCase):
         delete_prospect_activity(tenant=self.tenant, activity=updated, actor=self.user)
         self.assertFalse(ProspectActivity.objects.filter(pk=activity.pk).exists())
         self.assertTrue(AuditEvent.objects.filter(action=ACTION_PROSPECT_ACTIVITY_DELETED).exists())
+
+
+class ProspectingOutreachDraftTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-outreach", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-outreach")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-outreach")
+        self.prospect = Prospect.objects.create(tenant=self.tenant, display_name="Hospital ABC", identity_key="hospital-abc-out")
+        self.other_prospect = Prospect.objects.create(tenant=self.other_tenant, display_name="Outro", identity_key="outro-out")
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self.email_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.phone_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="João Souza",
+            phone="11999990000",
+        )
+        self.other_contact = ProspectContact.objects.create(
+            tenant=self.other_tenant,
+            prospect=self.other_prospect,
+            name="Outro Contato",
+            email="outro@example.com",
+        )
+
+    def test_create_email_and_phone_drafts(self):
+        email_draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Soluções robóticas",
+            body="Prezada Maria, ...",
+            actor=self.user,
+        )
+        self.assertEqual(email_draft.destination_email, "maria@hospital.example.com")
+        self.assertEqual(email_draft.status, ProspectOutreachDraft.Status.DRAFT)
+
+        phone_draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.phone_contact,
+            channel=ProspectOutreachDraft.Channel.PHONE,
+            body="Roteiro: apresentar soluções.",
+            actor=self.user,
+        )
+        self.assertEqual(phone_draft.destination_phone, "11999990000")
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_CREATED).exists())
+
+    def test_email_requires_contact_email_and_subject(self):
+        no_email = ProspectContact.objects.create(tenant=self.tenant, prospect=self.prospect, name="Sem Email")
+        with self.assertRaises(ValidationError):
+            create_outreach_draft(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=no_email,
+                channel=ProspectOutreachDraft.Channel.EMAIL,
+                subject="Assunto",
+                body="Corpo",
+                actor=self.user,
+            )
+        with self.assertRaises(ValidationError):
+            create_outreach_draft(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=self.email_contact,
+                channel=ProspectOutreachDraft.Channel.EMAIL,
+                subject="",
+                body="Corpo",
+                actor=self.user,
+            )
+
+    def test_phone_requires_contact_phone(self):
+        with self.assertRaises(ValidationError):
+            create_outreach_draft(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=self.email_contact,
+                channel=ProspectOutreachDraft.Channel.PHONE,
+                body="Script",
+                actor=self.user,
+            )
+
+    def test_cross_prospect_and_cross_tenant_rejected(self):
+        with self.assertRaises(ValidationError):
+            create_outreach_draft(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=self.other_contact,
+                channel=ProspectOutreachDraft.Channel.EMAIL,
+                subject="Hack",
+                body="Corpo",
+                actor=self.user,
+            )
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            mark_outreach_draft_ready(tenant=self.other_tenant, draft=draft, actor=self.user)
+
+    def test_body_required_and_status_transitions(self):
+        with self.assertRaises(ValidationError):
+            create_outreach_draft(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=self.email_contact,
+                channel=ProspectOutreachDraft.Channel.EMAIL,
+                subject="Assunto",
+                body="   ",
+                actor=self.user,
+            )
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.user,
+        )
+        mark_outreach_draft_ready(tenant=self.tenant, draft=draft, actor=self.user)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, ProspectOutreachDraft.Status.READY)
+        self.assertIsNotNone(draft.prepared_at)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_READY).exists())
+
+        revert_outreach_draft_to_draft(tenant=self.tenant, draft=draft, actor=self.user)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, ProspectOutreachDraft.Status.DRAFT)
+
+        archive_outreach_draft(tenant=self.tenant, draft=draft, actor=self.user)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, ProspectOutreachDraft.Status.ARCHIVED)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_ARCHIVED).exists())
+
+    def test_update_audit_and_prospect_activity_unchanged(self):
+        self.prospect.refresh_from_db()
+        activity_count_before = ProspectActivity.objects.filter(prospect=self.prospect).count()
+        qual_before = self.prospect.qualification_status
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo original",
+            actor=self.user,
+        )
+        updated, changed = update_outreach_draft(
+            tenant=self.tenant,
+            draft=draft,
+            contact=self.email_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto novo",
+            body="Corpo atualizado",
+            actor=self.user,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(updated.subject, "Assunto novo")
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_UPDATED).exists())
+        self.prospect.refresh_from_db()
+        self.assertEqual(self.prospect.qualification_status, qual_before)
+        self.assertEqual(ProspectActivity.objects.filter(prospect=self.prospect).count(), activity_count_before)
+
+    def test_unqualified_prospect_rejected(self):
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.ON_HOLD,
+            priority=Prospect.Priority.LOW,
+            qualification_note="",
+            actor=self.user,
+        )
+        with self.assertRaises(ValidationError):
+            create_outreach_draft(
+                tenant=self.tenant,
+                prospect=self.prospect,
+                contact=self.email_contact,
+                channel=ProspectOutreachDraft.Channel.EMAIL,
+                subject="Assunto",
+                body="Corpo",
+                actor=self.user,
+            )
 
 
 class ProspectingBootstrapCommandTests(TestCase):

@@ -89,6 +89,36 @@ urlpatterns = [
         prospecting_views.prospecting_delete_prospect_activity,
         name="prospecting_delete_prospect_activity",
     ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/adicionar/",
+        prospecting_views.prospecting_create_outreach_draft,
+        name="prospecting_create_outreach_draft",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/editar/",
+        prospecting_views.prospecting_update_outreach_draft,
+        name="prospecting_update_outreach_draft",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/marcar-pronta/",
+        prospecting_views.prospecting_mark_outreach_draft_ready,
+        name="prospecting_mark_outreach_draft_ready",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/voltar-rascunho/",
+        prospecting_views.prospecting_revert_outreach_draft,
+        name="prospecting_revert_outreach_draft",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/arquivar/",
+        prospecting_views.prospecting_archive_outreach_draft,
+        name="prospecting_archive_outreach_draft",
+    ),
+    path(
+        "prospeccao/prospects/<uuid:prospect_id>/abordagens/<uuid:draft_id>/restaurar/",
+        prospecting_views.prospecting_restore_outreach_draft,
+        name="prospecting_restore_outreach_draft",
+    ),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/adicionar/", prospecting_views.prospecting_add_enrichment, name="prospecting_add_enrichment"),
     path("prospeccao/prospects/<uuid:prospect_id>/enriquecimentos/website/", prospecting_views.prospecting_website_enrichment, name="prospecting_website_enrichment"),
     path("configuracao/tenants/", tenant_config_views.tenant_config_list, name="tenant_config_list"),

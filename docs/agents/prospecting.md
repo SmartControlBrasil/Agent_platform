@@ -53,6 +53,8 @@ Enrichment does **not** auto-create contacts in the current phase.
 
 Activity does not change qualification, send messages, or sync calendars.
 
+- **ProspectOutreachDraft** — commercial outreach **preparation** (contact, channel, subject/body, draft/ready/archived status) for qualified prospects only; stores destination snapshots from `ProspectContact` but does **not** send email, WhatsApp, or any external message, and does **not** create `ProspectActivity` when saved.
+
 Qualification statuses:
 
 - `UNQUALIFIED` — not yet reviewed commercially;

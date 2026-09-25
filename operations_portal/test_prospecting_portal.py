@@ -10,13 +10,19 @@ from projects.models import Project
 from prospecting.application.prospects import promote_search_result_to_prospect
 from prospecting.application.activities import ACTION_PROSPECT_ACTIVITY_CREATED, ACTION_PROSPECT_ACTIVITY_UPDATED
 from prospecting.application.contacts import ACTION_PROSPECT_CONTACT_CREATED, ACTION_PROSPECT_CONTACT_UPDATED
-from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED
+from prospecting.application.outreach_drafts import (
+    ACTION_OUTREACH_DRAFT_ARCHIVED,
+    ACTION_OUTREACH_DRAFT_CREATED,
+    ACTION_OUTREACH_DRAFT_READY,
+)
+from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
 from prospecting.application.search_runs import create_and_dispatch_search_run, synchronize_search_run
 from prospecting.models import (
     Prospect,
     ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
+    ProspectOutreachDraft,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -998,3 +1004,143 @@ class ProspectingActivityPortalTests(TestCase):
         )
         self.assertEqual(forbidden.status_code, 404)
         self.assertEqual(self.prospect.activities.count(), 1)
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingOutreachDraftPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-outreach", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-outreach", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-outreach")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.project = Project.objects.create(tenant=self.tenant, name="Comercial", slug="comercial-outreach")
+        definition = AgentDefinition.objects.get(slug="prospecting")
+        version = AgentVersion.objects.get(agent_definition=definition, version="1.0.0")
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Prospecting Outreach Portal",
+        )
+        run = SearchRun.objects.create(
+            tenant=self.tenant,
+            project=self.project,
+            agent_installation=installation,
+            target_region="São Paulo",
+            queries=["hospital privado"],
+            max_results=10,
+        )
+        result = SearchResult.objects.create(
+            tenant=self.tenant,
+            search_run=run,
+            name="Hospital Abordagens",
+            external_id="cid-out-1",
+            source_query="hospital privado",
+        )
+        self.prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=result)
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.admin,
+        )
+        self.email_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+            email="maria@hospital.example.com",
+        )
+        self.phone_contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="João Souza",
+            phone="11988887777",
+        )
+        self.client = Client()
+
+    def _draft_payload(self, **overrides):
+        payload = {
+            "contact": str(self.email_contact.pk),
+            "channel": ProspectOutreachDraft.Channel.EMAIL,
+            "subject": "Apresentação de soluções robóticas",
+            "body": "Prezada Maria, gostaríamos de apresentar nossas soluções.",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_viewer_sees_outreach_section_but_cannot_create(self):
+        self.client.force_login(self.viewer)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Abordagens")
+        self.assertNotContains(detail, "+ Nova abordagem")
+        create = self.client.post(
+            reverse("operations_portal:prospecting_create_outreach_draft", args=[self.prospect.id]),
+            self._draft_payload(),
+        )
+        self.assertEqual(create.status_code, 403)
+        self.assertEqual(self.prospect.outreach_drafts.count(), 0)
+
+    def test_manager_creates_edits_ready_and_archives(self):
+        self.client.force_login(self.admin)
+        create_url = reverse("operations_portal:prospecting_create_outreach_draft", args=[self.prospect.id])
+        self.assertEqual(self.client.get(create_url).status_code, 405)
+        response = self.client.post(create_url, self._draft_payload())
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_CREATED).exists())
+        self.assertEqual(self.prospect.activities.count(), 0)
+
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Email")
+        self.assertContains(detail, "Maria Silva")
+        self.assertContains(detail, "Apresentação de soluções robóticas")
+        self.assertNotContains(detail, "Enviar")
+
+        draft = self.prospect.outreach_drafts.get()
+        edit = self.client.post(
+            reverse("operations_portal:prospecting_update_outreach_draft", args=[self.prospect.id, draft.id]),
+            self._draft_payload(body="Prezada Maria, seguimos à disposição."),
+        )
+        self.assertEqual(edit.status_code, 302)
+        draft.refresh_from_db()
+        self.assertIn("seguimos", draft.body)
+
+        ready = self.client.post(
+            reverse("operations_portal:prospecting_mark_outreach_draft_ready", args=[self.prospect.id, draft.id]),
+        )
+        self.assertEqual(ready.status_code, 302)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, ProspectOutreachDraft.Status.READY)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_READY).exists())
+
+        archived = self.client.post(
+            reverse("operations_portal:prospecting_archive_outreach_draft", args=[self.prospect.id, draft.id]),
+        )
+        self.assertEqual(archived.status_code, 302)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, ProspectOutreachDraft.Status.ARCHIVED)
+        self.assertTrue(AuditEvent.objects.filter(action=ACTION_OUTREACH_DRAFT_ARCHIVED).exists())
+
+    def test_channel_without_destination_and_cross_tenant(self):
+        self.client.force_login(self.admin)
+        bad = self.client.post(
+            reverse("operations_portal:prospecting_create_outreach_draft", args=[self.prospect.id]),
+            self._draft_payload(contact=str(self.phone_contact.pk), channel=ProspectOutreachDraft.Channel.EMAIL),
+        )
+        self.assertEqual(bad.status_code, 302)
+        self.assertEqual(self.prospect.outreach_drafts.count(), 0)
+
+        create_url = reverse("operations_portal:prospecting_create_outreach_draft", args=[self.prospect.id])
+        self.client.post(create_url, self._draft_payload())
+        draft = self.prospect.outreach_drafts.get()
+        other_tenant = Tenant.objects.create(name="Outro", slug="outro-out-x")
+        other_prospect = Prospect.objects.create(tenant=other_tenant, display_name="Outro", identity_key="outro-out-x")
+        forbidden = self.client.post(
+            reverse("operations_portal:prospecting_archive_outreach_draft", args=[other_prospect.id, draft.id]),
+        )
+        self.assertEqual(forbidden.status_code, 404)
+        self.assertEqual(self.prospect.outreach_drafts.count(), 1)

@@ -578,3 +578,81 @@ class ProspectActivity(models.Model):
 
     def __str__(self):
         return f"{self.prospect.display_name}: {self.get_activity_type_display()} @ {self.occurred_at:%Y-%m-%d %H:%M}"
+
+
+class ProspectOutreachDraft(models.Model):
+    class Channel(models.TextChoices):
+        EMAIL = "EMAIL", "Email"
+        PHONE = "PHONE", "Telefone"
+        WHATSAPP = "WHATSAPP", "WhatsApp"
+        OTHER = "OTHER", "Outro"
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Rascunho"
+        READY = "READY", "Pronto"
+        ARCHIVED = "ARCHIVED", "Arquivado"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenants.Tenant", on_delete=models.CASCADE, related_name="prospect_outreach_drafts")
+    prospect = models.ForeignKey("prospecting.Prospect", on_delete=models.CASCADE, related_name="outreach_drafts")
+    contact = models.ForeignKey(
+        "prospecting.ProspectContact",
+        on_delete=models.PROTECT,
+        related_name="outreach_drafts",
+    )
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    subject = models.CharField(max_length=220, blank=True, default="")
+    body = models.TextField()
+    destination_email = models.CharField(max_length=320, blank=True, default="")
+    destination_phone = models.CharField(max_length=80, blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    prepared_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="prospect_outreach_drafts_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "prospect", "status"]),
+            models.Index(fields=["tenant", "prospect", "channel"]),
+        ]
+
+    def clean(self):
+        if self.prospect_id and self.tenant_id and self.prospect.tenant_id != self.tenant_id:
+            raise ValidationError({"prospect": "Prospect must belong to the same tenant."})
+        if self.contact_id:
+            if self.contact.tenant_id != self.tenant_id:
+                raise ValidationError({"contact": "Contact must belong to the same tenant."})
+            if self.contact.prospect_id != self.prospect_id:
+                raise ValidationError({"contact": "Contact must belong to the same prospect."})
+        self.channel = (self.channel or "").upper()
+        if self.channel not in self.Channel.values:
+            raise ValidationError({"channel": "Invalid outreach channel."})
+        self.status = (self.status or "").upper()
+        if self.status not in self.Status.values:
+            raise ValidationError({"status": "Invalid outreach draft status."})
+        self.subject = " ".join((self.subject or "").split())
+        self.body = (self.body or "").strip()
+        if not self.body:
+            raise ValidationError({"body": "Outreach message body is required."})
+        if len(self.body) > 16000:
+            raise ValidationError({"body": "Outreach message body must be at most 16000 characters."})
+        if len(self.subject) > 220:
+            raise ValidationError({"subject": "Subject must be at most 220 characters."})
+        if contains_forbidden_secret(self.body) or contains_forbidden_secret(self.subject):
+            raise ValidationError("Outreach draft cannot store credentials, tokens, cookies, or Authorization data.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        label = self.subject or self.get_channel_display()
+        return f"{self.prospect.display_name}: {label} ({self.get_status_display()})"

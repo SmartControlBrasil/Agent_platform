@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -16,6 +17,7 @@ from operations_portal.access import portal_template_context, require_portal_cap
 from operations_portal.prospecting_forms import (
     ProspectActivityForm,
     ProspectContactForm,
+    ProspectOutreachDraftForm,
     ProspectEnrichmentCreateForm,
     ProspectFilterForm,
     ProspectQualificationForm,
@@ -31,6 +33,14 @@ from prospecting.application.activities import (
     create_prospect_activity,
     delete_prospect_activity,
     update_prospect_activity,
+)
+from prospecting.application.outreach_drafts import (
+    archive_outreach_draft,
+    create_outreach_draft,
+    mark_outreach_draft_ready,
+    restore_archived_outreach_draft,
+    revert_outreach_draft_to_draft,
+    update_outreach_draft,
 )
 from prospecting.application.contacts import (
     create_prospect_contact,
@@ -64,6 +74,7 @@ from prospecting.models import (
     ProspectActivity,
     ProspectContact,
     ProspectEnrichment,
+    ProspectOutreachDraft,
     ProspectSource,
     SearchResult,
     SearchRun,
@@ -147,6 +158,13 @@ def _contact_queryset(tenant):
 
 def _activity_queryset(tenant):
     queryset = ProspectActivity.objects.select_related("prospect", "tenant", "contact", "created_by")
+    if tenant is not None:
+        queryset = queryset.filter(tenant=tenant)
+    return queryset
+
+
+def _outreach_draft_queryset(tenant):
+    queryset = ProspectOutreachDraft.objects.select_related("prospect", "tenant", "contact", "created_by")
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
@@ -820,17 +838,35 @@ def prospecting_prospect_detail(request, prospect_id):
         editing_activity = next((item for item in activities if str(item.pk) == edit_activity_id), None)
         if editing_activity is None:
             editing_activity = get_object_or_404(_activity_queryset(access.tenant), pk=edit_activity_id, prospect=prospect)
+    outreach_qs = _outreach_draft_queryset(access.tenant).filter(prospect=prospect)
+    outreach_status = (request.GET.get("outreach_status") or "").strip().upper()
+    if outreach_status in ProspectOutreachDraft.Status.values:
+        outreach_qs = outreach_qs.filter(status=outreach_status)
+    outreach_drafts = list(outreach_qs.order_by("-updated_at", "-created_at"))
+    editing_outreach = None
+    edit_outreach_id = (request.GET.get("edit_outreach") or "").strip()
+    if edit_outreach_id:
+        editing_outreach = next((item for item in outreach_drafts if str(item.pk) == edit_outreach_id), None)
+        if editing_outreach is None:
+            editing_outreach = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=edit_outreach_id, prospect=prospect)
     context = {
         "active_section": "prospeccao",
         "prospect": prospect,
         "contacts": contacts,
         "activities": activities,
+        "outreach_drafts": outreach_drafts,
+        "outreach_status_filter": outreach_status,
         "editing_contact": editing_contact,
         "editing_activity": editing_activity,
+        "editing_outreach": editing_outreach,
         "contact_create_form": ProspectContactForm(),
         "contact_edit_form": ProspectContactForm(contact=editing_contact) if editing_contact else None,
         "activity_create_form": ProspectActivityForm(prospect=prospect),
         "activity_edit_form": ProspectActivityForm(prospect=prospect, activity=editing_activity) if editing_activity else None,
+        "outreach_create_form": ProspectOutreachDraftForm(prospect=prospect),
+        "outreach_edit_form": ProspectOutreachDraftForm(prospect=prospect, draft=editing_outreach) if editing_outreach else None,
+        "can_create_outreach": prospect.qualification_status == Prospect.QualificationStatus.QUALIFIED,
+        "show_new_outreach": (request.GET.get("new_outreach") or "").strip() == "1",
         "sources": list(prospect.sources.all().order_by("-created_at")),
         "enrichments": list(prospect.enrichments.all().order_by("-observed_at", "-created_at")),
         "manual_form": ProspectEnrichmentCreateForm(
@@ -1042,6 +1078,156 @@ def prospecting_delete_prospect_activity(request, prospect_id, activity_id):
         messages.error(request, "; ".join(exc.messages))
         return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
     messages.success(request, "Atividade removida.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+def _outreach_draft_redirect(*, prospect, draft_id=None, outreach_status=""):
+    url = reverse("operations_portal:prospecting_prospect_detail", args=[prospect.id])
+    params = {}
+    if draft_id:
+        params["edit_outreach"] = str(draft_id)
+    if outreach_status:
+        params["outreach_status"] = outreach_status
+    if params:
+        return f"{url}?{urlencode(params)}"
+    return url
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_create_outreach_draft(request, prospect_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    form = ProspectOutreachDraftForm(request.POST, prospect=prospect)
+    if not form.is_valid():
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?new_outreach=1")
+    contact = form.cleaned_data["contact"]
+    if contact.prospect_id != prospect.id:
+        raise PermissionDenied
+    save_intent = (request.POST.get("save_intent") or "draft").strip().lower()
+    status = ProspectOutreachDraft.Status.READY if save_intent == "ready" else ProspectOutreachDraft.Status.DRAFT
+    try:
+        create_outreach_draft(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            contact=contact,
+            channel=form.cleaned_data["channel"],
+            subject=form.cleaned_data.get("subject") or "",
+            body=form.cleaned_data["body"],
+            status=status,
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(f"{reverse('operations_portal:prospecting_prospect_detail', args=[prospect.id])}?new_outreach=1")
+    messages.success(request, "Abordagem salva como pronta." if status == ProspectOutreachDraft.Status.READY else "Rascunho de abordagem salvo.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_update_outreach_draft(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    form = ProspectOutreachDraftForm(request.POST, prospect=prospect, draft=draft)
+    if not form.is_valid():
+        for error in form.non_field_errors():
+            messages.error(request, error)
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
+    contact = form.cleaned_data["contact"]
+    if contact.prospect_id != prospect.id:
+        raise PermissionDenied
+    try:
+        _, changed = update_outreach_draft(
+            tenant=prospect.tenant,
+            draft=draft,
+            contact=contact,
+            channel=form.cleaned_data["channel"],
+            subject=form.cleaned_data.get("subject") or "",
+            body=form.cleaned_data["body"],
+            actor=request.user,
+            request=request,
+        )
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
+    messages.success(request, "Abordagem atualizada." if changed else "Abordagem já estava atualizada.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_mark_outreach_draft_ready(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    try:
+        mark_outreach_draft_ready(tenant=prospect.tenant, draft=draft, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
+    messages.success(request, "Abordagem marcada como pronta.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_revert_outreach_draft(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    try:
+        revert_outreach_draft_to_draft(tenant=prospect.tenant, draft=draft, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
+    messages.success(request, "Abordagem voltou para rascunho.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_archive_outreach_draft(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    try:
+        archive_outreach_draft(tenant=prospect.tenant, draft=draft, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
+    messages.success(request, "Abordagem arquivada.")
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_restore_outreach_draft(request, prospect_id, draft_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    prospect = get_object_or_404(_prospect_queryset(access.tenant), pk=prospect_id)
+    draft = get_object_or_404(_outreach_draft_queryset(access.tenant), pk=draft_id, prospect=prospect)
+    try:
+        restore_archived_outreach_draft(tenant=prospect.tenant, draft=draft, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_outreach_draft_redirect(prospect=prospect, draft_id=draft.id))
+    messages.success(request, "Abordagem restaurada para rascunho.")
     return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
 
 
