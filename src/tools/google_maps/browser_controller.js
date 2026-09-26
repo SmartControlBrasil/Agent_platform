@@ -45,7 +45,7 @@ export class GoogleMapsTabSession {
     if (ready?.challenge) throw new GoogleMapsToolError('google_challenge', 'Google challenge detected.');
     if (ready?.noResults) return { businesses: [], found: 0 };
     if (!ready?.ready) throw new GoogleMapsToolError(ready?.code || 'page_structure_changed', 'Google Maps result feed was not found.');
-    return this.collectFeed(query, options.maxResults || 100);
+    return this.collectFeed(query, options.maxResults || 100, options);
   }
 
   async navigate(url) {
@@ -70,7 +70,7 @@ export class GoogleMapsTabSession {
     this.injected = true;
   }
 
-  async collectFeed(sourceQuery, maxResults) {
+  async collectFeed(sourceQuery, maxResults, searchOptions = {}) {
     const businesses = [];
     let staleRounds = 0;
     let previousCount = 0;
@@ -87,7 +87,7 @@ export class GoogleMapsTabSession {
         continue;
       }
       emptyRounds = 0;
-      const enriched = await this.enrichDetails(response.businesses.slice(0, maxResults));
+      const enriched = await this.enrichDetails(response.businesses.slice(0, maxResults), sourceQuery, searchOptions);
       businesses.splice(0, businesses.length, ...enriched);
       if (businesses.length >= maxResults || response.endOfResults) break;
       await this.send({ type: GoogleMapsMessages.SCROLL, timeoutMs: this.controller.scrollTimeoutMs });
@@ -100,23 +100,45 @@ export class GoogleMapsTabSession {
     return { businesses: businesses.slice(0, maxResults), found: businesses.length };
   }
 
-  async enrichDetails(businesses) {
+  async enrichDetails(businesses, sourceQuery, searchOptions = {}) {
     const enriched = [];
     for (const business of businesses) {
       if (!needsDetail(business)) {
         enriched.push(business);
         continue;
       }
+      const mapsUrl = business.maps_url;
+      if (!mapsUrl || !isAllowedGoogleMapsUrl(mapsUrl)) {
+        enriched.push(business);
+        continue;
+      }
       try {
-        const opened = await this.send({ type: GoogleMapsMessages.OPEN_RESULT, mapsUrl: business.maps_url });
-        if (!opened?.ok) {
+        await this.navigate(mapsUrl);
+        await this.ensureContentScript();
+        const ready = await this.send({
+          type: GoogleMapsMessages.WAIT_DETAIL,
+          timeoutMs: this.controller.readyTimeoutMs,
+        });
+        if (ready?.challenge) {
           enriched.push(business);
           continue;
         }
-        const detail = await this.send({ type: GoogleMapsMessages.EXTRACT_DETAIL, sourceQuery: business.source_query });
+        const detail = await this.send({
+          type: GoogleMapsMessages.EXTRACT_DETAIL,
+          sourceQuery: business.source_query || sourceQuery,
+        });
         enriched.push(detail?.business ? mergeBusiness(business, detail.business) : business);
       } catch {
         enriched.push(business);
+      }
+    }
+    const backUrl = buildGoogleMapsSearchUrl(sourceQuery, { locale: searchOptions.locale || 'pt-BR' });
+    if (isAllowedGoogleMapsUrl(backUrl)) {
+      try {
+        await this.navigate(backUrl);
+        await this.ensureContentScript();
+      } catch {
+        /* feed restore is best-effort */
       }
     }
     return enriched;

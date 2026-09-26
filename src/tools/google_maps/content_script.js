@@ -1,6 +1,7 @@
 (() => {
   const Messages = Object.freeze({
     WAIT_READY: 'GMAPS_WAIT_READY',
+    WAIT_DETAIL: 'GMAPS_WAIT_DETAIL',
     COLLECT_FEED: 'GMAPS_COLLECT_FEED',
     OPEN_RESULT: 'GMAPS_OPEN_RESULT',
     EXTRACT_DETAIL: 'GMAPS_EXTRACT_DETAIL',
@@ -33,6 +34,7 @@
   async function handleMessage(message) {
     if (message.type === Messages.DETECT_CHALLENGE) return { ok: true, challenge: detectChallenge(document) };
     if (message.type === Messages.WAIT_READY) return waitReady(message.timeoutMs || 20000);
+    if (message.type === Messages.WAIT_DETAIL) return waitDetail(message.timeoutMs || 20000);
     if (message.type === Messages.COLLECT_FEED) return collectFeed(document, message.sourceQuery || '', message.limit || 100);
     if (message.type === Messages.SCROLL) return scrollFeed(document, message.timeoutMs || 12000);
     if (message.type === Messages.EXTRACT_DETAIL) return { ok: true, business: extractDetailBusiness(document, message.sourceQuery || '') };
@@ -99,8 +101,33 @@
     return { ok: true };
   }
 
+  function findDetailRoot(doc) {
+    const phone = doc.querySelector('button[data-item-id^="phone"]');
+    const address = doc.querySelector('button[data-item-id="address"], button[data-item-id^="address:"]');
+    const marker = phone || address;
+    if (marker) {
+      const main = marker.closest('[role="main"]');
+      return main || marker.closest('div') || doc.body;
+    }
+    return doc.querySelector(selectors.placePanel) || doc.body;
+  }
+
+  async function waitDetail(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (detectChallenge(document)) return { ok: true, ready: false, challenge: true };
+      const panel = findDetailRoot(document);
+      const extract = domExtract();
+      if ((extract.extractPhone && extract.extractPhone(panel)) || (extract.extractAddress && extract.extractAddress(panel))) {
+        return { ok: true, ready: true };
+      }
+      await sleep(300);
+    }
+    return { ok: true, ready: false, code: 'detail_timeout' };
+  }
+
   function extractDetailBusiness(doc, sourceQuery) {
-    const panel = doc.querySelector(selectors.placePanel) || doc.body;
+    const panel = findDetailRoot(doc);
     const heading = panel.querySelector('h1, [role="heading"]');
     const mapsUrl = normalizeMapsUrl(location.href);
     const extract = domExtract();

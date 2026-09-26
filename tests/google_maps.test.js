@@ -5,7 +5,7 @@ import { ToolDispatcher } from '../src/tool_dispatcher.js';
 import { ToolSlugs } from '../src/constants.js';
 import { validateGoogleMapsInput } from '../src/tools/google_maps/input_contract.js';
 import { buildGoogleMapsSearchUrl, isAllowedGoogleMapsUrl } from '../src/tools/google_maps/url_builder.js';
-import { normalizeBusiness, normalizeNullableMapsUrl, normalizeNullableUrl } from '../src/tools/google_maps/normalization.js';
+import { normalizeBusiness, normalizeNullableMapsUrl, normalizeNullableUrl, normalizePhoneDisplay } from '../src/tools/google_maps/normalization.js';
 import { businessKey, dedupeBusinesses, mergeBusiness } from '../src/tools/google_maps/dedupe.js';
 import { GoogleMapsSearchHandler } from '../src/tools/google_maps/handler.js';
 import { GoogleMapsBrowserController } from '../src/tools/google_maps/browser_controller.js';
@@ -66,6 +66,13 @@ test('google maps search URL builder uses encoded query and allowed host only', 
   assert.equal(new URL(url).searchParams.get('hl'), 'pt-BR');
   assert.equal(isAllowedGoogleMapsUrl(url), true);
   assert.equal(isAllowedGoogleMapsUrl('https://evil.example/maps/search/?query=x'), false);
+});
+
+test('normalizePhoneDisplay strips Maps icon glyphs but keeps dialable text', () => {
+  assert.equal(normalizePhoneDisplay('\uE0B0(11) 3883-3322'), '(11) 3883-3322');
+  assert.equal(normalizePhoneDisplay('+55 (11) 3883-3322'), '+55 (11) 3883-3322');
+  const fromBusiness = normalizeBusiness({ name: 'H', phone: '\uE0B0(11) 3883-3322', maps_url: 'https://www.google.com/maps/place/x/?cid=1' }, 'q');
+  assert.equal(fromBusiness.phone, '(11) 3883-3322');
 });
 
 test('normalization preserves phone and rejects invalid websites', () => {

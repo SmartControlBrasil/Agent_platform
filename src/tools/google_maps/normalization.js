@@ -3,7 +3,7 @@ export function normalizeBusiness(raw = {}, sourceQuery = '') {
     name: normalizeText(raw.name),
     category: normalizeNullableText(raw.category),
     address: normalizeNullableText(raw.address),
-    phone: normalizeNullableText(raw.phone),
+    phone: normalizePhoneDisplay(raw.phone) || normalizeNullableText(raw.phone),
     website: normalizeNullableUrl(raw.website),
     maps_url: normalizeNullableMapsUrl(raw.maps_url),
     external_id: normalizeNullableText(raw.external_id) || extractExternalId(raw.maps_url),
@@ -22,6 +22,14 @@ export function normalizeText(value) {
 export function normalizeNullableText(value) {
   const text = normalizeText(value);
   return text || null;
+}
+
+/** Removes Maps icon glyphs (private-use area) while keeping dialable characters. */
+export function normalizePhoneDisplay(value) {
+  const text = normalizeText(value);
+  if (!text) return null;
+  const cleaned = text.replace(/[\uE000-\uF8FF]/g, '').trim();
+  return cleaned || null;
 }
 
 export function normalizeNullableUrl(value) {
