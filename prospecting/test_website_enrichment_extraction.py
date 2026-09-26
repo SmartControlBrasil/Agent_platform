@@ -5,6 +5,8 @@ from prospecting.domain.website_enrichment import (
     extract_contacts,
     extract_json_ld_contacts,
     is_acceptable_email,
+    is_false_positive_phone,
+    normalize_display_phone,
 )
 
 
@@ -53,3 +55,38 @@ class WebsiteEnrichmentExtractionTests(SimpleTestCase):
         html = "<html><body><address>Av. Zélia, 587 - Barueri, SP - CEP 06401-050</address></body></html>"
         _emails, _phones, addresses, _links = extract_contacts(html, page_url="https://empresa.com.br/contato")
         self.assertTrue(addresses)
+
+    def test_rejects_cep_dates_and_ids_as_phone(self):
+        for value in (
+            "06411-150",
+            "25/09/2026",
+            "2026-09-26",
+            "12.345.678/0001-90",
+            "123456789012345",
+            "202609261234",
+        ):
+            self.assertTrue(is_false_positive_phone(value), value)
+        html = "<html><body>CEP 06411-150 publicado em 2026-09-26 protocolo 202609261234</body></html>"
+        _emails, phones, _addresses, _links = extract_contacts(html, page_url="https://empresa.com.br/")
+        self.assertFalse(phones)
+
+    def test_accepts_valid_phone_formats(self):
+        samples = (
+            ("(11) 3883-3322", "text"),
+            ("(11) 98888-7777", "text"),
+            ("+55 11 3883-3322", "text"),
+            ("0800 123 4567", "text"),
+        )
+        for raw, source in samples:
+            self.assertTrue(normalize_display_phone(raw, source=source), raw)
+        html = """
+        <html><body>
+        <a href="tel:+551138833322">Tel</a>
+        Telefone (11) 98888-7777
+        <script type="application/ld+json">{"@type":"Hospital","telephone":"+55 11 4000-1000"}</script>
+        </body></html>
+        """
+        _emails, phones, _addresses, _links = extract_contacts(html, page_url="https://empresa.com.br/contato")
+        self.assertTrue(any("3883" in phone for phone in phones))
+        self.assertTrue(any("98888" in phone for phone in phones))
+        self.assertTrue(any("4000" in phone for phone in phones))

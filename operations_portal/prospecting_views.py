@@ -1810,14 +1810,18 @@ def prospecting_website_enrichment(request, prospect_id):
         },
         request=request,
     )
-    messages.success(
-        request,
-        (
-            f"Enriquecimento concluído. Páginas: {result.pages_fetched}. "
-            f"Emails: {result.emails_found}, telefones: {result.phones_found}, endereços: {result.addresses_found}. "
-            f"Novos registros: {result.enrichments_created}, já existentes: {result.enrichments_existing}."
-        ),
+    summary = (
+        f"Enriquecimento concluído. Páginas verificadas: {result.pages_fetched} "
+        f"({result.pages_succeeded} com sucesso"
     )
+    if result.pages_failed:
+        summary += f", {result.pages_failed} com falha"
+    summary += (
+        f"). Emails: {result.emails_found}, telefones: {result.phones_found}, "
+        f"endereços: {result.addresses_found}. "
+        f"Novos registros: {result.enrichments_created}, já existentes: {result.enrichments_existing}."
+    )
+    messages.success(request, summary)
     if result.emails_found == 0 and result.phones_found == 0 and result.addresses_found == 0:
         messages.info(request, "Nenhum dado de contato público encontrado nesta execução.")
     for warning in result.warnings[:3]:

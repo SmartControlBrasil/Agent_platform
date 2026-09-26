@@ -508,6 +508,53 @@ class ProspectingDomainTests(TestCase):
         self.assertGreaterEqual(result.enrichments_created, 1)
         self.assertTrue(result.warnings)
 
+    @override_settings(
+        WEBSITE_ENRICHMENT_MAX_PAGES=5,
+        WEBSITE_ENRICHMENT_CONNECT_TIMEOUT=1,
+        WEBSITE_ENRICHMENT_READ_TIMEOUT=1,
+        WEBSITE_ENRICHMENT_MAX_REDIRECTS=2,
+        WEBSITE_ENRICHMENT_MAX_BODY_BYTES=200000,
+        WEBSITE_ENRICHMENT_USER_AGENT="AgentPlatformWebsiteEnrichment/1.0",
+    )
+    def test_website_enrichment_seed_404_does_not_abort_when_unit_page_works(self):
+        prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital Municipal",
+            identity_key="portal.example.gov.br:hospital-municipal",
+            website="https://portal.example.gov.br/cidadao/saude/hospital-municipal",
+        )
+
+        class Seed404Fetcher:
+            def fetch(self, url):
+                if url.endswith("/cidadao/saude/hospital-municipal"):
+                    raise ValidationError("Website fetch failed with HTTP 404.")
+                if url.endswith("/contato"):
+                    return WebsiteFetchResult(
+                        url=url,
+                        status_code=200,
+                        content_type="text/html",
+                        body="Telefone (11) 2575-3200 contato@hospital.example.gov.br",
+                    )
+                if url == "https://portal.example.gov.br":
+                    return WebsiteFetchResult(
+                        url=url,
+                        status_code=200,
+                        content_type="text/html",
+                        body='<a href="/contato">Contato</a>',
+                    )
+                raise ValidationError("Website fetch failed with HTTP 404.")
+
+        result = enrich_prospect_from_website(tenant=self.tenant, prospect=prospect, fetcher=Seed404Fetcher())
+        self.assertGreaterEqual(result.pages_succeeded, 1)
+        self.assertTrue(result.warnings)
+        self.assertTrue(
+            ProspectEnrichment.objects.filter(
+                prospect=prospect,
+                field=ProspectEnrichment.Field.EMAIL,
+                normalized_value="contato@hospital.example.gov.br",
+            ).exists()
+        )
+
 
 class ProspectingSearchRunExecutionTests(TestCase):
     def setUp(self):
