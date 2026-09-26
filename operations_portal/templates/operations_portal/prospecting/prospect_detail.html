@@ -115,7 +115,7 @@
           {% endfor %}
 
           {% if can_manage %}
-          <h6 class="mt-2 mb-3">Adicionar contato</h6>
+          <h6 class="mt-2 mb-3" id="contact-create">Adicionar contato</h6>
           <form method="post" action="{% url 'operations_portal:prospecting_create_prospect_contact' prospect.id %}">
             {% csrf_token %}
             <div class="row g-2">
@@ -518,7 +518,13 @@
   <div class="row g-3">
     <div class="col-lg-7">
       <div class="card">
-        <div class="card-header"><h5 class="mb-0">Enrichments</h5></div>
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <h5 class="mb-0">Dados encontrados</h5>
+          <span class="text-muted small">
+            Emails: {{ enrichment_summary.email }} · Telefones: {{ enrichment_summary.phone }} · Endereços: {{ enrichment_summary.address }}
+            · Contatos cadastrados: {{ contacts|length }}
+          </span>
+        </div>
         <div class="card-body p-0">
           <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
@@ -528,6 +534,7 @@
                   <th>Valor</th>
                   <th>Fonte</th>
                   <th>Observado em</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -541,9 +548,16 @@
                     {% if enrichment.source_reference %}<div class="small text-muted">{{ enrichment.source_reference }}</div>{% endif %}
                   </td>
                   <td>{{ enrichment.observed_at }}</td>
+                  <td class="text-end">
+                    {% if can_manage %}
+                      {% if enrichment.field == 'EMAIL' or enrichment.field == 'PHONE' %}
+                      <a class="btn btn-sm btn-outline-primary" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}?create_contact_from={{ enrichment.id }}#contact-create">Criar contato</a>
+                      {% endif %}
+                    {% endif %}
+                  </td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="4" class="text-center text-muted py-4">Nenhum enrichment registrado.</td></tr>
+                <tr><td colspan="5" class="text-center text-muted py-4">Nenhum dado encontrado ainda. Use o website oficial ou dados do Maps após promoção.</td></tr>
                 {% endfor %}
               </tbody>
             </table>
@@ -569,13 +583,13 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-header"><h5 class="mb-0">Website enrichment</h5></div>
+        <div class="card-header"><h5 class="mb-0">Enriquecer pelo website</h5></div>
         <div class="card-body">
-          <p class="text-muted mb-3">Busca dados públicos básicos do site oficial com proteções SSRF e escopo restrito.</p>
+          <p class="text-muted mb-3">Busca emails, telefones e endereços publicados no site oficial (homepage e páginas de contato), com proteções SSRF.</p>
           {% if can_manage %}
           <form method="post" action="{% url 'operations_portal:prospecting_website_enrichment' prospect.id %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-outline-primary">Executar website enrichment</button>
+            <button type="submit" class="btn btn-outline-primary">Enriquecer pelo website</button>
           </form>
           {% else %}
           <span class="text-muted">Sem permissão para executar.</span>

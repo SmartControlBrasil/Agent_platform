@@ -66,6 +66,22 @@ class ProspectFilterForm(_StyledForm):
             ("no", "Sem contato"),
         ],
     )
+    discovered_email = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Email encontrado: todos"),
+            ("yes", "Com email encontrado"),
+            ("no", "Sem email encontrado"),
+        ],
+    )
+    discovered_phone = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Telefone encontrado: todos"),
+            ("yes", "Com telefone encontrado"),
+            ("no", "Sem telefone encontrado"),
+        ],
+    )
     has_activities = forms.ChoiceField(
         required=False,
         choices=[

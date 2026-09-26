@@ -335,6 +335,19 @@ O dispatch usa o pipeline real de tools (`prospecting.search_google_maps`) e o a
 
 Na mesa de triagem do detalhe da pesquisa, operadores com permissão de gestão podem filtrar, paginar, selecionar em lote, promover e ignorar resultados. O estado `Promovido` continua derivado de `ProspectSource`; `Ignorado` é reversível para `Não revisado`, não apaga registros e não dispara enriquecimento automático.
 
+Ações explícitas de promoção:
+
+- **Promover para Prospect** — copia telefone/endereço/website do Maps para o prospect e grava enrichments com proveniência `SEARCH_RESULT`;
+- **Promover e enriquecer** (quando há website) — promoção idempotente + `enrich_prospect_from_website` + redirect ao detalhe do prospect.
+
+No detalhe do prospect:
+
+- **Enriquecer pelo website** — busca emails/telefones/endereços publicados (homepage + poucas páginas de contato no mesmo domínio, JSON-LD quando presente); mensagens seguras para timeout/SSRF/indisponibilidade;
+- **Dados encontrados** — lista `ProspectEnrichment` com `source_url`; **Criar contato** pré-preenche email ou telefone (operador define nome/função);
+- listagem de prospects — filtros “email/telefone encontrado” (enrichment, distinto de contato estruturado) e enriquecimento em lote (até 10 websites por POST, síncrono).
+
+Google Maps **não** é fonte confiável de email; ausência de telefone/endereço no SearchResult pode ser legítima quando o DOM coletado não expõe o dado.
+
 Controle operacional de execução no detalhe da pesquisa:
 
 - `REDISPATCH` recoloca a mesma `ToolExecution` não terminal na fila, segundo o lifecycle existente.

@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
+from prospecting.application.search_result_enrichments import persist_search_result_observations
 from prospecting.domain.prospect_identity import build_prospect_identity_key
 from prospecting.models import Prospect, ProspectSource, SearchResult
 
@@ -47,6 +48,8 @@ def promote_search_result_to_prospect(*, tenant, search_result):
         .first()
     )
     if existing_source:
+        _fill_missing_prospect_fields(existing_source.prospect, locked)
+        persist_search_result_observations(tenant=tenant, prospect=existing_source.prospect, search_result=locked)
         return existing_source.prospect
 
     identity_key = build_prospect_identity_key(locked)
@@ -63,4 +66,5 @@ def promote_search_result_to_prospect(*, tenant, search_result):
     )
     if not created and source.prospect_id != prospect.id:
         return source.prospect
+    persist_search_result_observations(tenant=tenant, prospect=prospect, search_result=locked)
     return prospect

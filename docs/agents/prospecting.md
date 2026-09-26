@@ -59,6 +59,13 @@ Activity does not change qualification, send messages, or sync calendars.
 - **ProspectFollowUp** — **planned next action** (call, email intent, meeting, …) with optional `due_at`; overdue is derived in UI; completing a follow-up does not fake an activity.
 - **Hando · Acompanhamentos** (`/painel/prospeccao/acompanhamentos/`) — tenant-scoped **work queue** for pending follow-ups (filters, counters, quick complete/cancel). Overdue/today/upcoming buckets are **not** stored on the model. No scheduler or automatic reminders in this phase.
 
+### Contact enrichment flow (Maps → website → operator)
+
+1. **Google Maps** (`prospecting.search_google_maps`) fills **SearchResult** with raw fields (name, address, phone, website, maps URL). Maps is **not** a reliable email source; phone/address may be missing when not exposed in the collected DOM (feed cards vs detail panel).
+2. **Promotion** copies observations onto **Prospect** (`phone`, `address`, `website`, …) and persists **ProspectEnrichment** rows with `SourceType.SEARCH_RESULT` (Maps provenance) — still **no** automatic **ProspectContact**.
+3. **Website enrichment** (`enrich_prospect_from_website`) fetches the official site (homepage + a few contact-like internal pages, same host), extracts published emails/phones/addresses (including JSON-LD when present), and stores **ProspectEnrichment** with `source_url` per page. SSRF protections remain mandatory.
+4. Operators convert enrichments to **ProspectContact** explicitly in Hando (**Criar contato**); the platform does not infer roles or merge channels automatically.
+
 Qualification statuses:
 
 - `UNQUALIFIED` — not yet reviewed commercially;

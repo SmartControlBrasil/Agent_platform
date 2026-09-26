@@ -190,6 +190,22 @@ class ProspectingDomainTests(TestCase):
         self.assertEqual(source.search_run_id, self.search_run.id)
         self.assertEqual(prospect.qualification_status, Prospect.QualificationStatus.UNQUALIFIED)
         self.assertEqual(prospect.priority, Prospect.Priority.UNSET)
+        self.assertEqual(prospect.phone, self.search_result.phone)
+        self.assertEqual(prospect.address, self.search_result.address)
+        self.assertTrue(
+            ProspectEnrichment.objects.filter(
+                prospect=prospect,
+                field=ProspectEnrichment.Field.PHONE,
+                source_type=ProspectEnrichment.SourceType.SEARCH_RESULT,
+            ).exists()
+        )
+        self.assertTrue(
+            ProspectEnrichment.objects.filter(
+                prospect=prospect,
+                field=ProspectEnrichment.Field.ADDRESS,
+                source_type=ProspectEnrichment.SourceType.SEARCH_RESULT,
+            ).exists()
+        )
 
     def test_promotion_is_idempotent(self):
         first = promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)
@@ -435,6 +451,12 @@ class ProspectingDomainTests(TestCase):
                 prospect=prospect,
                 field=ProspectEnrichment.Field.DOMAIN,
             ).exists()
+        )
+        email_count = ProspectEnrichment.objects.filter(prospect=prospect, field=ProspectEnrichment.Field.EMAIL).count()
+        enrich_prospect_from_website(tenant=self.tenant, prospect=prospect, fetcher=FakeFetcher())
+        self.assertEqual(
+            ProspectEnrichment.objects.filter(prospect=prospect, field=ProspectEnrichment.Field.EMAIL).count(),
+            email_count,
         )
 
     def test_website_url_validation_blocks_localhost_and_private_ip(self):

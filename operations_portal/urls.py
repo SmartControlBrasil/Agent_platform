@@ -54,6 +54,16 @@ urlpatterns = [
         name="prospecting_search_result_bulk_action",
     ),
     path("prospeccao/resultados/<uuid:result_id>/promover/", prospecting_views.prospecting_promote_search_result, name="prospecting_promote_search_result"),
+    path(
+        "prospeccao/resultados/<uuid:result_id>/promover-e-enriquecer/",
+        prospecting_views.prospecting_promote_and_enrich_search_result,
+        name="prospecting_promote_and_enrich_search_result",
+    ),
+    path(
+        "prospeccao/prospects/enriquecer-websites/",
+        prospecting_views.prospecting_bulk_website_enrichment,
+        name="prospecting_bulk_website_enrichment",
+    ),
     path("prospeccao/resultados/<uuid:result_id>/ignorar/", prospecting_views.prospecting_ignore_search_result, name="prospecting_ignore_search_result"),
     path(
         "prospeccao/resultados/<uuid:result_id>/restaurar/",

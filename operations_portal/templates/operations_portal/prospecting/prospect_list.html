@@ -20,6 +20,8 @@
         <div class="col-md-2">{{ form.qualification_status.label_tag }}{{ form.qualification_status }}</div>
         <div class="col-md-2">{{ form.priority.label_tag }}{{ form.priority }}</div>
         <div class="col-md-2">{{ form.has_contacts.label_tag }}{{ form.has_contacts }}</div>
+        <div class="col-md-2">{{ form.discovered_email.label_tag }}{{ form.discovered_email }}</div>
+        <div class="col-md-2">{{ form.discovered_phone.label_tag }}{{ form.discovered_phone }}</div>
         <div class="col-md-2">{{ form.has_activities.label_tag }}{{ form.has_activities }}</div>
         <div class="col-md-2">{{ form.follow_up.label_tag }}{{ form.follow_up }}</div>
         <div class="col-md-2">{{ form.outcome.label_tag }}{{ form.outcome }}</div>
@@ -33,10 +35,16 @@
 
   <div class="card">
     <div class="card-body p-0">
+      {% if can_manage %}
+      <form method="post" action="{% url 'operations_portal:prospecting_bulk_website_enrichment' %}" id="prospect-bulk-enrich-form">
+        {% csrf_token %}
+        <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+      {% endif %}
       <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
           <thead class="table-light">
             <tr>
+              {% if can_manage %}<th style="width:2rem;"></th>{% endif %}
               <th>Prospect</th>
               <th>Qualificação</th>
               <th>Prioridade</th>
@@ -54,6 +62,13 @@
           <tbody>
             {% for prospect in page_obj.object_list %}
             <tr>
+              {% if can_manage %}
+              <td>
+                {% if prospect.website %}
+                <input type="checkbox" name="prospect_ids" value="{{ prospect.id }}" form="prospect-bulk-enrich-form">
+                {% endif %}
+              </td>
+              {% endif %}
               <td>
                 <div class="fw-semibold">{{ prospect.display_name }}</div>
                 <div class="text-muted small">{{ prospect.address|default:"Endereço não informado" }}</div>
@@ -75,7 +90,11 @@
                 {% else %}—{% endif %}
               </td>
               <td>{{ prospect.sources.count }}</td>
-              <td>{{ prospect.enrichments.count }}</td>
+              <td>
+                {{ prospect.enrichment_count }}
+                {% if prospect.has_discovered_email %}<span class="badge bg-light text-dark">email</span>{% endif %}
+                {% if prospect.has_discovered_phone %}<span class="badge bg-light text-dark">tel</span>{% endif %}
+              </td>
               <td class="text-end">
                 <a class="btn btn-sm btn-outline-primary" href="{% url 'operations_portal:prospecting_prospect_detail' prospect.id %}">Detalhar</a>
               </td>
@@ -86,6 +105,12 @@
           </tbody>
         </table>
       </div>
+      {% if can_manage %}
+      <div class="card-footer d-flex justify-content-end">
+        <button type="submit" form="prospect-bulk-enrich-form" class="btn btn-sm btn-outline-primary">Enriquecer websites selecionados</button>
+      </div>
+      </form>
+      {% endif %}
     </div>
   </div>
 

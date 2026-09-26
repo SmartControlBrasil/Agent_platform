@@ -16,6 +16,7 @@ class ProspectWebsiteEnrichmentResult:
     pages_fetched: int = 0
     emails_found: int = 0
     phones_found: int = 0
+    addresses_found: int = 0
     enrichments_created: int = 0
     enrichments_existing: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -57,13 +58,16 @@ def _add(result, *, tenant, prospect, field, value, source_url):
     return enrichment
 
 
-def _persist_observations(*, tenant, prospect, page_url, emails, phones, result):
+def _persist_observations(*, tenant, prospect, page_url, emails, phones, addresses, result):
     for email in sorted(emails):
         result.emails_found += 1
         _add(result, tenant=tenant, prospect=prospect, field=ProspectEnrichment.Field.EMAIL, value=email, source_url=page_url)
     for phone in sorted(phones):
         result.phones_found += 1
         _add(result, tenant=tenant, prospect=prospect, field=ProspectEnrichment.Field.PHONE, value=phone, source_url=page_url)
+    for address in sorted(addresses):
+        result.addresses_found += 1
+        _add(result, tenant=tenant, prospect=prospect, field=ProspectEnrichment.Field.ADDRESS, value=address, source_url=page_url)
 
 
 @transaction.atomic
@@ -92,8 +96,16 @@ def enrich_prospect_from_website(*, tenant, prospect, fetcher=None):
     except ValidationError:
         raise
     result.pages_fetched += 1
-    emails, phones, links = extract_contacts(home.body, page_url=home.url)
-    _persist_observations(tenant=tenant, prospect=locked, page_url=home.url, emails=emails, phones=phones, result=result)
+    emails, phones, addresses, links = extract_contacts(home.body, page_url=home.url)
+    _persist_observations(
+        tenant=tenant,
+        prospect=locked,
+        page_url=home.url,
+        emails=emails,
+        phones=phones,
+        addresses=addresses,
+        result=result,
+    )
 
     candidates = contact_link_candidates(links, base_url=home_url, max_links=max(0, max_pages - 1))
     fetched = {canonical_url(home.url)}
@@ -110,6 +122,14 @@ def enrich_prospect_from_website(*, tenant, prospect, fetcher=None):
             result.warnings.extend(getattr(exc, "messages", [str(exc)]))
             continue
         result.pages_fetched += 1
-        emails, phones, _links = extract_contacts(page.body, page_url=page.url)
-        _persist_observations(tenant=tenant, prospect=locked, page_url=page.url, emails=emails, phones=phones, result=result)
+        emails, phones, addresses, _links = extract_contacts(page.body, page_url=page.url)
+        _persist_observations(
+            tenant=tenant,
+            prospect=locked,
+            page_url=page.url,
+            emails=emails,
+            phones=phones,
+            addresses=addresses,
+            result=result,
+        )
     return result

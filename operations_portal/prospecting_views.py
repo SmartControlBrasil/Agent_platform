@@ -88,6 +88,7 @@ from prospecting.application.search_runs import (
     synchronize_search_run,
 )
 from prospecting.application.website_enrichment import enrich_prospect_from_website
+from prospecting.application.website_enrichment_errors import website_enrichment_error_message
 from prospecting.models import (
     Prospect,
     ProspectActivity,
@@ -110,6 +111,7 @@ from tools.models import ToolExecution, ToolExecutorCapability
 ACTION_PROSPECT_PROMOTED = "prospecting.search_result.promoted"
 ACTION_PROSPECT_ENRICHMENT_ADDED = "prospecting.enrichment.added"
 ACTION_PROSPECT_WEBSITE_ENRICHED = "prospecting.enrichment.website_requested"
+BULK_WEBSITE_ENRICHMENT_LIMIT = 10
 SESSION_SEARCH_DRAFTS_KEY = "operations_portal_prospecting_drafts"
 SESSION_SEARCH_DRAFT_EXECUTIONS_KEY = "operations_portal_prospecting_draft_executions"
 SEARCH_RUN_STATUS_UI = {
@@ -562,9 +564,29 @@ def prospecting_search_run_detail(request, run_id):
         for source in ProspectSource.objects.filter(search_result_id__in=page_ids).select_related("prospect")
     }
     results = list(page_obj.object_list)
+    promoted_prospect_ids = [source.prospect_id for source in source_map.values()]
+    email_enriched_ids = set(
+        ProspectEnrichment.objects.filter(
+            prospect_id__in=promoted_prospect_ids,
+            field=ProspectEnrichment.Field.EMAIL,
+        ).values_list("prospect_id", flat=True)
+    )
+    phone_enriched_ids = set(
+        ProspectEnrichment.objects.filter(
+            prospect_id__in=promoted_prospect_ids,
+            field=ProspectEnrichment.Field.PHONE,
+        ).values_list("prospect_id", flat=True)
+    )
     for result in results:
         result.promoted_source = source_map.get(result.id)
         result.review_status_label = SearchResult.ReviewStatus(result.review_status).label
+        if result.promoted_source:
+            pid = result.promoted_source.prospect_id
+            result.has_discovered_email = pid in email_enriched_ids
+            result.has_discovered_phone = pid in phone_enriched_ids
+        else:
+            result.has_discovered_email = False
+            result.has_discovered_phone = False
 
     promoted_count = ProspectSource.objects.filter(search_result__search_run=search_run).count()
     ignored_count = search_run.results.filter(review_status=SearchResult.ReviewStatus.IGNORED).count()
@@ -751,6 +773,69 @@ def prospecting_promote_search_result(request, result_id):
 
 @login_required(login_url="/admin/login/")
 @require_POST
+def prospecting_promote_and_enrich_search_result(request, result_id):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_result = get_object_or_404(_search_result_queryset(access.tenant), pk=result_id)
+    prospect = None
+    try:
+        if search_result.review_status == SearchResult.ReviewStatus.IGNORED:
+            restore_search_result_to_unreviewed(tenant=search_result.tenant, search_result=search_result)
+        prospect = promote_search_result_to_prospect(tenant=search_result.tenant, search_result=search_result)
+        enrichment_result = enrich_prospect_from_website(tenant=prospect.tenant, prospect=prospect)
+    except ValidationError as exc:
+        messages.error(request, website_enrichment_error_message(exc))
+        if prospect is not None:
+            return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+        return redirect("operations_portal:prospecting_search_run_detail", run_id=search_result.search_run_id)
+
+    record_audit_event(
+        action=ACTION_PROSPECT_PROMOTED,
+        actor=request.user,
+        tenant=search_result.tenant,
+        obj=prospect,
+        metadata={
+            "prospect_id": str(prospect.id),
+            "search_result_id": str(search_result.id),
+            "search_run_id": str(search_result.search_run_id),
+            "promote_and_enrich": True,
+        },
+        request=request,
+    )
+    record_audit_event(
+        action=ACTION_PROSPECT_WEBSITE_ENRICHED,
+        actor=request.user,
+        tenant=prospect.tenant,
+        obj=prospect,
+        metadata={
+            "prospect_id": str(prospect.id),
+            "pages_fetched": enrichment_result.pages_fetched,
+            "emails_found": enrichment_result.emails_found,
+            "phones_found": enrichment_result.phones_found,
+            "addresses_found": enrichment_result.addresses_found,
+        },
+        request=request,
+    )
+    messages.success(
+        request,
+        (
+            f"Prospect promovido e website enriquecido. Emails: {enrichment_result.emails_found}, "
+            f"telefones: {enrichment_result.phones_found}, endereços: {enrichment_result.addresses_found}."
+        ),
+    )
+    for warning in enrichment_result.warnings[:3]:
+        messages.warning(request, warning)
+    return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
 def prospecting_ignore_search_result(request, result_id):
     access = resolve_portal_access(
         request,
@@ -838,10 +923,24 @@ def prospecting_prospect_list(request):
     )
     if access.tenant is not None:
         pending_follow_up_qs = pending_follow_up_qs.filter(tenant=access.tenant)
+    email_enrichment_qs = ProspectEnrichment.objects.filter(
+        prospect_id=OuterRef("pk"),
+        field=ProspectEnrichment.Field.EMAIL,
+    )
+    phone_enrichment_qs = ProspectEnrichment.objects.filter(
+        prospect_id=OuterRef("pk"),
+        field=ProspectEnrichment.Field.PHONE,
+    )
+    if access.tenant is not None:
+        email_enrichment_qs = email_enrichment_qs.filter(tenant=access.tenant)
+        phone_enrichment_qs = phone_enrichment_qs.filter(tenant=access.tenant)
     queryset = _prospect_queryset(access.tenant).annotate(
         contact_count=Count("contacts", distinct=True),
         activity_count=Count("activities", distinct=True),
+        enrichment_count=Count("enrichments", distinct=True),
         last_activity_at=Max("activities__occurred_at"),
+        has_discovered_email=Exists(email_enrichment_qs),
+        has_discovered_phone=Exists(phone_enrichment_qs),
         next_follow_up_due_at=Subquery(pending_follow_up_qs.order_by("due_at").values("due_at")[:1]),
         next_follow_up_action_type=Subquery(pending_follow_up_qs.order_by("due_at").values("action_type")[:1]),
         next_follow_up_overdue=Exists(
@@ -852,6 +951,8 @@ def prospecting_prospect_list(request):
     if form.is_valid():
         project = form.cleaned_data.get("project")
         has_contacts = form.cleaned_data.get("has_contacts")
+        discovered_email = form.cleaned_data.get("discovered_email")
+        discovered_phone = form.cleaned_data.get("discovered_phone")
         has_activities = form.cleaned_data.get("has_activities")
         query = (form.cleaned_data.get("q") or "").strip()
         if project:
@@ -860,6 +961,14 @@ def prospecting_prospect_list(request):
             queryset = queryset.filter(contact_count__gt=0)
         elif has_contacts == "no":
             queryset = queryset.filter(contact_count=0)
+        if discovered_email == "yes":
+            queryset = queryset.filter(has_discovered_email=True)
+        elif discovered_email == "no":
+            queryset = queryset.filter(has_discovered_email=False)
+        if discovered_phone == "yes":
+            queryset = queryset.filter(has_discovered_phone=True)
+        elif discovered_phone == "no":
+            queryset = queryset.filter(has_discovered_phone=False)
         if has_activities == "yes":
             queryset = queryset.filter(activity_count__gt=0)
         elif has_activities == "no":
@@ -1037,6 +1146,23 @@ def prospecting_prospect_detail(request, prospect_id):
             status=ProspectOutreachSend.Status.SENT,
         )
     show_record_outcome = (request.GET.get("record_outcome") or "").strip() == "1" or record_outcome_send is not None
+    enrichment_rows = list(prospect.enrichments.all().order_by("-observed_at", "-created_at"))
+    enrichment_summary = {
+        "email": sum(1 for item in enrichment_rows if item.field == ProspectEnrichment.Field.EMAIL),
+        "phone": sum(1 for item in enrichment_rows if item.field == ProspectEnrichment.Field.PHONE),
+        "address": sum(1 for item in enrichment_rows if item.field == ProspectEnrichment.Field.ADDRESS),
+    }
+    contact_create_initial = {}
+    create_from_enrichment_id = (request.GET.get("create_contact_from") or "").strip()
+    if create_from_enrichment_id:
+        source_enrichment = get_object_or_404(
+            ProspectEnrichment.objects.filter(prospect=prospect, tenant=prospect.tenant),
+            pk=create_from_enrichment_id,
+        )
+        if source_enrichment.field == ProspectEnrichment.Field.EMAIL:
+            contact_create_initial["email"] = source_enrichment.value
+        elif source_enrichment.field == ProspectEnrichment.Field.PHONE:
+            contact_create_initial["phone"] = source_enrichment.value
     context = {
         "active_section": "prospeccao",
         "prospect": prospect,
@@ -1047,7 +1173,8 @@ def prospecting_prospect_detail(request, prospect_id):
         "editing_contact": editing_contact,
         "editing_activity": editing_activity,
         "editing_outreach": editing_outreach,
-        "contact_create_form": ProspectContactForm(),
+        "contact_create_form": ProspectContactForm(initial=contact_create_initial),
+        "enrichment_summary": enrichment_summary,
         "contact_edit_form": ProspectContactForm(contact=editing_contact) if editing_contact else None,
         "activity_create_form": ProspectActivityForm(prospect=prospect),
         "activity_edit_form": ProspectActivityForm(prospect=prospect, activity=editing_activity) if editing_activity else None,
@@ -1063,7 +1190,7 @@ def prospecting_prospect_detail(request, prospect_id):
         "show_new_follow_up": (request.GET.get("new_follow_up") or "").strip() == "1",
         "now": timezone.now(),
         "sources": list(prospect.sources.all().order_by("-created_at")),
-        "enrichments": list(prospect.enrichments.all().order_by("-observed_at", "-created_at")),
+        "enrichments": enrichment_rows,
         "manual_form": ProspectEnrichmentCreateForm(
             initial={
                 "field": ProspectEnrichment.Field.EMAIL,
@@ -1664,7 +1791,7 @@ def prospecting_website_enrichment(request, prospect_id):
     try:
         result = enrich_prospect_from_website(tenant=prospect.tenant, prospect=prospect)
     except ValidationError as exc:
-        messages.error(request, "; ".join(exc.messages))
+        messages.error(request, website_enrichment_error_message(exc))
         return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
 
     record_audit_event(
@@ -1677,6 +1804,7 @@ def prospecting_website_enrichment(request, prospect_id):
             "pages_fetched": result.pages_fetched,
             "emails_found": result.emails_found,
             "phones_found": result.phones_found,
+            "addresses_found": result.addresses_found,
             "enrichments_created": result.enrichments_created,
             "enrichments_existing": result.enrichments_existing,
         },
@@ -1685,10 +1813,51 @@ def prospecting_website_enrichment(request, prospect_id):
     messages.success(
         request,
         (
-            f"Website enrichment concluído. Páginas: {result.pages_fetched}, "
-            f"novos dados: {result.enrichments_created}, existentes: {result.enrichments_existing}."
+            f"Enriquecimento concluído. Páginas: {result.pages_fetched}. "
+            f"Emails: {result.emails_found}, telefones: {result.phones_found}, endereços: {result.addresses_found}. "
+            f"Novos registros: {result.enrichments_created}, já existentes: {result.enrichments_existing}."
         ),
     )
+    if result.emails_found == 0 and result.phones_found == 0 and result.addresses_found == 0:
+        messages.info(request, "Nenhum dado de contato público encontrado nesta execução.")
     for warning in result.warnings[:3]:
         messages.warning(request, warning)
     return redirect("operations_portal:prospecting_prospect_detail", prospect_id=prospect.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_bulk_website_enrichment(request):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    raw_ids = request.POST.getlist("prospect_ids")[:BULK_WEBSITE_ENRICHMENT_LIMIT]
+    if not raw_ids:
+        messages.error(request, "Selecione ao menos um prospect com website.")
+        return redirect("operations_portal:prospecting_prospect_list")
+    prospects = list(
+        _prospect_queryset(access.tenant)
+        .filter(pk__in=raw_ids)
+        .exclude(Q(website__isnull=True) | Q(website__exact=""))
+    )
+    if not prospects:
+        messages.error(request, "Nenhum prospect selecionado possui website válido.")
+        return redirect("operations_portal:prospecting_prospect_list")
+
+    processed = 0
+    for prospect in prospects:
+        try:
+            enrich_prospect_from_website(tenant=prospect.tenant, prospect=prospect)
+            processed += 1
+        except ValidationError:
+            continue
+    if processed:
+        messages.success(request, f"Website enriquecido para {processed} prospect(s).")
+    else:
+        messages.warning(request, "Nenhum website pôde ser enriquecido (indisponível ou sem dados públicos).")
+    return redirect("operations_portal:prospecting_prospect_list")

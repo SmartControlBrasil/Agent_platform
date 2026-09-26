@@ -1510,3 +1510,51 @@ class ProspectingFollowUpQueuePortalTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Visão agregada")
         self.assertNotContains(response, "Concluir")
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingWebsiteEnrichmentPortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-enrich", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-enrich", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-enrich-portal")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital Enrichment",
+            identity_key="hospital-enrichment-portal",
+            website="https://hospital.example.com",
+        )
+        self.enrichment = ProspectEnrichment.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            field=ProspectEnrichment.Field.EMAIL,
+            value="compras@hospital.example.com",
+            normalized_value="compras@hospital.example.com",
+            source_type=ProspectEnrichment.SourceType.WEBSITE,
+            source_url="https://hospital.example.com/contato",
+            source_key="WEBSITE:url:https://hospital.example.com/contato",
+        )
+        self.client = Client()
+
+    def test_detail_shows_discovered_data_and_create_contact_link(self):
+        self.client.force_login(self.admin)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertContains(detail, "Dados encontrados")
+        self.assertContains(detail, "compras@hospital.example.com")
+        self.assertContains(detail, "Enriquecer pelo website")
+        self.assertContains(detail, "Criar contato")
+        prefilled = self.client.get(
+            reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id])
+            + f"?create_contact_from={self.enrichment.id}"
+        )
+        self.assertContains(prefilled, 'value="compras@hospital.example.com"')
+
+    def test_viewer_cannot_run_website_enrichment(self):
+        self.client.force_login(self.viewer)
+        detail = self.client.get(reverse("operations_portal:prospecting_prospect_detail", args=[self.prospect.id]))
+        self.assertNotContains(detail, "Criar contato")
+        post = self.client.post(reverse("operations_portal:prospecting_website_enrichment", args=[self.prospect.id]))
+        self.assertEqual(post.status_code, 403)

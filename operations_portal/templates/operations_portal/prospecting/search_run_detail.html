@@ -245,12 +245,23 @@
               <td>
                 {% if result.promoted_source %}
                   <div class="mt-1"><a class="small" href="{% url 'operations_portal:prospecting_prospect_detail' result.promoted_source.prospect_id %}">Abrir prospect</a></div>
+                  <div class="small text-muted mt-1">
+                    Email encontrado: {% if result.has_discovered_email %}sim{% else %}não{% endif %}
+                    · Telefone enriquecido: {% if result.has_discovered_phone %}sim{% else %}não{% endif %}
+                  </div>
                 {% elif can_manage %}
                   <form method="post" action="{% url 'operations_portal:prospecting_promote_search_result' result.id %}" class="d-inline">
                     {% csrf_token %}
                     <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
                     <button type="submit" class="btn btn-sm btn-outline-primary">Promover para Prospect</button>
                   </form>
+                  {% if result.website %}
+                  <form method="post" action="{% url 'operations_portal:prospecting_promote_and_enrich_search_result' result.id %}" class="d-inline ms-1">
+                    {% csrf_token %}
+                    <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+                    <button type="submit" class="btn btn-sm btn-outline-success">Promover e enriquecer</button>
+                  </form>
+                  {% endif %}
                   {% if result.review_status == "IGNORED" %}
                   <form method="post" action="{% url 'operations_portal:prospecting_restore_search_result' result.id %}" class="d-inline ms-1">
                     {% csrf_token %}
