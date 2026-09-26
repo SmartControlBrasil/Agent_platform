@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
@@ -18,7 +20,7 @@ from prospecting.application.outreach_drafts import (
     ACTION_OUTREACH_DRAFT_READY,
     create_outreach_draft,
 )
-from prospecting.application.contact_outcomes import ACTION_CONTACT_OUTCOME_CREATED
+from prospecting.application.contact_outcomes import ACTION_CONTACT_OUTCOME_CREATED, record_prospect_contact_outcome
 from prospecting.application.follow_ups import ACTION_FOLLOW_UP_COMPLETED, ACTION_FOLLOW_UP_CREATED
 from prospecting.application.outreach_sends import ACTION_OUTREACH_SEND_SENT
 from prospecting.application.qualification import ACTION_PROSPECT_QUALIFICATION_UPDATED, qualify_prospect
@@ -263,6 +265,7 @@ class ProspectingPortalTests(TestCase):
         response = self.client.get(reverse("operations_portal:prospecting_search_run_list"))
         self.assertContains(response, "Prospecção · Pesquisas")
         self.assertContains(response, "Prospecção · Prospects")
+        self.assertContains(response, "Prospecção · Acompanhamentos")
 
     def test_new_search_button_visibility_depends_on_role(self):
         self._login(self.admin)
@@ -1354,3 +1357,156 @@ class ProspectingFollowUpPortalTests(TestCase):
         self.assertContains(detail, "Atrasado")
         listing = self.client.get(reverse("operations_portal:prospecting_prospect_list") + "?follow_up=overdue")
         self.assertContains(listing, "Hospital Follow")
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingFollowUpQueuePortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-queue", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-queue", password="pass")
+        self.other_admin = User.objects.create_user(username="other-admin-queue", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-queue-portal")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-queue-portal")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        TenantMembership.objects.create(tenant=self.other_tenant, user=self.other_admin, role=TenantMembership.Role.TENANT_ADMIN)
+        self.prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital Queue",
+            identity_key="hospital-queue-portal",
+            priority=Prospect.Priority.HIGH,
+        )
+        self.other_prospect = Prospect.objects.create(
+            tenant=self.other_tenant,
+            display_name="Outro Hospital",
+            identity_key="outro-hospital-queue",
+        )
+        self.contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+        )
+        self.client = Client()
+        self.queue_url = reverse("operations_portal:prospecting_follow_up_queue")
+
+    def _create_follow_up(self, *, due_at, action_type=ProspectFollowUp.ActionType.CALL, note="Ligar", key=None, tenant=None, prospect=None):
+        from prospecting.application.follow_ups import create_prospect_follow_up
+
+        tenant = tenant or self.tenant
+        prospect = prospect or self.prospect
+        follow_up, _ = create_prospect_follow_up(
+            tenant=tenant,
+            prospect=prospect,
+            action_type=action_type,
+            due_at=due_at,
+            contact=self.contact if prospect == self.prospect else None,
+            note=note,
+            idempotency_key=key or uuid.uuid4().hex,
+            actor=self.admin,
+        )
+        return follow_up
+
+    def test_route_viewer_and_manager_access(self):
+        self.client.force_login(self.viewer)
+        response = self.client.get(self.queue_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Acompanhamentos")
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(self.queue_url).status_code, 200)
+
+    def test_viewer_cannot_complete_or_cancel(self):
+        follow_up = self._create_follow_up(due_at=timezone.now() + timedelta(days=1))
+        self.client.force_login(self.viewer)
+        page = self.client.get(self.queue_url)
+        self.assertNotContains(page, "Concluir")
+        complete = self.client.post(reverse("operations_portal:prospecting_follow_up_queue_complete", args=[follow_up.id]))
+        self.assertEqual(complete.status_code, 403)
+        follow_up.refresh_from_db()
+        self.assertEqual(follow_up.status, ProspectFollowUp.Status.PENDING)
+
+    def test_manager_complete_and_cancel_from_queue(self):
+        follow_up = self._create_follow_up(due_at=timezone.now() + timedelta(days=1), key="queue-complete")
+        self.client.force_login(self.admin)
+        complete = self.client.post(
+            reverse("operations_portal:prospecting_follow_up_queue_complete", args=[follow_up.id]),
+            {"queue_querystring": "situation=pending"},
+        )
+        self.assertEqual(complete.status_code, 302)
+        self.assertIn("situation=pending", complete.url)
+        follow_up.refresh_from_db()
+        self.assertEqual(follow_up.status, ProspectFollowUp.Status.COMPLETED)
+
+        cancel_target = self._create_follow_up(due_at=timezone.now() + timedelta(days=2), key="queue-cancel")
+        cancel = self.client.post(reverse("operations_portal:prospecting_follow_up_queue_cancel", args=[cancel_target.id]))
+        self.assertEqual(cancel.status_code, 302)
+        cancel_target.refresh_from_db()
+        self.assertEqual(cancel_target.status, ProspectFollowUp.Status.CANCELLED)
+
+    def test_cross_tenant_post_is_blocked(self):
+        other_follow_up = self._create_follow_up(
+            due_at=timezone.now() + timedelta(days=1),
+            tenant=self.other_tenant,
+            prospect=self.other_prospect,
+            key="other-follow",
+        )
+        self.client.force_login(self.admin)
+        response = self.client.post(reverse("operations_portal:prospecting_follow_up_queue_complete", args=[other_follow_up.id]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_does_not_mutate_status(self):
+        follow_up = self._create_follow_up(due_at=timezone.now() + timedelta(days=1), key="queue-get")
+        self.client.force_login(self.admin)
+        self.client.get(self.queue_url)
+        self.client.get(self.queue_url + "?situation=overdue")
+        follow_up.refresh_from_db()
+        self.assertEqual(follow_up.status, ProspectFollowUp.Status.PENDING)
+
+    def test_filters_counters_and_empty_states(self):
+        now = timezone.now()
+        self._create_follow_up(due_at=now - timedelta(days=1), key="f-overdue", note="Atrasado item")
+        self._create_follow_up(
+            due_at=now + timedelta(days=5),
+            action_type=ProspectFollowUp.ActionType.EMAIL,
+            key="f-future",
+            note="Futuro item",
+        )
+        self.client.force_login(self.admin)
+        page = self.client.get(self.queue_url)
+        self.assertContains(page, "Atrasados")
+        self.assertContains(page, "Hospital Queue")
+        overdue = self.client.get(self.queue_url + "?situation=overdue")
+        self.assertContains(overdue, "Atrasado item")
+        self.assertNotContains(overdue, "Futuro item")
+        empty_today = self.client.get(self.queue_url + "?situation=today")
+        self.assertContains(empty_today, "Nenhum acompanhamento para hoje.")
+        typed = self.client.get(self.queue_url + "?action_type=EMAIL")
+        self.assertContains(typed, "Futuro item")
+        self.assertNotContains(typed, "Atrasado item")
+        search = self.client.get(self.queue_url + "?prospect_q=Hospital")
+        self.assertContains(search, "Hospital Queue")
+        priority = self.client.get(self.queue_url + "?priority=HIGH")
+        self.assertContains(priority, "Hospital Queue")
+
+    def test_latest_outcome_on_queue_page(self):
+        self.client.force_login(self.admin)
+        record_prospect_contact_outcome(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.contact,
+            outcome=ProspectContactOutcome.Outcome.CALLBACK_REQUESTED,
+            idempotency_key="queue-portal-outcome",
+            actor=self.admin,
+        )
+        self._create_follow_up(due_at=timezone.now() + timedelta(days=1), key="with-outcome")
+        response = self.client.get(self.queue_url)
+        self.assertContains(response, "Pediu retorno")
+
+    def test_global_read_only_hides_mutations(self):
+        superuser = get_user_model().objects.create_superuser(username="root-queue", password="pass", email="root@example.com")
+        self._create_follow_up(due_at=timezone.now() + timedelta(days=1), key="global-ro")
+        self.client.force_login(superuser)
+        response = self.client.get(f"{self.queue_url}?tenant=global")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Visão agregada")
+        self.assertNotContains(response, "Concluir")

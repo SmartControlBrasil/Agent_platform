@@ -57,6 +57,7 @@ Activity does not change qualification, send messages, or sync calendars.
 - **ProspectOutreachSend** — **actual transmission attempt** for EMAIL drafts (snapshots frozen at send time, idempotent single successful send per draft, manual retry on technical failure); on **SENT**, creates `ProspectActivity` with type **EMAIL_SENT**. Distinct from draft content and from leads/Lívia notification outbox.
 - **ProspectContactOutcome** — structured **manual** result after contact (interest, callback requested, no response, etc.); may link to a send; creates past-tense `ProspectActivity`; does not auto-change qualification.
 - **ProspectFollowUp** — **planned next action** (call, email intent, meeting, …) with optional `due_at`; overdue is derived in UI; completing a follow-up does not fake an activity.
+- **Hando · Acompanhamentos** (`/painel/prospeccao/acompanhamentos/`) — tenant-scoped **work queue** for pending follow-ups (filters, counters, quick complete/cancel). Overdue/today/upcoming buckets are **not** stored on the model. No scheduler or automatic reminders in this phase.
 
 Qualification statuses:
 

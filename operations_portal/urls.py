@@ -60,6 +60,17 @@ urlpatterns = [
         prospecting_views.prospecting_restore_search_result,
         name="prospecting_restore_search_result",
     ),
+    path("prospeccao/acompanhamentos/", prospecting_views.prospecting_follow_up_queue, name="prospecting_follow_up_queue"),
+    path(
+        "prospeccao/acompanhamentos/<uuid:follow_up_id>/concluir/",
+        prospecting_views.prospecting_follow_up_queue_complete,
+        name="prospecting_follow_up_queue_complete",
+    ),
+    path(
+        "prospeccao/acompanhamentos/<uuid:follow_up_id>/cancelar/",
+        prospecting_views.prospecting_follow_up_queue_cancel,
+        name="prospecting_follow_up_queue_cancel",
+    ),
     path("prospeccao/prospects/", prospecting_views.prospecting_prospect_list, name="prospecting_prospect_list"),
     path("prospeccao/prospects/<uuid:prospect_id>/", prospecting_views.prospecting_prospect_detail, name="prospecting_prospect_detail"),
     path("prospeccao/prospects/<uuid:prospect_id>/qualificacao/", prospecting_views.prospecting_qualify_prospect, name="prospecting_qualify_prospect"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
@@ -1760,6 +1761,122 @@ class ProspectingFollowUpWorkflowTests(TestCase):
         cancelled = cancel_prospect_follow_up(tenant=self.tenant, follow_up=follow_up2, actor=self.user)
         self.assertEqual(cancelled.status, ProspectFollowUp.Status.CANCELLED)
         self.assertTrue(AuditEvent.objects.filter(action=ACTION_FOLLOW_UP_CANCELLED).exists())
+
+
+class ProspectingFollowUpQueueTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-queue", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-queue")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-queue")
+        self.prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital ABC",
+            identity_key="hospital-abc-queue",
+            priority=Prospect.Priority.HIGH,
+        )
+        self.other_prospect = Prospect.objects.create(
+            tenant=self.other_tenant,
+            display_name="Outro",
+            identity_key="outro-queue",
+        )
+        self.contact = ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            name="Maria Silva",
+        )
+
+    def _pending_at(self, due_at, **kwargs):
+        follow_up, _ = create_prospect_follow_up(
+            tenant=kwargs.pop("tenant", self.tenant),
+            prospect=kwargs.pop("prospect", self.prospect),
+            action_type=kwargs.pop("action_type", ProspectFollowUp.ActionType.CALL),
+            due_at=due_at,
+            contact=kwargs.pop("contact", None),
+            note=kwargs.pop("note", ""),
+            idempotency_key=kwargs.pop("idempotency_key", uuid.uuid4().hex),
+            actor=self.user,
+            **kwargs,
+        )
+        return follow_up
+
+    def test_temporal_classification_and_timezone(self):
+        from prospecting.application.follow_up_queue import (
+            SITUATION_OVERDUE,
+            SITUATION_TODAY,
+            SITUATION_UPCOMING,
+            classify_follow_up_temporal,
+        )
+
+        now = timezone.now()
+        local_start = timezone.localtime(now).replace(hour=12, minute=0, second=0, microsecond=0)
+        if timezone.is_naive(local_start):
+            local_start = timezone.make_aware(local_start)
+        overdue = self._pending_at(local_start - timedelta(days=1))
+        today_item = self._pending_at(local_start + timedelta(hours=1))
+        future = self._pending_at(local_start + timedelta(days=2))
+        self.assertEqual(classify_follow_up_temporal(overdue, now=local_start + timedelta(hours=2)), SITUATION_OVERDUE)
+        self.assertEqual(classify_follow_up_temporal(today_item, now=local_start), SITUATION_TODAY)
+        self.assertEqual(classify_follow_up_temporal(future, now=local_start), SITUATION_UPCOMING)
+
+    def test_pending_default_excludes_completed_and_cancelled(self):
+        from prospecting.application.follow_up_queue import SITUATION_PENDING, apply_follow_up_queue_filters, base_follow_up_queue_queryset
+
+        pending = self._pending_at(timezone.now() + timedelta(days=1))
+        completed = self._pending_at(timezone.now() + timedelta(days=2), idempotency_key="q-complete")
+        complete_prospect_follow_up(tenant=self.tenant, follow_up=completed, actor=self.user)
+        cancelled = self._pending_at(timezone.now() + timedelta(days=3), idempotency_key="q-cancel")
+        cancel_prospect_follow_up(tenant=self.tenant, follow_up=cancelled, actor=self.user)
+        qs = apply_follow_up_queue_filters(
+            base_follow_up_queue_queryset(tenant=self.tenant),
+            situation=SITUATION_PENDING,
+        )
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(qs.get().pk, pending.pk)
+
+    def test_ordering_overdue_oldest_first(self):
+        from prospecting.application.follow_up_queue import (
+            annotate_follow_up_sort_bucket,
+            order_follow_up_queue,
+            base_follow_up_queue_queryset,
+        )
+
+        now = timezone.now()
+        older = self._pending_at(now - timedelta(days=3), idempotency_key="q-old")
+        newer = self._pending_at(now - timedelta(hours=1), idempotency_key="q-new")
+        self._pending_at(now + timedelta(days=1), idempotency_key="q-future")
+        qs = order_follow_up_queue(annotate_follow_up_sort_bucket(base_follow_up_queue_queryset(tenant=self.tenant), now=now))
+        ids = list(qs.values_list("pk", flat=True))
+        self.assertEqual(ids.index(older.pk), 0)
+        self.assertLess(ids.index(older.pk), ids.index(newer.pk))
+
+    def test_tenant_isolation_and_counters(self):
+        from prospecting.application.follow_up_queue import compute_follow_up_queue_counters
+
+        now = timezone.now()
+        self._pending_at(now - timedelta(days=1), idempotency_key="q-overdue-counter")
+        self._pending_at(now + timedelta(hours=2), idempotency_key="q-today-counter")
+        self._pending_at(now + timedelta(days=1), tenant=self.other_tenant, prospect=self.other_prospect, idempotency_key="other-1")
+        counters = compute_follow_up_queue_counters(tenant=self.tenant, now=now)
+        self.assertEqual(counters.pending_total, 2)
+        self.assertEqual(counters.overdue, 1)
+        self.assertEqual(counters.today, 1)
+        other_counters = compute_follow_up_queue_counters(tenant=self.other_tenant, now=now)
+        self.assertEqual(other_counters.pending_total, 1)
+
+    def test_latest_outcome_annotation(self):
+        from prospecting.application.follow_up_queue import base_follow_up_queue_queryset
+
+        record_prospect_contact_outcome(
+            tenant=self.tenant,
+            prospect=self.prospect,
+            contact=self.contact,
+            outcome=ProspectContactOutcome.Outcome.INTERESTED,
+            idempotency_key="queue-outcome-1",
+            actor=self.user,
+        )
+        self._pending_at(timezone.now() + timedelta(days=1))
+        item = base_follow_up_queue_queryset(tenant=self.tenant).get()
+        self.assertEqual(item.latest_outcome, ProspectContactOutcome.Outcome.INTERESTED)
 
 
 @override_settings(

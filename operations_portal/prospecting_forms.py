@@ -238,6 +238,56 @@ class ProspectContactOutcomeForm(_StyledForm):
         return cleaned
 
 
+class FollowUpQueueFilterForm(_StyledForm):
+    situation = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("pending", "Pendentes"),
+            ("overdue", "Atrasados"),
+            ("today", "Hoje"),
+            ("upcoming", "Próximos"),
+            ("completed", "Concluídos"),
+            ("cancelled", "Cancelados"),
+            ("all", "Todos"),
+        ],
+        initial="pending",
+        label="Situação",
+    )
+    action_type = forms.ChoiceField(
+        required=False,
+        choices=[("", "Tipo: todos")] + list(ProspectFollowUp.ActionType.choices),
+        label="Tipo",
+    )
+    period = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Período: todos"),
+            ("today", "Hoje"),
+            ("next_7", "Próximos 7 dias"),
+            ("next_30", "Próximos 30 dias"),
+        ],
+        label="Período",
+    )
+    priority = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Prioridade: todas"),
+            (Prospect.Priority.HIGH, "Alta"),
+            (Prospect.Priority.MEDIUM, "Média"),
+            (Prospect.Priority.LOW, "Baixa"),
+            ("UNSET", "Não definida"),
+        ],
+        label="Prioridade",
+    )
+    prospect_q = forms.CharField(required=False, max_length=220, label="Prospect")
+    contact_q = forms.CharField(required=False, max_length=220, label="Contato")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["prospect_q"].widget.attrs.setdefault("placeholder", "Nome do prospect")
+        self.fields["contact_q"].widget.attrs.setdefault("placeholder", "Nome, e-mail ou telefone")
+
+
 class ProspectFollowUpForm(_StyledForm):
     idempotency_key = forms.CharField(widget=forms.HiddenInput())
     contact = forms.ModelChoiceField(

@@ -19,6 +19,7 @@ from operations_portal.prospecting_forms import (
     ProspectActivityForm,
     ProspectContactForm,
     ProspectContactOutcomeForm,
+    FollowUpQueueFilterForm,
     ProspectFollowUpForm,
     ProspectOutreachDraftForm,
     ProspectEnrichmentCreateForm,
@@ -47,6 +48,14 @@ from prospecting.application.outreach_drafts import (
 )
 from prospecting.application.outreach_sends import retry_outreach_send, send_outreach_draft_email
 from prospecting.application.contact_outcomes import record_prospect_contact_outcome
+from prospecting.application.follow_up_queue import (
+    apply_follow_up_queue_filters,
+    annotate_follow_up_sort_bucket,
+    base_follow_up_queue_queryset,
+    classify_follow_up_temporal,
+    compute_follow_up_queue_counters,
+    order_follow_up_queue,
+)
 from prospecting.application.follow_ups import (
     cancel_prospect_follow_up,
     complete_prospect_follow_up,
@@ -202,6 +211,29 @@ def _follow_up_queryset(tenant):
     if tenant is not None:
         queryset = queryset.filter(tenant=tenant)
     return queryset
+
+
+def _follow_up_queue_tenant_scope(access):
+    if access.tenant is not None:
+        return access.tenant, None
+    if access.is_global or access.show_all_tenants:
+        tenant_ids = [item.pk for item in access.accessible_tenants]
+        return None, tenant_ids or None
+    return None, [item.pk for item in access.accessible_tenants]
+
+
+def _can_mutate_follow_up_queue(access):
+    if access.is_global or access.tenant is None:
+        return False
+    return CAPABILITY_COMMERCIAL_MANAGE in access.capabilities
+
+
+def _follow_up_queue_redirect(request):
+    qs = (request.POST.get("queue_querystring") or "").strip()
+    url = reverse("operations_portal:prospecting_follow_up_queue")
+    if qs:
+        return f"{url}?{qs}"
+    return url
 
 
 def _resolve_viewing_outreach_send(tenant, prospect, send_id_raw):
@@ -872,6 +904,80 @@ def prospecting_prospect_list(request):
     }
     context.update(portal_template_context(access))
     return render(request, "operations_portal/prospecting/prospect_list.html", context)
+
+
+@login_required(login_url="/admin/login/")
+def prospecting_follow_up_queue(request):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
+    tenant, tenant_ids = _follow_up_queue_tenant_scope(access)
+    form = FollowUpQueueFilterForm(request.GET or None)
+    queryset = base_follow_up_queue_queryset(tenant=tenant, tenant_ids=tenant_ids)
+    if form.is_valid():
+        queryset = apply_follow_up_queue_filters(
+            queryset,
+            situation=form.cleaned_data.get("situation") or "pending",
+            action_type=form.cleaned_data.get("action_type") or "",
+            prospect_query=form.cleaned_data.get("prospect_q") or "",
+            contact_query=form.cleaned_data.get("contact_q") or "",
+            priority=form.cleaned_data.get("priority") or "",
+            period=form.cleaned_data.get("period") or "",
+        )
+    else:
+        queryset = queryset.filter(status=ProspectFollowUp.Status.PENDING)
+    queryset = order_follow_up_queue(annotate_follow_up_sort_bucket(queryset))
+    page_obj = Paginator(queryset, 25).get_page(request.GET.get("page") or 1)
+    outcome_label_map = dict(ProspectContactOutcome.Outcome.choices)
+    for item in page_obj.object_list:
+        item.temporal_label = classify_follow_up_temporal(item)
+        item.latest_outcome_display = outcome_label_map.get(item.latest_outcome, "") if item.latest_outcome else ""
+    counters = compute_follow_up_queue_counters(tenant=tenant, tenant_ids=tenant_ids)
+    context = {
+        "active_section": "prospeccao",
+        "active_prospecting_page": "acompanhamentos",
+        "form": form,
+        "page_obj": page_obj,
+        "querystring": clean_querystring(request.GET),
+        "counters": counters,
+        "can_manage": _can_mutate_follow_up_queue(access),
+        "show_tenant_column": access.is_global or access.show_all_tenants,
+        "global_read_only": access.is_global or access.tenant is None,
+    }
+    context.update(portal_template_context(access))
+    return render(request, "operations_portal/prospecting/follow_up_queue.html", context)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_follow_up_queue_complete(request, follow_up_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    if not _can_mutate_follow_up_queue(access):
+        raise PermissionDenied
+    tenant, tenant_ids = _follow_up_queue_tenant_scope(access)
+    follow_up = get_object_or_404(base_follow_up_queue_queryset(tenant=tenant, tenant_ids=tenant_ids), pk=follow_up_id)
+    try:
+        complete_prospect_follow_up(tenant=follow_up.tenant, follow_up=follow_up, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_follow_up_queue_redirect(request))
+    messages.success(request, "Próxima ação concluída.")
+    return redirect(_follow_up_queue_redirect(request))
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_follow_up_queue_cancel(request, follow_up_id):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_MANAGE, allow_global=True)
+    if not _can_mutate_follow_up_queue(access):
+        raise PermissionDenied
+    tenant, tenant_ids = _follow_up_queue_tenant_scope(access)
+    follow_up = get_object_or_404(base_follow_up_queue_queryset(tenant=tenant, tenant_ids=tenant_ids), pk=follow_up_id)
+    try:
+        cancel_prospect_follow_up(tenant=follow_up.tenant, follow_up=follow_up, actor=request.user, request=request)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect(_follow_up_queue_redirect(request))
+    messages.success(request, "Próxima ação cancelada.")
+    return redirect(_follow_up_queue_redirect(request))
 
 
 @login_required(login_url="/admin/login/")

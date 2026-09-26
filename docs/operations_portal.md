@@ -96,6 +96,17 @@ Rascunho **READY** + canal **EMAIL** + prospect ainda **QUALIFIED** pode ser env
 
 `ProspectContactOutcome` registra manualmente o resultado estruturado (interesse, pediu retorno, sem resposta, etc.), opcionalmente vinculado a um `ProspectOutreachSend` SENT, e gera `ProspectActivity` na timeline (ex.: `REPLY_RECEIVED` ou `NOTE`). `ProspectFollowUp` representa **próxima ação planejada** (`PENDING` / `COMPLETED` / `CANCELLED`) com `due_at` timezone-aware; atraso é **derivado** na UI (`PENDING` + `due_at` passado). Concluir follow-up **não** cria atividade automática. Qualificação do prospect **não** muda automaticamente. Sem scheduler, lembretes por e-mail ou captura de inbox.
 
+## Prospecção · Acompanhamentos (fila operacional)
+
+`/painel/prospeccao/acompanhamentos/` concentra `ProspectFollowUp` pendentes e filtráveis para o tenant ativo (ou visão agregada read-only quando **Todos os tenants** está selecionado). A tela responde: atrasados, hoje, próximos dias, prospect, contato, tipo de ação e último resultado conhecido (`ProspectContactOutcome` mais recente do prospect, via subquery).
+
+- **Classificação temporal** (Atrasado / Hoje / Próximo) é calculada com `timezone.now()` e `timezone.localdate()` — não há campo `is_overdue` ou bucket persistido.
+- **Contadores** no topo (atrasados, hoje, próximos 7 dias, pendentes) são agregações tenant-scoped.
+- **Filtros GET:** situação, tipo de ação, período simples, prioridade do prospect, busca por prospect/contato; paginação preserva query string.
+- **`commercial.view`:** lista, filtra e abre o prospect; **`commercial.manage`:** concluir/cancelar via POST (services `complete_prospect_follow_up` / `cancel_prospect_follow_up`), somente com tenant específico selecionado.
+- **Dashboard** (`/painel/`): card opcional com resumo e link quando há tenant ativo e capability comercial.
+- Fila **visual/manual** — sem Celery, cron, e-mail ou notificação automática por atraso.
+
 ## Prospecção · histórico comercial
 
 No detalhe do prospect, **Histórico comercial** registra `ProspectActivity` (nota, ligação, reunião, etc.) com data/hora (`occurred_at`), observação obrigatória e contato opcional. Timeline ordenada por `occurred_at` desc; `commercial.view` visualiza; `commercial.manage` cria/edita/remove (delete físico + audit). Isso é memória operacional — distinto de `AuditEvent` técnico. Não altera qualificação nem dispara outreach.

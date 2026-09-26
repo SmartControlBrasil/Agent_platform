@@ -1,0 +1,118 @@
+{% extends "operations_portal/base.html" %}
+{% block title %}Prospecção · Acompanhamentos{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+    <div>
+      <h4 class="mb-1">Acompanhamentos</h4>
+      <ol class="breadcrumb m-0 mt-1 py-0">
+        <li class="breadcrumb-item"><a href="{% url 'operations_portal:dashboard' %}">Painel</a></li>
+        <li class="breadcrumb-item active">Prospecção · Acompanhamentos</li>
+      </ol>
+      <p class="text-muted small mb-0 mt-1">{{ tenant_scope_note }}</p>
+    </div>
+  </div>
+
+  {% if global_read_only %}
+  <div class="alert alert-info py-2">Visão agregada: selecione um tenant específico para concluir ou cancelar ações.</div>
+  {% endif %}
+
+  <div class="row g-2 mb-3">
+    <div class="col-md-3"><div class="card"><div class="card-body py-2"><div class="text-muted small">Atrasados</div><div class="fs-4 fw-semibold text-danger">{{ counters.overdue }}</div></div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body py-2"><div class="text-muted small">Hoje</div><div class="fs-4 fw-semibold">{{ counters.today }}</div></div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body py-2"><div class="text-muted small">Próximos 7 dias</div><div class="fs-4 fw-semibold">{{ counters.next_7_days }}</div></div></div></div>
+    <div class="col-md-3"><div class="card"><div class="card-body py-2"><div class="text-muted small">Pendentes</div><div class="fs-4 fw-semibold">{{ counters.pending_total }}</div></div></div></div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <form method="get" class="row g-2">
+        <div class="col-md-2">{{ form.situation.label_tag }}{{ form.situation }}</div>
+        <div class="col-md-2">{{ form.action_type.label_tag }}{{ form.action_type }}</div>
+        <div class="col-md-2">{{ form.period.label_tag }}{{ form.period }}</div>
+        <div class="col-md-2">{{ form.priority.label_tag }}{{ form.priority }}</div>
+        <div class="col-md-2">{{ form.prospect_q.label_tag }}{{ form.prospect_q }}</div>
+        <div class="col-md-2">{{ form.contact_q.label_tag }}{{ form.contact_q }}</div>
+        <div class="col-12"><button type="submit" class="btn btn-primary btn-sm">Filtrar</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Quando</th>
+              <th>Situação</th>
+              <th>Ação</th>
+              <th>Prospect</th>
+              {% if show_tenant_column %}<th>Tenant</th>{% endif %}
+              <th>Contato</th>
+              <th>Prioridade</th>
+              <th>Último resultado</th>
+              <th>Observação</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for follow_up in page_obj.object_list %}
+            <tr>
+              <td>{% if follow_up.due_at %}{{ follow_up.due_at|date:"d/m/Y H:i" }}{% else %}—{% endif %}</td>
+              <td>
+                {% if follow_up.status == 'PENDING' %}
+                  {% if follow_up.temporal_label == 'overdue' %}<span class="badge bg-danger">Atrasado</span>
+                  {% elif follow_up.temporal_label == 'today' %}<span class="badge bg-warning text-dark">Hoje</span>
+                  {% elif follow_up.temporal_label == 'upcoming' %}<span class="badge bg-info text-dark">Próximo</span>
+                  {% else %}<span class="badge bg-secondary">Pendente</span>{% endif %}
+                {% elif follow_up.status == 'COMPLETED' %}<span class="badge bg-success">Concluído</span>
+                {% elif follow_up.status == 'CANCELLED' %}<span class="badge bg-secondary">Cancelado</span>
+                {% endif %}
+              </td>
+              <td>{{ follow_up.get_action_type_display }}</td>
+              <td>
+                <div class="fw-semibold">{{ follow_up.prospect.display_name }}</div>
+                <div class="text-muted small">{{ follow_up.prospect.get_qualification_status_display }}</div>
+              </td>
+              {% if show_tenant_column %}<td class="small">{{ follow_up.tenant.name }}</td>{% endif %}
+              <td>{% if follow_up.contact %}{{ follow_up.contact.name|default:follow_up.contact.email|default:follow_up.contact.phone }}{% else %}—{% endif %}</td>
+              <td>{% if follow_up.prospect.priority == 'UNSET' %}—{% else %}{{ follow_up.prospect.get_priority_display }}{% endif %}</td>
+              <td>{{ follow_up.latest_outcome_display|default:"—" }}</td>
+              <td class="small text-muted">{{ follow_up.note|truncatechars:80 }}</td>
+              <td class="text-end text-nowrap">
+                <a class="btn btn-sm btn-outline-primary" href="{% url 'operations_portal:prospecting_prospect_detail' follow_up.prospect.id %}?record_outcome=1">Abrir prospect</a>
+                {% if can_manage and follow_up.status == 'PENDING' %}
+                <form method="post" action="{% url 'operations_portal:prospecting_follow_up_queue_complete' follow_up.id %}" class="d-inline">
+                  {% csrf_token %}
+                  <input type="hidden" name="queue_querystring" value="{{ querystring }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success">Concluir</button>
+                </form>
+                <form method="post" action="{% url 'operations_portal:prospecting_follow_up_queue_cancel' follow_up.id %}" class="d-inline" onsubmit="return confirm('Cancelar esta próxima ação?');">
+                  {% csrf_token %}
+                  <input type="hidden" name="queue_querystring" value="{{ querystring }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">Cancelar</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="{% if show_tenant_column %}10{% else %}9{% endif %}" class="text-center text-muted py-4">
+              {% if form.situation.value == 'overdue' %}Nenhum acompanhamento atrasado.
+              {% elif form.situation.value == 'today' %}Nenhum acompanhamento para hoje.
+              {% else %}Nenhum acompanhamento encontrado para os filtros selecionados.{% endif %}
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% if page_obj.paginator.num_pages > 1 %}
+    <div class="card-footer">
+      {% include "operations_portal/partials/pagination.html" with page_obj=page_obj querystring=querystring %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
