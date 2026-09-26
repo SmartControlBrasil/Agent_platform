@@ -37,7 +37,7 @@ The operational prospecting workflow lives in the same repository under the `pro
 - explicit promotion `SearchResult -> Prospect`;
 - `ProspectSource` provenance history;
 - `ProspectEnrichment` manual observations;
-- optional website enrichment with strict SSRF controls;
+- optional website enrichment with strict SSRF controls, exact seed URL first, per-page failure warnings (root 404 does not abort the whole run), and conservative text phone extraction (tel/JSON-LD preferred; CEP/dates/IDs rejected);
 - manual prospect qualification in Hando (`qualification_status`, manual `priority`, `qualification_note`) — qualification is not a CRM pipeline and priority is not an automated score;
 - `ProspectContact` for people/channels linked to a prospect company (`name`, `role_title`, email, phone, note, provenance).
 
