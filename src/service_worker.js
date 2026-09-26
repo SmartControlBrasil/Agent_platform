@@ -3,14 +3,42 @@ import { HEARTBEAT_ALARM, HEARTBEAT_PERIOD_MINUTES, JOB_POLL_ALARM, JOB_POLL_PER
 import { heartbeat, pollAndRunJobs } from './executor_runtime.js';
 import { pollPairing } from './pairing_flow.js';
 import { getState } from './state.js';
+import { CredentialStore } from './credential_store.js';
 
 const chromeApi = getChromeApi();
 
-chromeApi.runtime.onInstalled.addListener(() => {
+function registerAlarms() {
   chromeApi.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_PERIOD_MINUTES });
   chromeApi.alarms.create(JOB_POLL_ALARM, { periodInMinutes: JOB_POLL_PERIOD_MINUTES });
   chromeApi.alarms.create(PAIRING_POLL_ALARM, { periodInMinutes: PAIRING_POLL_PERIOD_MINUTES });
+}
+
+async function bootstrapOperationalLoops() {
+  const state = await getState(chromeApi);
+  if (!state.platformBaseUrl) return;
+  const credential = await new CredentialStore(chromeApi).getCredential();
+  if (!credential) return;
+  const freshState = await getState(chromeApi);
+  await heartbeat({ state: freshState, chromeApi });
+  await pollAndRunJobs({ state: await getState(chromeApi), chromeApi });
+}
+
+function scheduleBootstrap() {
+  bootstrapOperationalLoops().catch(() => {});
+}
+
+chromeApi.runtime.onInstalled.addListener(() => {
+  registerAlarms();
+  scheduleBootstrap();
 });
+
+chromeApi.runtime.onStartup.addListener(() => {
+  registerAlarms();
+  scheduleBootstrap();
+});
+
+registerAlarms();
+scheduleBootstrap();
 
 chromeApi.alarms.onAlarm.addListener(async (alarm) => {
   const state = await getState(chromeApi);
