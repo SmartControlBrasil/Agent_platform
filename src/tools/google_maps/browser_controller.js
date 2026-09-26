@@ -3,6 +3,7 @@ import { buildGoogleMapsSearchUrl, isAllowedGoogleMapsUrl } from './url_builder.
 import { GoogleMapsToolError } from './errors.js';
 import { mergeBusiness } from './dedupe.js';
 
+const DOM_EXTRACTION_FILE = 'src/tools/google_maps/dom_extraction.js';
 const CONTENT_SCRIPT_FILE = 'src/tools/google_maps/content_script.js';
 
 export class GoogleMapsBrowserController {
@@ -65,7 +66,7 @@ export class GoogleMapsTabSession {
 
   async ensureContentScript() {
     if (this.injected) return;
-    await this.chromeApi.scripting.executeScript({ target: { tabId: this.tabId }, files: [CONTENT_SCRIPT_FILE] });
+    await this.chromeApi.scripting.executeScript({ target: { tabId: this.tabId }, files: [DOM_EXTRACTION_FILE, CONTENT_SCRIPT_FILE] });
     this.injected = true;
   }
 

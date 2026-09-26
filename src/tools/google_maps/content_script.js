@@ -67,17 +67,22 @@
     return { ok: true };
   }
 
+  function domExtract() {
+    return globalThis.__agentExecutorGoogleMapsDomExtraction || {};
+  }
+
   function businessFromAnchor(anchor, sourceQuery) {
     const mapsUrl = normalizeMapsUrl(anchor.href);
     const name = normalizeText(anchor.getAttribute('aria-label') || anchor.textContent || '');
     if (!mapsUrl || !name) return null;
     const container = anchor.closest('[role="article"], div') || anchor.parentElement;
+    const extract = domExtract();
     return {
       name,
-      category: extractLabeledText(container, ['Category', 'Categoria']),
-      address: extractLabeledText(container, ['Address', 'Endereço']),
-      phone: extractPhone(container),
-      website: extractWebsite(container),
+      category: (extract.extractLabeledText || extractLabeledText)(container, ['Category', 'Categoria']),
+      address: extract.extractAddress ? extract.extractAddress(container) : extractLabeledText(container, ['Address', 'Endereço']),
+      phone: (extract.extractPhone || extractPhone)(container),
+      website: (extract.extractWebsite || extractWebsite)(container),
       maps_url: mapsUrl,
       external_id: extractExternalId(mapsUrl),
       source_query: sourceQuery,
@@ -98,12 +103,13 @@
     const panel = doc.querySelector(selectors.placePanel) || doc.body;
     const heading = panel.querySelector('h1, [role="heading"]');
     const mapsUrl = normalizeMapsUrl(location.href);
+    const extract = domExtract();
     return {
       name: normalizeText(heading?.textContent || ''),
-      category: extractLabeledText(panel, ['Category', 'Categoria']),
-      address: extractLabeledText(panel, ['Address', 'Endereço']),
-      phone: extractPhone(panel),
-      website: extractWebsite(panel),
+      category: (extract.extractLabeledText || extractLabeledText)(panel, ['Category', 'Categoria']),
+      address: extract.extractAddress ? extract.extractAddress(panel) : extractLabeledText(panel, ['Address', 'Endereço']),
+      phone: (extract.extractPhone || extractPhone)(panel),
+      website: (extract.extractWebsite || extractWebsite)(panel),
       maps_url: mapsUrl,
       external_id: extractExternalId(mapsUrl),
       source_query: sourceQuery,
