@@ -365,7 +365,10 @@ class ProspectingDomainTests(TestCase):
 
         self.assertEqual(first.id, second.id)
         self.assertEqual(first.normalized_value, "comercial@hospital.example.com")
-        self.assertEqual(ProspectEnrichment.objects.count(), 1)
+        self.assertEqual(
+            ProspectEnrichment.objects.filter(prospect=prospect, field=ProspectEnrichment.Field.EMAIL).count(),
+            1,
+        )
 
     def test_enrichment_keeps_multiple_values_and_does_not_overwrite_prospect(self):
         prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)
@@ -389,7 +392,18 @@ class ProspectingDomainTests(TestCase):
 
         prospect.refresh_from_db()
         self.assertEqual(prospect.phone, original_phone)
-        self.assertEqual(ProspectEnrichment.objects.filter(prospect=prospect, field=ProspectEnrichment.Field.PHONE).count(), 2)
+        self.assertEqual(
+            ProspectEnrichment.objects.filter(
+                prospect=prospect,
+                field=ProspectEnrichment.Field.PHONE,
+                source_type=ProspectEnrichment.SourceType.WEBSITE,
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            ProspectEnrichment.objects.filter(prospect=prospect, field=ProspectEnrichment.Field.PHONE).count(),
+            3,
+        )
 
     def test_enrichment_preserves_search_result_provenance(self):
         prospect = promote_search_result_to_prospect(tenant=self.tenant, search_result=self.search_result)
