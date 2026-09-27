@@ -70,4 +70,8 @@ Na Fase 6, `ToolDefinition` passa a declarar `execution_mode`: `LOCAL` ou `DELEG
 
 A prova de infraestrutura é `prospecting.external_search_probe`, uma tool delegada de laboratório sem busca real e sem runtime local.
 
-O fluxo real `smart_sales -> Agent Platform -> Agent_executor_chrome -> Google Maps -> Agent Platform -> smart_sales` esta documentado em `docs/integrations/smart-sales-executor-e2e.md`. O codigo do Chrome Executor nao reside neste repositorio; ele e mantido separadamente em `Agent_executor_chrome`.
+O fluxo real `smart_sales -> Agent Platform -> Chrome Executor -> Google Maps -> Agent Platform -> smart_sales` esta documentado em `docs/integrations/smart-sales-executor-e2e.md`. O Chrome Executor e um componente separado em runtime, versionado neste monorepo em `executors/chrome/`.
+
+Raiz oficial do projeto: `/home/marcelo/projetos/Agent_platform`.
+
+Desenvolvimento da extensao: Chrome → Modo do desenvolvedor → Carregar sem compactacao → selecionar `executors/chrome/` (detalhes em `executors/chrome/README.md` e `docs/executors/README.md`).

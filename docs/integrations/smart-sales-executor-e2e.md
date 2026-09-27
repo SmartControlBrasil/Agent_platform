@@ -1,6 +1,6 @@
 # Smart Sales Executor E2E
 
-Este documento consolida o E2E real validado entre `smart_sales`, Agent Platform e `Agent_executor_chrome` para a tool delegada `prospecting.search_google_maps`.
+Este documento consolida o E2E real validado entre `smart_sales`, Agent Platform e o Chrome Executor (`executors/chrome/`) para a tool delegada `prospecting.search_google_maps`.
 
 ## Fluxo Validado
 
@@ -11,7 +11,7 @@ smart_sales
 Agent Platform
     | ToolExecution / queue
     v
-Agent_executor_chrome
+executors/chrome
     |
     v
 Google Maps
@@ -19,7 +19,7 @@ Google Maps
 Google Maps
     |
     v
-Agent_executor_chrome
+executors/chrome
     | complete
     v
 Agent Platform
@@ -37,7 +37,7 @@ SearchRun.COMPLETED + SearchResults
 
 Agent Platform e o control plane/gateway de execucao. Ele autentica `AgentClient`, valida tool/input, cria e mantem `ToolExecution`, controla tenant/capability, fornece a queue, controla claim e recebe complete/fail. Ele nao contem scraper nem browser do Google Maps.
 
-`Agent_executor_chrome` autentica como `AgentExecutor`, envia heartbeat, consulta queue, faz claim, executa `prospecting.search_google_maps` no navegador real e envia o resultado para Agent Platform. Ele nao conhece regras comerciais do `smart_sales`.
+O Chrome Executor (`executors/chrome/`) autentica como `AgentExecutor`, envia heartbeat, consulta queue, faz claim, executa `prospecting.search_google_maps` no navegador real e envia o resultado para Agent Platform. Ele nao conhece regras comerciais do `smart_sales`.
 
 ## Identidades
 
@@ -78,7 +78,7 @@ Os papeis nunca devem ser intercambiados: `smart_sales` nao e `ToolExecutor`, e 
 
 ## Mecanismo Da Extensao
 
-No acceptance automatizado real, nao use `--load-extension` como criterio operacional. O mecanismo validado carrega a extensao pelo Chrome DevTools Protocol com `Extensions.loadUnpacked`, usando a configuracao/flag ja existente no `Agent_executor_chrome`.
+No acceptance automatizado real, nao use `--load-extension` como criterio operacional. O mecanismo validado carrega a extensao pelo Chrome DevTools Protocol com `Extensions.loadUnpacked`, apontando para `executors/chrome/` (ver `executors/chrome/README.md`).
 
 ## Idempotencia
 

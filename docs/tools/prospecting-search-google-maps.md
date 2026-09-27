@@ -2,7 +2,7 @@
 
 `prospecting.search_google_maps` is a delegated prospecting tool contract for browser executors. It defines the backend registration, input and output contracts, lifecycle validation, capability gating, and Control Plane presentation. It does not implement Google Maps scraping, selectors, browser automation, enrichment, coordinates, or any Google API integration.
 
-The real browser implementation lives outside this repository in `Agent_executor_chrome`. Agent Platform owns the contract, validation, `ToolExecution` lifecycle, tenant/capability gating, queue, claim, complete, and fail endpoints.
+The real browser implementation lives in this monorepo at `executors/chrome/`. Agent Platform owns the contract, validation, `ToolExecution` lifecycle, tenant/capability gating, queue, claim, complete, and fail endpoints.
 
 ## Tool Definition
 

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Executor Options</title>
+  <link rel="stylesheet" href="src/ui.css">
+</head>
+<body>
+  <main class="options">
+    <h1>Agent Executor Chrome</h1>
+    <form id="options-form">
+      <label>Agent Platform URL
+        <input id="platform-url" type="url" placeholder="http://127.0.0.1:8000" required>
+      </label>
+      <label>Nome do executor
+        <input id="requested-name" type="text" maxlength="160" placeholder="Chrome Executor">
+      </label>
+      <button type="submit">Salvar</button>
+      <p id="message" role="status"></p>
+    </form>
+  </main>
+  <script type="module" src="src/options.js"></script>
+</body>
+</html>

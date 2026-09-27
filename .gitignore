@@ -17,3 +17,6 @@ staticfiles/
 backups/
 dumps/
 .tmp/
+executors/**/node_modules/
+executors/**/coverage/
+executors/**/dist/

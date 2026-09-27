@@ -1,5 +1,7 @@
 # Browser Extension Pairing Contract
 
+Extension source: `executors/chrome/` in this monorepo. Load unpacked from that directory in `chrome://extensions/` during development.
+
 Phase 8 extension clients should use this contract.
 
 1. Request pairing: `POST /api/v1/executors/pairing/request/`

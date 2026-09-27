@@ -9,7 +9,7 @@ smart_sales
     -> HTTP AgentClient
 Agent Platform
     -> ToolExecution / queue
-Agent_executor_chrome
+executors/chrome (Chrome Executor)
     -> Google Maps
 Agent Platform
     -> smart_sales SearchResult
@@ -19,4 +19,4 @@ Podem existir agentes usados pelo `smart_sales`, como prospecting, qualification
 
 Agent Platform autentica o produto consumidor como `AgentClient` (`apc_`) e autentica executores delegados como `AgentExecutor` (`aep_`). Esses papeis sao separados: `smart_sales` nao e `ToolExecutor`, e o Chrome Executor nao usa credencial de cliente.
 
-O codigo do Chrome Executor nao reside neste repositorio; ele e mantido separadamente em `Agent_executor_chrome`. Agent Platform mantem o contrato, a fila, o claim e o complete/fail de `ToolExecution`, mas nao contem scraper/browser do Google Maps.
+O codigo do Chrome Executor vive neste monorepo em `executors/chrome/` (componente arquitetural/runtime separado do Django). Agent Platform mantem o contrato, a fila, o claim e o complete/fail de `ToolExecution`; o scraper/browser do Google Maps fica na extensao.

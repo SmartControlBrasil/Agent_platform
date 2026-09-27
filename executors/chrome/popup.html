@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Executor</title>
+  <link rel="stylesheet" href="src/ui.css">
+</head>
+<body>
+  <main class="popup">
+    <h1>Agent Platform Executor</h1>
+    <section class="status-row"><span id="status-dot" class="dot"></span><strong id="state">Carregando</strong></section>
+    <dl>
+      <dt>Servidor</dt><dd id="server">-</dd>
+      <dt>Executor</dt><dd id="executor">-</dd>
+      <dt>Ultimo heartbeat</dt><dd id="heartbeat">-</dd>
+      <dt>Capabilities</dt><dd id="capabilities">-</dd>
+      <dt>Ultima execucao</dt><dd id="last-execution">-</dd>
+      <dt>Erro</dt><dd id="error">-</dd>
+    </dl>
+    <div id="pairing-box" class="pairing hidden">
+      <span>Codigo de pareamento</span>
+      <strong id="pairing-code"></strong>
+      <p>Aprove este executor no Agent Platform.</p>
+    </div>
+    <div class="actions">
+      <button id="configure">Configurar</button>
+      <button id="pair">Parear</button>
+      <button id="disconnect">Desconectar</button>
+      <button id="open-platform">Abrir Agent Platform</button>
+    </div>
+  </main>
+  <script type="module" src="src/popup.js"></script>
+</body>
+</html>
