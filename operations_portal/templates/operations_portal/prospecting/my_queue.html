@@ -1,0 +1,108 @@
+{% extends "operations_portal/base.html" %}
+{% block title %}Prospecção · Minha Fila{% endblock %}
+
+{% block page_content %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+    <div>
+      <h4 class="mb-1">Minha Fila</h4>
+      <ol class="breadcrumb m-0 mt-1 py-0">
+        <li class="breadcrumb-item"><a href="{% url 'operations_portal:dashboard' %}">Painel</a></li>
+        <li class="breadcrumb-item active">Prospecção · Minha Fila</li>
+      </ol>
+      <p class="text-muted small mb-0 mt-1">Próximas ações da prospecção comercial. {{ tenant_scope_note }}</p>
+    </div>
+  </div>
+
+  {% if global_read_only %}
+  <div class="alert alert-info py-2" role="status">Visão agregada (somente leitura): selecione um tenant específico para concluir ou cancelar acompanhamentos.</div>
+  {% endif %}
+
+  <div class="row g-2 mb-3" aria-label="Resumo da Minha Fila">
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Atrasados</div><div class="fs-5 fw-semibold text-danger">{{ counters.follow_up_overdue }}</div></div></div></div>
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Hoje</div><div class="fs-5 fw-semibold">{{ counters.follow_up_today }}</div></div></div></div>
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Abordagem pendente</div><div class="fs-5 fw-semibold">{{ counters.outreach_pending }}</div></div></div></div>
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Aguardando resultado</div><div class="fs-5 fw-semibold">{{ counters.waiting_outcome }}</div></div></div></div>
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Sem contato</div><div class="fs-5 fw-semibold">{{ counters.missing_contact }}</div></div></div></div>
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Prontos para abordagem</div><div class="fs-5 fw-semibold">{{ counters.ready_for_outreach }}</div></div></div></div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <form method="get" class="row g-2" aria-label="Filtrar Minha Fila">
+        <div class="col-md-3">{{ form.category.label_tag }}{{ form.category }}</div>
+        <div class="col-md-3">{{ form.priority.label_tag }}{{ form.priority }}</div>
+        <div class="col-md-4">{{ form.prospect_q.label_tag }}{{ form.prospect_q }}</div>
+        <div class="col-md-2 d-flex align-items-end"><button type="submit" class="btn btn-primary btn-sm w-100">Filtrar</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <caption class="visually-hidden">Próximas ações comerciais da prospecção</caption>
+          <thead class="table-light">
+            <tr>
+              <th scope="col">Categoria</th>
+              <th scope="col">Prospect</th>
+              <th scope="col">Prioridade</th>
+              <th scope="col">Próxima ação</th>
+              <th scope="col">Prazo / data</th>
+              {% if show_tenant_column %}<th scope="col">Tenant</th>{% endif %}
+              <th scope="col"><span class="visually-hidden">Ações</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in page_obj.object_list %}
+            <tr>
+              <td>
+                <span class="visually-hidden">{{ row.category_label }}.</span>
+                {% if row.item.category == 'FOLLOW_UP_OVERDUE' %}<span class="badge bg-danger">{{ row.category_label }}</span>
+                {% elif row.item.category == 'FOLLOW_UP_TODAY' %}<span class="badge bg-warning text-dark">{{ row.category_label }}</span>
+                {% elif row.item.category == 'OUTREACH_PENDING' %}<span class="badge bg-primary">{{ row.category_label }}</span>
+                {% elif row.item.category == 'WAITING_OUTCOME' %}<span class="badge bg-info text-dark">{{ row.category_label }}</span>
+                {% elif row.item.category == 'MISSING_CONTACT' %}<span class="badge bg-secondary">{{ row.category_label }}</span>
+                {% else %}<span class="badge bg-success">{{ row.category_label }}</span>{% endif %}
+              </td>
+              <td><span class="fw-semibold">{{ row.item.display_name }}</span></td>
+              <td>{{ row.priority_display }}</td>
+              <td class="small">{{ row.action_label }}</td>
+              <td>{% if row.item.sort_timestamp %}{{ row.item.sort_timestamp|date:"d/m/Y H:i" }}{% else %}—{% endif %}</td>
+              {% if show_tenant_column %}<td class="small">{{ row.tenant_name|default:"—" }}</td>{% endif %}
+              <td class="text-end text-nowrap">
+                <a class="btn btn-sm btn-outline-primary" href="{{ row.cta_url }}">{{ row.cta_label }}</a>
+                {% if can_manage and row.follow_up %}
+                <form method="post" action="{% url 'operations_portal:prospecting_follow_up_queue_complete' row.follow_up.id %}" class="d-inline">
+                  {% csrf_token %}
+                  <input type="hidden" name="queue_querystring" value="{{ querystring }}">
+                  <input type="hidden" name="return_view" value="{{ return_view }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success">Concluir</button>
+                </form>
+                <form method="post" action="{% url 'operations_portal:prospecting_follow_up_queue_cancel' row.follow_up.id %}" class="d-inline" onsubmit="return confirm('Cancelar esta próxima ação?');">
+                  {% csrf_token %}
+                  <input type="hidden" name="queue_querystring" value="{{ querystring }}">
+                  <input type="hidden" name="return_view" value="{{ return_view }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">Cancelar</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="{% if show_tenant_column %}7{% else %}6{% endif %}" class="text-center text-muted py-4">
+              Nenhuma ação comercial pendente para os filtros selecionados.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% if page_obj.paginator.num_pages > 1 %}
+    <div class="card-footer">
+      {% include "operations_portal/partials/pagination.html" with page_obj=page_obj querystring=querystring %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

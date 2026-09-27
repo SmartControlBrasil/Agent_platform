@@ -20,6 +20,7 @@ from operations_portal.prospecting_forms import (
     ProspectContactForm,
     ProspectContactOutcomeForm,
     FollowUpQueueFilterForm,
+    MyQueueFilterForm,
     ProspectFollowUpForm,
     ProspectOutreachDraftForm,
     ProspectEnrichmentCreateForm,
@@ -48,6 +49,12 @@ from prospecting.application.outreach_drafts import (
 )
 from prospecting.application.outreach_sends import retry_outreach_send, send_outreach_draft_email
 from prospecting.application.contact_outcomes import record_prospect_contact_outcome
+from prospecting.application.commercial_queue import (
+    CommercialQueueCategory,
+    CommercialQueueCounters,
+    build_commercial_queue,
+    commercial_queue_counters_from_items,
+)
 from prospecting.application.follow_up_queue import (
     apply_follow_up_queue_filters,
     annotate_follow_up_sort_bucket,
@@ -230,12 +237,141 @@ def _can_mutate_follow_up_queue(access):
     return CAPABILITY_COMMERCIAL_MANAGE in access.capabilities
 
 
+_FOLLOW_UP_QUEUE_RETURN_VIEWS = frozenset(
+    {
+        "prospecting_follow_up_queue",
+        "prospecting_my_queue",
+    }
+)
+
+
 def _follow_up_queue_redirect(request):
+    view_name = (request.POST.get("return_view") or "prospecting_follow_up_queue").strip()
+    if view_name not in _FOLLOW_UP_QUEUE_RETURN_VIEWS:
+        view_name = "prospecting_follow_up_queue"
     qs = (request.POST.get("queue_querystring") or "").strip()
-    url = reverse("operations_portal:prospecting_follow_up_queue")
+    url = reverse(f"operations_portal:{view_name}")
     if qs:
         return f"{url}?{qs}"
     return url
+
+
+MY_QUEUE_CATEGORY_LABELS = {
+    CommercialQueueCategory.FOLLOW_UP_OVERDUE: "Acompanhamento atrasado",
+    CommercialQueueCategory.FOLLOW_UP_TODAY: "Acompanhamento hoje",
+    CommercialQueueCategory.OUTREACH_PENDING: "Abordagem pendente",
+    CommercialQueueCategory.WAITING_OUTCOME: "Registrar resultado",
+    CommercialQueueCategory.MISSING_CONTACT: "Contato necessário",
+    CommercialQueueCategory.READY_FOR_OUTREACH: "Pronto para abordagem",
+}
+
+MY_QUEUE_ACTION_LABELS = {
+    CommercialQueueCategory.FOLLOW_UP_OVERDUE: "Executar acompanhamento atrasado",
+    CommercialQueueCategory.FOLLOW_UP_TODAY: "Executar acompanhamento de hoje",
+    CommercialQueueCategory.OUTREACH_PENDING: "Continuar abordagem",
+    CommercialQueueCategory.WAITING_OUTCOME: "Registrar resultado da abordagem",
+    CommercialQueueCategory.MISSING_CONTACT: "Criar contato utilizável",
+    CommercialQueueCategory.READY_FOR_OUTREACH: "Preparar primeira abordagem",
+}
+
+
+def _apply_my_queue_filters(items, *, category="", priority="", prospect_q=""):
+    category = (category or "").strip()
+    if category and category in CommercialQueueCategory.ALL:
+        items = [item for item in items if item.category == category]
+    priority = (priority or "").strip().upper()
+    if priority == "UNSET":
+        items = [item for item in items if item.priority == Prospect.Priority.UNSET]
+    elif priority in {Prospect.Priority.HIGH, Prospect.Priority.MEDIUM, Prospect.Priority.LOW}:
+        items = [item for item in items if item.priority == priority]
+    prospect_q = (prospect_q or "").strip()
+    if prospect_q:
+        needle = prospect_q.casefold()
+        items = [item for item in items if needle in item.display_name.casefold()]
+    return items
+
+
+def _waiting_outcome_send_ids(*, tenant, tenant_ids, prospect_ids):
+    if not prospect_ids:
+        return {}
+    queryset = ProspectOutreachSend.objects.filter(
+        prospect_id__in=prospect_ids,
+        status=ProspectOutreachSend.Status.SENT,
+    ).annotate(
+        has_outcome=Exists(
+            ProspectContactOutcome.objects.filter(
+                outreach_send_id=OuterRef("pk"),
+            )
+        )
+    ).filter(has_outcome=False)
+    if tenant is not None:
+        queryset = queryset.filter(tenant=tenant)
+    elif tenant_ids is not None:
+        queryset = queryset.filter(tenant_id__in=tenant_ids)
+    send_by_prospect: dict = {}
+    for send in queryset.order_by("prospect_id", "sent_at", "created_at"):
+        if send.prospect_id not in send_by_prospect:
+            send_by_prospect[send.prospect_id] = send.id
+    return send_by_prospect
+
+
+def _build_my_queue_rows(*, items, tenant, tenant_ids, tenant_names):
+    follow_up_ids = [item.follow_up_id for item in items if item.follow_up_id]
+    follow_up_qs = ProspectFollowUp.objects.filter(pk__in=follow_up_ids).select_related("prospect", "contact", "tenant")
+    if tenant is not None:
+        follow_up_qs = follow_up_qs.filter(tenant=tenant)
+    elif tenant_ids is not None:
+        follow_up_qs = follow_up_qs.filter(tenant_id__in=tenant_ids)
+    follow_ups = {item.id: item for item in follow_up_qs}
+
+    waiting_prospect_ids = [item.prospect_id for item in items if item.category == CommercialQueueCategory.WAITING_OUTCOME]
+    waiting_send_ids = _waiting_outcome_send_ids(tenant=tenant, tenant_ids=tenant_ids, prospect_ids=waiting_prospect_ids)
+
+    rows = []
+    for item in items:
+        rows.append(
+            {
+                "item": item,
+                "category_label": MY_QUEUE_CATEGORY_LABELS.get(item.category, item.category),
+                "action_label": MY_QUEUE_ACTION_LABELS.get(item.category, ""),
+                "follow_up": follow_ups.get(item.follow_up_id),
+                "waiting_send_id": waiting_send_ids.get(item.prospect_id),
+                "tenant_name": tenant_names.get(item.tenant_id, ""),
+            }
+        )
+    return rows
+
+
+def _my_queue_primary_cta_url(*, item, waiting_send_id):
+    detail = reverse("operations_portal:prospecting_prospect_detail", args=[item.prospect_id])
+    if item.category in {
+        CommercialQueueCategory.FOLLOW_UP_OVERDUE,
+        CommercialQueueCategory.FOLLOW_UP_TODAY,
+    }:
+        return detail
+    if item.category == CommercialQueueCategory.OUTREACH_PENDING:
+        return f"{detail}?outreach_status=READY"
+    if item.category == CommercialQueueCategory.WAITING_OUTCOME and waiting_send_id:
+        return f"{detail}?record_outcome_send={waiting_send_id}"
+    if item.category == CommercialQueueCategory.MISSING_CONTACT:
+        return f"{detail}#contact-create"
+    if item.category == CommercialQueueCategory.READY_FOR_OUTREACH:
+        return f"{detail}?new_outreach=1"
+    return detail
+
+
+def _my_queue_primary_cta_label(*, category):
+    if category in {CommercialQueueCategory.FOLLOW_UP_OVERDUE, CommercialQueueCategory.FOLLOW_UP_TODAY}:
+        return "Abrir prospect"
+    if category == CommercialQueueCategory.OUTREACH_PENDING:
+        return "Continuar abordagem"
+    if category == CommercialQueueCategory.WAITING_OUTCOME:
+        return "Registrar resultado"
+    if category == CommercialQueueCategory.MISSING_CONTACT:
+        return "Criar contato"
+    if category == CommercialQueueCategory.READY_FOR_OUTREACH:
+        return "Preparar abordagem"
+    return "Abrir prospect"
 
 
 def _resolve_viewing_outreach_send(tenant, prospect, send_id_raw):
@@ -1087,6 +1223,46 @@ def prospecting_follow_up_queue_cancel(request, follow_up_id):
         return redirect(_follow_up_queue_redirect(request))
     messages.success(request, "Próxima ação cancelada.")
     return redirect(_follow_up_queue_redirect(request))
+
+
+@login_required(login_url="/admin/login/")
+def prospecting_my_queue(request):
+    access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
+    tenant, tenant_ids = _follow_up_queue_tenant_scope(access)
+    tenant_names = {item.pk: item.name for item in access.accessible_tenants}
+    has_scope = tenant is not None or bool(tenant_ids)
+    items = build_commercial_queue(tenant=tenant, tenant_ids=tenant_ids, compact=True) if has_scope else []
+    counters = commercial_queue_counters_from_items(items) if has_scope else CommercialQueueCounters(0, 0, 0, 0, 0, 0)
+    form = MyQueueFilterForm(request.GET or None)
+    if form.is_valid():
+        items = _apply_my_queue_filters(
+            items,
+            category=form.cleaned_data.get("category") or "",
+            priority=form.cleaned_data.get("priority") or "",
+            prospect_q=form.cleaned_data.get("prospect_q") or "",
+        )
+    priority_labels = dict(Prospect.Priority.choices)
+    rows = _build_my_queue_rows(items=items, tenant=tenant, tenant_ids=tenant_ids, tenant_names=tenant_names)
+    for row in rows:
+        row["cta_url"] = _my_queue_primary_cta_url(item=row["item"], waiting_send_id=row["waiting_send_id"])
+        row["cta_label"] = _my_queue_primary_cta_label(category=row["item"].category)
+        priority = row["item"].priority
+        row["priority_display"] = "—" if priority == Prospect.Priority.UNSET else priority_labels.get(priority, priority)
+    page_obj = Paginator(rows, 25).get_page(request.GET.get("page") or 1)
+    context = {
+        "active_section": "prospeccao",
+        "active_prospecting_page": "minha_fila",
+        "form": form,
+        "page_obj": page_obj,
+        "querystring": clean_querystring(request.GET),
+        "counters": counters,
+        "can_manage": _can_mutate_follow_up_queue(access),
+        "show_tenant_column": access.is_global or access.show_all_tenants,
+        "global_read_only": access.is_global or access.tenant is None,
+        "return_view": "prospecting_my_queue",
+    }
+    context.update(portal_template_context(access))
+    return render(request, "operations_portal/prospecting/my_queue.html", context)
 
 
 @login_required(login_url="/admin/login/")

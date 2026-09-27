@@ -1513,6 +1513,439 @@ class ProspectingFollowUpQueuePortalTests(TestCase):
 
 
 @override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingMyQueuePortalTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-my-queue", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-my-queue", password="pass")
+        self.other_admin = User.objects.create_user(username="other-admin-my-queue", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-my-queue")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-my-queue")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        TenantMembership.objects.create(tenant=self.other_tenant, user=self.other_admin, role=TenantMembership.Role.TENANT_ADMIN)
+        self.client = Client()
+        self.my_queue_url = reverse("operations_portal:prospecting_my_queue")
+        self.follow_up_url = reverse("operations_portal:prospecting_follow_up_queue")
+
+    def _qualify(self, prospect, *, priority=Prospect.Priority.MEDIUM):
+        qualify_prospect(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=priority,
+            qualification_note="",
+            actor=self.admin,
+        )
+
+    def _follow_up(self, prospect, due_at, *, key=None):
+        from prospecting.application.follow_ups import create_prospect_follow_up
+
+        contact = ProspectContact.objects.filter(prospect=prospect).first()
+        follow_up, _ = create_prospect_follow_up(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            action_type=ProspectFollowUp.ActionType.CALL,
+            due_at=due_at,
+            contact=contact,
+            idempotency_key=key or uuid.uuid4().hex,
+            actor=self.admin,
+        )
+        return follow_up
+
+    def _email_contact(self, prospect, email="contato@example.com"):
+        return ProspectContact.objects.create(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            name="Contato",
+            email=email,
+        )
+
+    def _ready_prospect(self, *, name, identity_key, tenant=None, priority=Prospect.Priority.MEDIUM):
+        tenant = tenant or self.tenant
+        prospect = Prospect.objects.create(tenant=tenant, display_name=name, identity_key=identity_key, priority=priority)
+        self._qualify(prospect, priority=priority)
+        self._email_contact(prospect, email=f"{identity_key}@example.com")
+        return prospect
+
+    def test_route_requires_login_and_commercial_view(self):
+        response = self.client.get(self.my_queue_url)
+        self.assertEqual(response.status_code, 302)
+        self.client.force_login(self.viewer)
+        self.assertEqual(self.client.get(self.my_queue_url).status_code, 200)
+        self.assertContains(self.client.get(self.my_queue_url), "Minha Fila")
+
+    def test_tenant_isolation(self):
+        other = self._ready_prospect(name="Outro Hospital", identity_key="outro-mq", tenant=self.other_tenant)
+        local = self._ready_prospect(name="Hospital Local", identity_key="local-mq")
+        self.client.force_login(self.admin)
+        page = self.client.get(self.my_queue_url)
+        self.assertContains(page, "Hospital Local")
+        self.assertNotContains(page, "Outro Hospital")
+        self.client.force_login(self.other_admin)
+        other_page = self.client.get(self.my_queue_url)
+        self.assertContains(other_page, "Outro Hospital")
+        self.assertNotContains(other_page, "Hospital Local")
+        self._follow_up(other, timezone.now() - timedelta(hours=1), key="other-fu")
+
+    def test_global_read_only_and_accessible_tenants_only(self):
+        superuser = get_user_model().objects.create_superuser(username="root-my-queue", password="pass", email="root@example.com")
+        local = self._ready_prospect(name="Global Local", identity_key="global-local-mq")
+        other = self._ready_prospect(name="Global Outro", identity_key="global-outro-mq", tenant=self.other_tenant)
+        self.client.force_login(superuser)
+        response = self.client.get(f"{self.my_queue_url}?tenant=global")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Visão agregada")
+        self.assertNotContains(response, "Concluir")
+        self.assertContains(response, "Global Local")
+        self.assertContains(response, "Global Outro")
+
+    def test_category_labels_and_states(self):
+        from prospecting.application.outreach_drafts import mark_outreach_draft_ready
+
+        now = timezone.now()
+        overdue_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Overdue MQ", identity_key="overdue-mq")
+        self._follow_up(overdue_prospect, now - timedelta(days=1), key="mq-overdue")
+
+        today_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Today MQ", identity_key="today-mq")
+        local_start = timezone.localtime(now).replace(hour=10, minute=0, second=0, microsecond=0)
+        self._follow_up(today_prospect, local_start + timedelta(hours=3), key="mq-today")
+
+        pending_prospect = self._ready_prospect(name="Pending MQ", identity_key="pending-mq")
+        contact = self._email_contact(pending_prospect, email="pending@example.com")
+        create_outreach_draft(
+            tenant=self.tenant,
+            prospect=pending_prospect,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.admin,
+        )
+
+        waiting_prospect = self._ready_prospect(name="Waiting MQ", identity_key="waiting-mq")
+        w_contact = self._email_contact(waiting_prospect, email="waiting@example.com")
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=waiting_prospect,
+            contact=w_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.admin,
+        )
+        mark_outreach_draft_ready(tenant=self.tenant, draft=draft, actor=self.admin)
+        ProspectOutreachSend.objects.create(
+            tenant=self.tenant,
+            draft=draft,
+            prospect=waiting_prospect,
+            contact=w_contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            destination=w_contact.email,
+            subject_snapshot=draft.subject,
+            body_snapshot=draft.body,
+            status=ProspectOutreachSend.Status.SENT,
+            sent_at=now,
+            idempotency_key=f"prospecting:outreach_send:draft:{draft.id}",
+            requested_by=self.admin,
+        )
+
+        missing_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Missing MQ", identity_key="missing-mq")
+        self._qualify(missing_prospect)
+        ProspectContact.objects.create(tenant=self.tenant, prospect=missing_prospect, name="Somente Nome")
+
+        ready_prospect = self._ready_prospect(name="Ready MQ", identity_key="ready-mq", priority=Prospect.Priority.HIGH)
+
+        self.client.force_login(self.admin)
+        response = self.client.get(self.my_queue_url, {"tenant": self.tenant.pk})
+        self.assertContains(response, "Acompanhamento atrasado")
+        self.assertContains(response, "Acompanhamento hoje")
+        self.assertContains(response, "Abordagem pendente")
+        self.assertContains(response, "Registrar resultado")
+        self.assertContains(response, "Contato necessário")
+        self.assertContains(response, "Pronto para abordagem")
+        self.assertContains(response, "Executar acompanhamento atrasado")
+        self.assertContains(response, "Alta")
+
+    def test_filters_pagination_and_empty_state(self):
+        for index in range(26):
+            self._ready_prospect(name=f"Prospect Pag {index:02d}", identity_key=f"pag-mq-{index}")
+        self.client.force_login(self.admin)
+        filtered = self.client.get(self.my_queue_url + "?prospect_q=Pag+23")
+        self.assertContains(filtered, "Prospect Pag 23")
+        self.assertNotContains(filtered, "Prospect Pag 00")
+        priority = self.client.get(self.my_queue_url + "?priority=HIGH")
+        self.assertEqual(priority.status_code, 200)
+        category = self.client.get(self.my_queue_url + "?category=READY_FOR_OUTREACH")
+        self.assertContains(category, "Pronto para abordagem")
+        page2 = self.client.get(self.my_queue_url + "?page=2")
+        self.assertContains(page2, "2 de 2")
+        self.assertContains(page2, "Prospect Pag 25")
+        empty = self.client.get(self.my_queue_url + "?prospect_q=nao-existe-xyz")
+        self.assertContains(empty, "Nenhuma ação comercial pendente")
+
+    def test_cta_urls(self):
+        from prospecting.application.outreach_drafts import mark_outreach_draft_ready
+
+        waiting_prospect = self._ready_prospect(name="CTA Waiting", identity_key="cta-waiting")
+        contact = ProspectContact.objects.get(prospect=waiting_prospect)
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=waiting_prospect,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.admin,
+        )
+        mark_outreach_draft_ready(tenant=self.tenant, draft=draft, actor=self.admin)
+        send = ProspectOutreachSend.objects.create(
+            tenant=self.tenant,
+            draft=draft,
+            prospect=waiting_prospect,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            destination=contact.email,
+            subject_snapshot=draft.subject,
+            body_snapshot=draft.body,
+            status=ProspectOutreachSend.Status.SENT,
+            sent_at=timezone.now(),
+            idempotency_key=f"prospecting:outreach_send:draft:{draft.id}",
+            requested_by=self.admin,
+        )
+        missing = Prospect.objects.create(tenant=self.tenant, display_name="CTA Missing", identity_key="cta-missing")
+        self._qualify(missing)
+        ready = self._ready_prospect(name="CTA Ready", identity_key="cta-ready")
+        self.client.force_login(self.admin)
+        page = self.client.get(self.my_queue_url)
+        self.assertContains(page, f"record_outcome_send={send.id}")
+        self.assertContains(page, "#contact-create")
+        self.assertContains(page, "new_outreach=1")
+
+    def test_sidebar_links_and_compact_follow_up_dominance(self):
+        waiting = self._ready_prospect(name="Dom Waiting", identity_key="dom-waiting")
+        contact = ProspectContact.objects.get(prospect=waiting)
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=waiting,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.admin,
+        )
+        from prospecting.application.outreach_drafts import mark_outreach_draft_ready
+
+        mark_outreach_draft_ready(tenant=self.tenant, draft=draft, actor=self.admin)
+        ProspectOutreachSend.objects.create(
+            tenant=self.tenant,
+            draft=draft,
+            prospect=waiting,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            destination=contact.email,
+            subject_snapshot=draft.subject,
+            body_snapshot=draft.body,
+            status=ProspectOutreachSend.Status.SENT,
+            sent_at=timezone.now(),
+            idempotency_key=f"prospecting:outreach_send:draft:{draft.id}",
+            requested_by=self.admin,
+        )
+        self._follow_up(waiting, timezone.now() - timedelta(hours=2), key="dom-fu")
+        self._follow_up(waiting, timezone.now() - timedelta(hours=1), key="dom-fu-2")
+        self.client.force_login(self.admin)
+        page = self.client.get(self.my_queue_url)
+        self.assertContains(page, "Minha Fila")
+        self.assertContains(page, self.follow_up_url)
+        self.assertContains(page, "Acompanhamentos")
+        self.assertEqual(page.content.decode().count("Dom Waiting"), 2)
+        self.assertNotContains(page, "Registrar resultado da abordagem")
+
+    def test_manager_can_complete_follow_up_and_redirects_to_my_queue(self):
+        prospect = self._ready_prospect(name="Mutate MQ", identity_key="mutate-mq")
+        follow_up = self._follow_up(prospect, timezone.now() - timedelta(hours=1), key="mq-mutate")
+        self.client.force_login(self.admin)
+        response = self.client.post(
+            reverse("operations_portal:prospecting_follow_up_queue_complete", args=[follow_up.id]),
+            {"queue_querystring": "category=FOLLOW_UP_OVERDUE", "return_view": "prospecting_my_queue"},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/prospeccao/minha-fila/", response.url)
+        follow_up.refresh_from_db()
+        self.assertEqual(follow_up.status, ProspectFollowUp.Status.COMPLETED)
+
+    def test_viewer_cannot_mutate_and_global_post_blocked(self):
+        prospect = self._ready_prospect(name="Viewer MQ", identity_key="viewer-mq")
+        follow_up = self._follow_up(prospect, timezone.now() - timedelta(hours=1), key="mq-viewer")
+        self.client.force_login(self.viewer)
+        page = self.client.get(self.my_queue_url)
+        self.assertNotContains(page, "Concluir")
+        self.assertEqual(
+            self.client.post(reverse("operations_portal:prospecting_follow_up_queue_complete", args=[follow_up.id])).status_code,
+            403,
+        )
+        superuser = get_user_model().objects.create_superuser(username="root-mq-post", password="pass", email="root2@example.com")
+        self.client.force_login(superuser)
+        self.assertEqual(
+            self.client.post(
+                reverse("operations_portal:prospecting_follow_up_queue_complete", args=[follow_up.id]),
+                {"return_view": "prospecting_my_queue"},
+            ).status_code,
+            403,
+        )
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
+class ProspectingMyQueueDashboardTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="scb-admin-mq-dash", password="pass")
+        self.viewer = User.objects.create_user(username="scb-viewer-mq-dash", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-mq-dash")
+        TenantMembership.objects.create(tenant=self.tenant, user=self.admin, role=TenantMembership.Role.TENANT_ADMIN)
+        TenantMembership.objects.create(tenant=self.tenant, user=self.viewer, role=TenantMembership.Role.VIEWER)
+        self.client = Client()
+        self.dashboard_url = reverse("operations_portal:dashboard")
+        self.my_queue_url = reverse("operations_portal:prospecting_my_queue")
+
+    def _qualify_ready(self, name, identity_key, *, priority=Prospect.Priority.MEDIUM):
+        prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name=name,
+            identity_key=identity_key,
+            priority=priority,
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=priority,
+            qualification_note="",
+            actor=self.admin,
+        )
+        ProspectContact.objects.create(
+            tenant=self.tenant,
+            prospect=prospect,
+            name="Contato",
+            email=f"{identity_key}@example.com",
+        )
+        return prospect
+
+    def test_dashboard_card_action_now_and_link(self):
+        from prospecting.application.follow_ups import create_prospect_follow_up
+
+        now = timezone.now()
+        overdue_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Dash Overdue", identity_key="dash-overdue")
+        create_prospect_follow_up(
+            tenant=self.tenant,
+            prospect=overdue_prospect,
+            action_type=ProspectFollowUp.ActionType.CALL,
+            due_at=now - timedelta(days=1),
+            idempotency_key="dash-fu-overdue",
+            actor=self.admin,
+        )
+        today_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Dash Today", identity_key="dash-today")
+        local_start = timezone.localtime(now).replace(hour=10, minute=0, second=0, microsecond=0)
+        create_prospect_follow_up(
+            tenant=self.tenant,
+            prospect=today_prospect,
+            action_type=ProspectFollowUp.ActionType.EMAIL,
+            due_at=local_start + timedelta(hours=2),
+            idempotency_key="dash-fu-today",
+            actor=self.admin,
+        )
+        pending_prospect = self._qualify_ready("Dash Pending", "dash-pending")
+        contact = ProspectContact.objects.get(prospect=pending_prospect)
+        create_outreach_draft(
+            tenant=self.tenant,
+            prospect=pending_prospect,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject="Assunto",
+            body="Corpo",
+            actor=self.admin,
+        )
+        waiting_prospect = self._qualify_ready("Dash Waiting", "dash-waiting")
+        missing_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Dash Missing", identity_key="dash-missing")
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=missing_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.admin,
+        )
+        ProspectContact.objects.create(tenant=self.tenant, prospect=missing_prospect, name="Só nome")
+        self._qualify_ready("Dash Ready", "dash-ready")
+
+        self.client.force_login(self.admin)
+        response = self.client.get(f"{self.dashboard_url}?tenant={self.tenant.pk}")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Minha Fila")
+        self.assertContains(response, "Ação agora: 3")
+        self.assertContains(response, self.my_queue_url)
+        self.assertContains(response, "Ver Minha Fila")
+
+    def test_viewer_without_commercial_manage_still_sees_card_with_view_capability(self):
+        self._qualify_ready("Viewer Card", "viewer-card")
+        self.client.force_login(self.viewer)
+        response = self.client.get(f"{self.dashboard_url}?tenant={self.tenant.pk}")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Minha Fila")
+
+    def test_global_dashboard_omits_my_queue_card(self):
+        superuser = get_user_model().objects.create_superuser(username="root-mq-dash", password="pass", email="root@example.com")
+        self._qualify_ready("Global Omit", "global-omit")
+        self.client.force_login(superuser)
+        response = self.client.get(f"{self.dashboard_url}?tenant=global")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Ação agora:")
+
+    def test_tenant_isolation_on_dashboard_card(self):
+        from prospecting.application.follow_ups import create_prospect_follow_up
+
+        other_tenant = Tenant.objects.create(name="Outro", slug="outro-mq-dash")
+        other_admin = get_user_model().objects.create_user(username="other-mq-dash", password="pass")
+        TenantMembership.objects.create(tenant=other_tenant, user=other_admin, role=TenantMembership.Role.TENANT_ADMIN)
+        local_prospect = Prospect.objects.create(tenant=self.tenant, display_name="Local Only", identity_key="local-only-dash")
+        create_prospect_follow_up(
+            tenant=self.tenant,
+            prospect=local_prospect,
+            action_type=ProspectFollowUp.ActionType.CALL,
+            due_at=timezone.now() - timedelta(hours=2),
+            idempotency_key="local-dash-fu",
+            actor=self.admin,
+        )
+        other_prospect = Prospect.objects.create(tenant=other_tenant, display_name="Other Only", identity_key="other-only-dash")
+        create_prospect_follow_up(
+            tenant=other_tenant,
+            prospect=other_prospect,
+            action_type=ProspectFollowUp.ActionType.CALL,
+            due_at=timezone.now() - timedelta(hours=2),
+            idempotency_key="other-dash-fu",
+            actor=other_admin,
+        )
+        self.client.force_login(self.admin)
+        response = self.client.get(f"{self.dashboard_url}?tenant={self.tenant.pk}")
+        self.assertContains(response, "Ação agora: 1")
+
+    def test_my_queue_query_count_stable_with_more_prospects(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.client.force_login(self.admin)
+        self._qualify_ready("Baseline MQ", "baseline-mq")
+        with CaptureQueriesContext(connection) as baseline:
+            self.client.get(f"{self.my_queue_url}?tenant={self.tenant.pk}")
+        baseline_count = len(baseline.captured_queries)
+        for index in range(12):
+            self._qualify_ready(f"Extra MQ {index}", f"extra-mq-{index}")
+        with CaptureQueriesContext(connection) as expanded:
+            self.client.get(f"{self.my_queue_url}?tenant={self.tenant.pk}")
+        self.assertEqual(len(expanded.captured_queries), baseline_count)
+
+
+@override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
 class ProspectingWebsiteEnrichmentPortalTests(TestCase):
     def setUp(self):
         User = get_user_model()

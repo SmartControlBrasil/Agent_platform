@@ -70,6 +70,16 @@
         <h3 class="mb-0 fs-22 text-dark">{{ kpis.high_priority_handoffs }}</h3><small class="text-muted">Pendentes agora</small><br><a class="fs-13" href="{% url 'operations_portal:handoff_list' %}?status=pending&amp;priority_group=high">Abrir alta prioridade</a>
       </div></div></div>
     </div>
+    {% if prospecting_my_queue_summary %}
+    <div class="col-md-6 col-lg-4 col-xl-3">
+      <div class="card"><div class="card-body"><div class="widget-first">
+        <div class="d-flex align-items-center mb-2"><div class="p-2 border border-primary border-opacity-10 bg-primary-subtle rounded-2 me-2"><div class="bg-primary rounded-circle widget-size text-center"><i data-feather="list" class="text-white" style="height: 18px; width: 18px;"></i></div></div><p class="mb-0 text-dark fs-15">Minha Fila</p></div>
+        <h3 class="mb-1 fs-22 text-dark">Ação agora: {{ prospecting_my_queue_summary.action_now }}</h3>
+        <small class="text-muted">Atrasados {{ prospecting_my_queue_summary.overdue }} · Hoje {{ prospecting_my_queue_summary.today }} · Abordagem pendente {{ prospecting_my_queue_summary.outreach_pending }}</small><br>
+        <a class="fs-13" href="{% url 'operations_portal:prospecting_my_queue' %}?tenant={{ active_tenant.pk }}">Ver Minha Fila</a>
+      </div></div></div>
+    </div>
+    {% endif %}
     {% if prospecting_follow_up_summary %}
     <div class="col-md-6 col-lg-4 col-xl-3">
       <div class="card"><div class="card-body"><div class="widget-first">

@@ -31,6 +31,18 @@ Documentos como `phase16_rag_validation_report.md`, `phase17_staging_run_report.
 Branch: `chore/postgresql-readiness`
 HEAD publicado até Fase 10–16 parcial: `9fd5d38`
 
+## Trilha prospecção comercial — FASE 15A (Minha Fila)
+
+Numeração **15A** distinta da Fase 15 operacional/KB (notificações). Não renumerar a trilha 10–18.
+
+| Subfase | Entrega |
+|---------|---------|
+| **15A.1** | Motor `prospecting/application/commercial_queue.py`, testes de domínio |
+| **15A.2** | Hando `/painel/prospeccao/minha-fila/`, sidebar, testes portal |
+| **15A.3** | Dashboard, docs, hardening performance/UX |
+
+Documentação: `docs/agents/prospecting.md`, seção Minha Fila em `docs/operations_portal.md`.
+
 ## Trilha integração de sites (Fase 24)
 
 - `docs/site_integration.md` — onboarding, readiness, snippet e política de origins

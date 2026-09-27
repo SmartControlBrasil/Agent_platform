@@ -143,6 +143,28 @@ def get_dashboard_context(period_value=None, *, tenant=None, user=None):
         "active_tenants": _active_tenant_queryset(tenant)[:8],
         "operational_work": _operational_work_dashboard(tenant=tenant, user=user),
         "prospecting_follow_up_summary": _prospecting_follow_up_dashboard(tenant=tenant, user=user),
+        "prospecting_my_queue_summary": _prospecting_my_queue_dashboard(tenant=tenant, user=user),
+    }
+
+
+def _prospecting_my_queue_dashboard(*, tenant, user=None):
+    if tenant is None:
+        return None
+    from tenants.access import CAPABILITY_COMMERCIAL_VIEW, user_has_tenant_capability
+
+    if user is not None and not user_has_tenant_capability(user, tenant, CAPABILITY_COMMERCIAL_VIEW):
+        return None
+    from prospecting.application.commercial_queue import (
+        compute_commercial_queue_action_now,
+        compute_commercial_queue_counters,
+    )
+
+    counters = compute_commercial_queue_counters(tenant=tenant)
+    return {
+        "action_now": compute_commercial_queue_action_now(counters),
+        "overdue": counters.follow_up_overdue,
+        "today": counters.follow_up_today,
+        "outreach_pending": counters.outreach_pending,
     }
 
 

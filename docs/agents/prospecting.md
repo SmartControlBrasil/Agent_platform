@@ -58,6 +58,24 @@ Activity does not change qualification, send messages, or sync calendars.
 - **ProspectContactOutcome** — structured **manual** result after contact (interest, callback requested, no response, etc.); may link to a send; creates past-tense `ProspectActivity`; does not auto-change qualification.
 - **ProspectFollowUp** — **planned next action** (call, email intent, meeting, …) with optional `due_at`; overdue is derived in UI; completing a follow-up does not fake an activity.
 - **Hando · Acompanhamentos** (`/painel/prospeccao/acompanhamentos/`) — tenant-scoped **work queue** for pending follow-ups (filters, counters, quick complete/cancel). Overdue/today/upcoming buckets are **not** stored on the model. No scheduler or automatic reminders in this phase.
+- **Hando · Minha Fila** (`/painel/prospeccao/minha-fila/`) — **operational projection** (not a CRM pipeline, not persisted queue state) answering *who to approach next*. Built in `prospecting/application/commercial_queue.py` from existing models only.
+
+#### Minha Fila — categories and precedence
+
+Six derived categories (highest precedence first):
+
+1. **Follow-up overdue** — `ProspectFollowUp` `PENDING`, `due_at` in the past (local timezone).
+2. **Follow-up today** — `PENDING`, `due_at` on the current local day.
+3. **Outreach pending** — prospect `QUALIFIED` with draft `DRAFT`/`READY` (READY counts only while no `SENT` send exists for that draft), or send `PENDING`/`SENDING`/`FAILED`.
+4. **Waiting outcome** — `QUALIFIED`, `ProspectOutreachSend` `SENT` without a `ProspectContactOutcome` linked to that send (email structured path only; no `ProspectActivity` heuristics; PHONE/WHATSAPP manual outreach is not classified here).
+5. **Missing contact** — `QUALIFIED`, no **usable** `ProspectContact` (`normalized_email` or `normalized_phone` non-empty). `ProspectEnrichment` does not count; name-only contacts do not count in v1.
+6. **Ready for outreach** — `QUALIFIED`, usable contact, none of the above.
+
+**Follow-ups** appear regardless of prospect `qualification_status` (human tasks already created stay visible). Categories 3–6 apply only to `QUALIFIED` prospects.
+
+**Compact mode** (`compact=True`, default in Hando): if a prospect has overdue/today follow-ups, prospect-level rows (3–6) for that prospect are suppressed; multiple follow-ups remain separate rows. Between 3–6 each prospect appears in at most one category.
+
+Tenant isolation: all queries are scoped to the active tenant or explicit `tenant_ids` (global read-only). Dashboard card **Minha Fila** is shown only with a **specific tenant** selected (same pattern as the Acompanhamentos card); global dashboard does not aggregate this card.
 
 ### Contact enrichment flow (Maps → website → operator)
 

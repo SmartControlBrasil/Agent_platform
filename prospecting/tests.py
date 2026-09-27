@@ -1962,6 +1962,590 @@ class ProspectingFollowUpQueueTests(TestCase):
         self.assertEqual(item.latest_outcome, ProspectContactOutcome.Outcome.INTERESTED)
 
 
+class ProspectingCommercialQueueTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="operator-commercial-queue", password="pass")
+        self.tenant = Tenant.objects.create(name="Smart Control Brasil", slug="smart-control-brasil-commercial-queue")
+        self.other_tenant = Tenant.objects.create(name="Outro Tenant", slug="outro-tenant-commercial-queue")
+        self.qualified = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Hospital Alpha",
+            identity_key="hospital-alpha-cq",
+            priority=Prospect.Priority.HIGH,
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            qualification_status=Prospect.QualificationStatus.ON_HOLD,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="",
+            actor=self.user,
+        )
+        self.other_qualified = Prospect.objects.create(
+            tenant=self.other_tenant,
+            display_name="Outro Hospital",
+            identity_key="outro-hospital-cq",
+        )
+        qualify_prospect(
+            tenant=self.other_tenant,
+            prospect=self.other_qualified,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+
+    def _queue(self, **kwargs):
+        from prospecting.application.commercial_queue import build_commercial_queue
+
+        return build_commercial_queue(tenant=kwargs.pop("tenant", self.tenant), **kwargs)
+
+    def _counters(self, **kwargs):
+        from prospecting.application.commercial_queue import compute_commercial_queue_counters
+
+        return compute_commercial_queue_counters(tenant=kwargs.pop("tenant", self.tenant), **kwargs)
+
+    def _categories_for_prospect(self, items, prospect_id):
+        return [item.category for item in items if item.prospect_id == prospect_id]
+
+    def _follow_up(self, prospect, due_at, **kwargs):
+        follow_up, _ = create_prospect_follow_up(
+            tenant=kwargs.pop("tenant", self.tenant),
+            prospect=prospect,
+            action_type=kwargs.pop("action_type", ProspectFollowUp.ActionType.CALL),
+            due_at=due_at,
+            idempotency_key=kwargs.pop("idempotency_key", uuid.uuid4().hex),
+            actor=self.user,
+            **kwargs,
+        )
+        return follow_up
+
+    def _email_contact(self, prospect=None, **kwargs):
+        prospect = prospect or self.qualified
+        return ProspectContact.objects.create(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            name=kwargs.pop("name", "Maria Silva"),
+            email=kwargs.pop("email", "maria@example.com"),
+            **kwargs,
+        )
+
+    def _phone_contact(self, prospect=None, **kwargs):
+        prospect = prospect or self.qualified
+        return ProspectContact.objects.create(
+            tenant=prospect.tenant,
+            prospect=prospect,
+            name=kwargs.pop("name", "João Souza"),
+            phone=kwargs.pop("phone", "11999990000"),
+            **kwargs,
+        )
+
+    def _email_draft(self, contact, *, status=ProspectOutreachDraft.Status.DRAFT, subject="Assunto", body="Corpo"):
+        draft = create_outreach_draft(
+            tenant=contact.tenant,
+            prospect=contact.prospect,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            subject=subject,
+            body=body,
+            actor=self.user,
+        )
+        if status == ProspectOutreachDraft.Status.READY:
+            mark_outreach_draft_ready(tenant=contact.tenant, draft=draft, actor=self.user)
+        return draft
+
+    def _email_send(self, draft, *, status=ProspectOutreachSend.Status.PENDING, sent_at=None):
+        send = ProspectOutreachSend(
+            tenant=draft.tenant,
+            draft=draft,
+            prospect=draft.prospect,
+            contact=draft.contact,
+            channel=ProspectOutreachDraft.Channel.EMAIL,
+            destination=draft.destination_email,
+            subject_snapshot=draft.subject,
+            body_snapshot=draft.body,
+            status=status,
+            idempotency_key=f"prospecting:outreach_send:draft:{draft.id}",
+            requested_by=self.user,
+        )
+        if status == ProspectOutreachSend.Status.SENT:
+            send.sent_at = sent_at or timezone.now()
+        if status == ProspectOutreachSend.Status.FAILED:
+            send.failed_at = timezone.now()
+        send.save()
+        return send
+
+    def test_tenant_isolation(self):
+        contact = self._email_contact(prospect=self.other_qualified, email="outro@example.com")
+        self._email_draft(contact)
+        items = self._queue()
+        self.assertEqual(len(items), 0)
+        other_items = self._queue(tenant=self.other_tenant)
+        self.assertEqual(len(other_items), 1)
+        self.assertEqual(other_items[0].category, "OUTREACH_PENDING")
+
+    def test_follow_up_overdue_and_today_with_timezone(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        now = timezone.now()
+        local_start = timezone.localtime(now).replace(hour=12, minute=0, second=0, microsecond=0)
+        if timezone.is_naive(local_start):
+            local_start = timezone.make_aware(local_start)
+        overdue = self._follow_up(self.qualified, local_start - timedelta(days=1), idempotency_key="cq-overdue")
+        today_item = self._follow_up(self.qualified, local_start + timedelta(hours=2), idempotency_key="cq-today")
+        items = self._queue(now=local_start)
+        categories = {item.follow_up_id: item.category for item in items}
+        self.assertEqual(categories[overdue.id], CommercialQueueCategory.FOLLOW_UP_OVERDUE)
+        self.assertEqual(categories[today_item.id], CommercialQueueCategory.FOLLOW_UP_TODAY)
+
+    def test_unqualified_follow_up_still_appears(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        unqualified = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Sem Qualificação",
+            identity_key="unqualified-cq",
+        )
+        due = timezone.now() - timedelta(hours=2)
+        follow_up = self._follow_up(unqualified, due, idempotency_key="cq-unqualified-fu")
+        items = self._queue(now=timezone.now())
+        follow_items = [item for item in items if item.follow_up_id == follow_up.id]
+        self.assertEqual(len(follow_items), 1)
+        self.assertEqual(follow_items[0].category, CommercialQueueCategory.FOLLOW_UP_OVERDUE)
+
+    def test_ready_with_email_or_phone_contact(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        email_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Email Ready",
+            identity_key="email-ready-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=email_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self._email_contact(prospect=email_prospect, email="ready@example.com")
+        phone_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Phone Ready",
+            identity_key="phone-ready-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=phone_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self._phone_contact(prospect=phone_prospect, phone="11888887777")
+        items = self._queue()
+        self.assertIn(CommercialQueueCategory.READY_FOR_OUTREACH, self._categories_for_prospect(items, email_prospect.id))
+        self.assertIn(CommercialQueueCategory.READY_FOR_OUTREACH, self._categories_for_prospect(items, phone_prospect.id))
+
+    def test_missing_contact_enrichment_name_only_and_precedence(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        missing = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Missing Contact",
+            identity_key="missing-contact-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=missing,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        add_prospect_enrichment(
+            tenant=self.tenant,
+            prospect=missing,
+            field=ProspectEnrichment.Field.EMAIL,
+            value="found@example.com",
+            source_type=ProspectEnrichment.SourceType.WEBSITE,
+            source_url="https://example.com/contato",
+        )
+        ProspectContact.objects.create(tenant=self.tenant, prospect=missing, name="Somente Nome")
+        items = self._queue()
+        self.assertEqual(
+            self._categories_for_prospect(items, missing.id),
+            [CommercialQueueCategory.MISSING_CONTACT],
+        )
+
+    def test_outreach_pending_draft_and_send_statuses(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="",
+            actor=self.user,
+        )
+        contact = self._email_contact(email="draft@example.com")
+        draft_prospect = contact.prospect
+        self._email_draft(contact, status=ProspectOutreachDraft.Status.DRAFT)
+        items = self._queue()
+        self.assertEqual(
+            self._categories_for_prospect(items, draft_prospect.id),
+            [CommercialQueueCategory.OUTREACH_PENDING],
+        )
+
+        ready_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Ready Draft",
+            identity_key="ready-draft-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=ready_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        ready_contact = self._email_contact(prospect=ready_prospect, email="readydraft@example.com")
+        self._email_draft(ready_contact, status=ProspectOutreachDraft.Status.READY)
+
+        pending_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Pending Send",
+            identity_key="pending-send-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=pending_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        pending_contact = self._email_contact(prospect=pending_prospect, email="pending@example.com")
+        pending_draft = self._email_draft(pending_contact, status=ProspectOutreachDraft.Status.READY)
+        self._email_send(pending_draft, status=ProspectOutreachSend.Status.PENDING)
+
+        sending_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Sending Send",
+            identity_key="sending-send-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=sending_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        sending_contact = self._email_contact(prospect=sending_prospect, email="sending@example.com")
+        sending_draft = self._email_draft(sending_contact, status=ProspectOutreachDraft.Status.READY)
+        self._email_send(sending_draft, status=ProspectOutreachSend.Status.SENDING)
+
+        failed_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Failed Send",
+            identity_key="failed-send-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=failed_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        failed_contact = self._email_contact(prospect=failed_prospect, email="failed@example.com")
+        failed_draft = self._email_draft(failed_contact, status=ProspectOutreachDraft.Status.READY)
+        self._email_send(failed_draft, status=ProspectOutreachSend.Status.FAILED)
+
+        items = self._queue()
+        for prospect_id in [ready_prospect.id, pending_prospect.id, sending_prospect.id, failed_prospect.id]:
+            self.assertEqual(
+                self._categories_for_prospect(items, prospect_id),
+                [CommercialQueueCategory.OUTREACH_PENDING],
+            )
+
+    def test_waiting_outcome_and_outcome_resolution(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="",
+            actor=self.user,
+        )
+        contact = self._email_contact(email="waiting@example.com")
+        draft = self._email_draft(contact, status=ProspectOutreachDraft.Status.READY)
+        send = self._email_send(draft, status=ProspectOutreachSend.Status.SENT)
+        items = self._queue()
+        self.assertEqual(
+            self._categories_for_prospect(items, contact.prospect_id),
+            [CommercialQueueCategory.WAITING_OUTCOME],
+        )
+
+        record_prospect_contact_outcome(
+            tenant=self.tenant,
+            prospect=contact.prospect,
+            contact=contact,
+            outcome=ProspectContactOutcome.Outcome.AWAITING_RESPONSE,
+            outreach_send=send,
+            idempotency_key="cq-awaiting-outcome",
+            actor=self.user,
+        )
+        items_after = self._queue()
+        self.assertNotIn(
+            CommercialQueueCategory.WAITING_OUTCOME,
+            self._categories_for_prospect(items_after, contact.prospect_id),
+        )
+        self.assertIn(
+            CommercialQueueCategory.READY_FOR_OUTREACH,
+            self._categories_for_prospect(items_after, contact.prospect_id),
+        )
+
+    def test_phone_draft_ready_without_send_is_outreach_pending_not_waiting(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="",
+            actor=self.user,
+        )
+        contact = self._phone_contact()
+        create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.PHONE,
+            body="Ligar para apresentar solução.",
+            actor=self.user,
+        )
+        mark_outreach_draft_ready(tenant=self.tenant, draft=ProspectOutreachDraft.objects.get(contact=contact), actor=self.user)
+        items = self._queue()
+        categories = self._categories_for_prospect(items, self.qualified.id)
+        self.assertEqual(categories, [CommercialQueueCategory.OUTREACH_PENDING])
+        self.assertNotIn(CommercialQueueCategory.WAITING_OUTCOME, categories)
+
+    def test_non_qualified_prospects_excluded_from_prospect_level_categories(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        for status, label in [
+            (Prospect.QualificationStatus.UNQUALIFIED, "unqualified-cq-2"),
+            (Prospect.QualificationStatus.NOT_A_FIT, "not-a-fit-cq"),
+            (Prospect.QualificationStatus.ON_HOLD, "on-hold-cq"),
+        ]:
+            prospect = Prospect.objects.create(
+                tenant=self.tenant,
+                display_name=f"Prospect {label}",
+                identity_key=label,
+            )
+            if status != Prospect.QualificationStatus.UNQUALIFIED:
+                qualify_prospect(
+                    tenant=self.tenant,
+                    prospect=prospect,
+                    qualification_status=status,
+                    priority=Prospect.Priority.MEDIUM,
+                    qualification_note="",
+                    actor=self.user,
+                )
+            self._email_contact(prospect=prospect, email=f"{label}@example.com")
+        items = self._queue()
+        prospect_level = {
+            item.prospect_id
+            for item in items
+            if item.category
+            in {
+                CommercialQueueCategory.OUTREACH_PENDING,
+                CommercialQueueCategory.WAITING_OUTCOME,
+                CommercialQueueCategory.MISSING_CONTACT,
+                CommercialQueueCategory.READY_FOR_OUTREACH,
+            }
+        }
+        self.assertEqual(prospect_level, set())
+
+    def test_compact_projection_follow_up_dominates_prospect_level(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="",
+            actor=self.user,
+        )
+        contact = self._email_contact(email="dominate@example.com")
+        draft = self._email_draft(contact, status=ProspectOutreachDraft.Status.READY)
+        self._email_send(draft, status=ProspectOutreachSend.Status.SENT)
+        self._follow_up(self.qualified, timezone.now() - timedelta(hours=1), idempotency_key="cq-dominate-overdue")
+        items = self._queue(compact=True)
+        self.assertIn(CommercialQueueCategory.FOLLOW_UP_OVERDUE, [item.category for item in items])
+        self.assertNotIn(
+            CommercialQueueCategory.WAITING_OUTCOME,
+            self._categories_for_prospect(items, self.qualified.id),
+        )
+
+        today_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Today Dominates",
+            identity_key="today-dominates-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=today_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self._email_contact(prospect=today_prospect, email="todaydom@example.com")
+        now = timezone.now()
+        local_start = timezone.localtime(now).replace(hour=10, minute=0, second=0, microsecond=0)
+        if timezone.is_naive(local_start):
+            local_start = timezone.make_aware(local_start)
+        self._follow_up(today_prospect, local_start + timedelta(hours=2), idempotency_key="cq-dominate-today")
+        items_today = self._queue(now=local_start, compact=True)
+        self.assertIn(CommercialQueueCategory.FOLLOW_UP_TODAY, [item.category for item in items_today])
+        self.assertNotIn(
+            CommercialQueueCategory.READY_FOR_OUTREACH,
+            self._categories_for_prospect(items_today, today_prospect.id),
+        )
+
+    def test_prospect_never_in_two_c_f_categories_and_multiple_follow_ups(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        self._follow_up(self.qualified, timezone.now() - timedelta(days=1), idempotency_key="cq-multi-1")
+        self._follow_up(self.qualified, timezone.now() - timedelta(hours=2), idempotency_key="cq-multi-2")
+        items = self._queue()
+        follow_items = [item for item in items if item.follow_up_id is not None]
+        self.assertEqual(len(follow_items), 2)
+
+        ready_prospect = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Single Category",
+            identity_key="single-category-cq",
+        )
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=ready_prospect,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.MEDIUM,
+            qualification_note="",
+            actor=self.user,
+        )
+        self._email_contact(prospect=ready_prospect, email="single@example.com")
+        items_ready = self._queue()
+        cf_categories = [
+            c
+            for c in self._categories_for_prospect(items_ready, ready_prospect.id)
+            if c
+            in {
+                CommercialQueueCategory.OUTREACH_PENDING,
+                CommercialQueueCategory.WAITING_OUTCOME,
+                CommercialQueueCategory.MISSING_CONTACT,
+                CommercialQueueCategory.READY_FOR_OUTREACH,
+            }
+        ]
+        self.assertEqual(len(cf_categories), 1)
+
+    def test_missing_contact_suppressed_when_pipeline_exists(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory
+
+        qualify_prospect(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            qualification_status=Prospect.QualificationStatus.QUALIFIED,
+            priority=Prospect.Priority.HIGH,
+            qualification_note="",
+            actor=self.user,
+        )
+        contact = self._email_contact(email="pipeline@example.com")
+        contact.normalized_email = ""
+        contact.email = ""
+        contact.save()
+        draft = create_outreach_draft(
+            tenant=self.tenant,
+            prospect=self.qualified,
+            contact=contact,
+            channel=ProspectOutreachDraft.Channel.OTHER,
+            body="Tentativa registrada antes da limpeza do email.",
+            actor=self.user,
+        )
+        items = self._queue()
+        self.assertEqual(
+            self._categories_for_prospect(items, self.qualified.id),
+            [CommercialQueueCategory.OUTREACH_PENDING],
+        )
+        self.assertNotIn(CommercialQueueCategory.MISSING_CONTACT, self._categories_for_prospect(items, self.qualified.id))
+        self.assertTrue(ProspectOutreachDraft.objects.filter(pk=draft.pk).exists())
+
+    def test_counters_match_projection_and_deterministic_ordering(self):
+        from prospecting.application.commercial_queue import CommercialQueueCategory, sort_commercial_queue_items
+
+        low = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Zulu Clinic",
+            identity_key="zulu-clinic-cq",
+            priority=Prospect.Priority.LOW,
+        )
+        high = Prospect.objects.create(
+            tenant=self.tenant,
+            display_name="Alpha Clinic",
+            identity_key="alpha-clinic-cq",
+            priority=Prospect.Priority.HIGH,
+        )
+        shared_qualified_at = timezone.now()
+        for prospect in [low, high]:
+            qualify_prospect(
+                tenant=self.tenant,
+                prospect=prospect,
+                qualification_status=Prospect.QualificationStatus.QUALIFIED,
+                priority=prospect.priority,
+                qualification_note="",
+                actor=self.user,
+            )
+            self._email_contact(prospect=prospect, email=f"{prospect.identity_key}@example.com")
+        Prospect.objects.filter(pk__in=[low.pk, high.pk]).update(
+            qualified_at=shared_qualified_at,
+            updated_at=shared_qualified_at,
+        )
+        overdue_early = self._follow_up(
+            self.qualified,
+            timezone.now() - timedelta(days=2),
+            idempotency_key="cq-order-overdue-early",
+        )
+        overdue_late = self._follow_up(
+            self.qualified,
+            timezone.now() - timedelta(hours=1),
+            idempotency_key="cq-order-overdue-late",
+        )
+        items = self._queue(now=timezone.now())
+        counters = self._counters(now=timezone.now())
+        self.assertEqual(counters.total, len(items))
+        self.assertEqual(counters.follow_up_overdue, sum(1 for i in items if i.category == CommercialQueueCategory.FOLLOW_UP_OVERDUE))
+        self.assertEqual(counters.ready_for_outreach, sum(1 for i in items if i.category == CommercialQueueCategory.READY_FOR_OUTREACH))
+
+        follow_order = [item.follow_up_id for item in items if item.follow_up_id is not None]
+        self.assertEqual(follow_order.index(overdue_early.id), 0)
+        self.assertLess(follow_order.index(overdue_early.id), follow_order.index(overdue_late.id))
+
+        ready_items = [item for item in items if item.category == CommercialQueueCategory.READY_FOR_OUTREACH]
+        self.assertEqual(ready_items[0].display_name, "Alpha Clinic")
+        self.assertEqual(sort_commercial_queue_items(items), items)
+
+
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="comercial@example.com",

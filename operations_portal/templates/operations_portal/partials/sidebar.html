@@ -37,8 +37,13 @@
             <i data-feather="briefcase"></i><span> Comercial </span>
           </a>
         </li>
-        <li class="{% if active_section == 'prospeccao' %}menuitem-active{% endif %}">
-          <a href="{% url 'operations_portal:prospecting_search_run_list' %}" class="tp-link {% if active_section == 'prospeccao' %}active{% endif %}">
+        <li class="{% if active_prospecting_page == 'minha_fila' %}menuitem-active{% endif %}">
+          <a href="{% url 'operations_portal:prospecting_my_queue' %}" class="tp-link {% if active_prospecting_page == 'minha_fila' %}active{% endif %}">
+            <i data-feather="list"></i><span> Prospecção · Minha Fila </span>
+          </a>
+        </li>
+        <li class="{% if active_section == 'prospeccao' and active_prospecting_page != 'minha_fila' %}menuitem-active{% endif %}">
+          <a href="{% url 'operations_portal:prospecting_search_run_list' %}" class="tp-link {% if active_section == 'prospeccao' and active_prospecting_page != 'minha_fila' %}active{% endif %}">
             <i data-feather="search"></i><span> Prospecção · Pesquisas </span>
           </a>
         </li>

@@ -254,6 +254,34 @@ class ProspectContactOutcomeForm(_StyledForm):
         return cleaned
 
 
+class MyQueueFilterForm(_StyledForm):
+    category = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Categoria: todas"),
+            ("FOLLOW_UP_OVERDUE", "Acompanhamento atrasado"),
+            ("FOLLOW_UP_TODAY", "Acompanhamento hoje"),
+            ("OUTREACH_PENDING", "Abordagem pendente"),
+            ("WAITING_OUTCOME", "Registrar resultado"),
+            ("MISSING_CONTACT", "Contato necessário"),
+            ("READY_FOR_OUTREACH", "Pronto para abordagem"),
+        ],
+        label="Categoria",
+    )
+    priority = forms.ChoiceField(
+        required=False,
+        choices=[
+            ("", "Prioridade: todas"),
+            (Prospect.Priority.HIGH, "Alta"),
+            (Prospect.Priority.MEDIUM, "Média"),
+            (Prospect.Priority.LOW, "Baixa"),
+            ("UNSET", "Não definida"),
+        ],
+        label="Prioridade",
+    )
+    prospect_q = forms.CharField(required=False, max_length=220, label="Prospect")
+
+
 class FollowUpQueueFilterForm(_StyledForm):
     situation = forms.ChoiceField(
         required=False,

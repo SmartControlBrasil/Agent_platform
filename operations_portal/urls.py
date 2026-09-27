@@ -70,6 +70,7 @@ urlpatterns = [
         prospecting_views.prospecting_restore_search_result,
         name="prospecting_restore_search_result",
     ),
+    path("prospeccao/minha-fila/", prospecting_views.prospecting_my_queue, name="prospecting_my_queue"),
     path("prospeccao/acompanhamentos/", prospecting_views.prospecting_follow_up_queue, name="prospecting_follow_up_queue"),
     path(
         "prospeccao/acompanhamentos/<uuid:follow_up_id>/concluir/",

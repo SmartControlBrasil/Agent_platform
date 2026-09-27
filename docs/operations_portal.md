@@ -96,6 +96,21 @@ Rascunho **READY** + canal **EMAIL** + prospect ainda **QUALIFIED** pode ser env
 
 `ProspectContactOutcome` registra manualmente o resultado estruturado (interesse, pediu retorno, sem resposta, etc.), opcionalmente vinculado a um `ProspectOutreachSend` SENT, e gera `ProspectActivity` na timeline (ex.: `REPLY_RECEIVED` ou `NOTE`). `ProspectFollowUp` representa **próxima ação planejada** (`PENDING` / `COMPLETED` / `CANCELLED`) com `due_at` timezone-aware; atraso é **derivado** na UI (`PENDING` + `due_at` passado). Concluir follow-up **não** cria atividade automática. Qualificação do prospect **não** muda automaticamente. Sem scheduler, lembretes por e-mail ou captura de inbox.
 
+## Prospecção · Minha Fila (workspace comercial)
+
+`/painel/prospeccao/minha-fila/` consolida a **próxima ação comercial** derivada de `prospecting/application/commercial_queue.py` (projeção read-only, sem tabela de fila). Não substitui CRM pipeline.
+
+**Sidebar (Comercial):** Minha Fila → Pesquisas → Prospects → Acompanhamentos. Minha Fila é a visão consolidada; Acompanhamentos continua especializada em `ProspectFollowUp`.
+
+- **`commercial.view`:** listar, filtrar, abrir prospect/CTAs.
+- **`commercial.manage`:** concluir/cancelar follow-ups via POST (mesmos services da fila de acompanhamentos), somente com tenant específico selecionado.
+- **Modo global / todos os tenants:** agrega `accessible_tenants`, read-only, coluna tenant, sem mutações.
+- **Filtros GET:** categoria, prioridade, prospect; paginação 25; query string preservada.
+- **CTAs:** abrir prospect, continuar abordagem, registrar resultado (`?record_outcome_send=`), criar contato (`#contact-create`), preparar abordagem (`?new_outreach=1`).
+- **Dashboard** (`/painel/`): card **Minha Fila** com **Ação agora** = atrasados + hoje + abordagem pendente (somente tenant ativo e capability comercial). Link **Ver Minha Fila**. Card **Acompanhamentos** permanece.
+
+Detalhes de categorias e precedência: `docs/agents/prospecting.md`.
+
 ## Prospecção · Acompanhamentos (fila operacional)
 
 `/painel/prospeccao/acompanhamentos/` concentra `ProspectFollowUp` pendentes e filtráveis para o tenant ativo (ou visão agregada read-only quando **Todos os tenants** está selecionado). A tela responde: atrasados, hoje, próximos dias, prospect, contato, tipo de ação e último resultado conhecido (`ProspectContactOutcome` mais recente do prospect, via subquery).
@@ -305,6 +320,7 @@ A prospecção operacional faz parte do `Agent_platform` e usa exclusivamente o 
 
 Rotas principais:
 
+- `/painel/prospeccao/minha-fila/`
 - `/painel/prospeccao/pesquisas/`
 - `/painel/prospeccao/pesquisas/nova/`
 - `/painel/prospeccao/pesquisas/<uuid>/`
