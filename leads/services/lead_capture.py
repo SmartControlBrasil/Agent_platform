@@ -45,7 +45,7 @@ class LeadCaptureResult:
 
 
 class LeadCaptureService:
-    REQUIRED_FIELDS = ("name", "phone", "email", "need_summary")
+    REQUIRED_FIELDS = ("need_summary", "phone_or_email")
     GENERIC_NEED_PHRASES = (
         "quero orcamento",
         "quero orçamento",

@@ -281,7 +281,7 @@ class OpenAIConversationTests(TestCase):
         self.assertTrue(result.used)
         prompt = self._prompt_blob(client)
         self.assertIn("collection_active: True", prompt)
-        self.assertIn("campos comerciais permitidos: name, phone, email, need_summary", prompt)
+        self.assertIn("campos comerciais permitidos: need_summary, phone_or_email", prompt)
 
     def test_scenario5_openai_timeout_keeps_deterministic_reply(self):
         from conversations.models import ChatRequest

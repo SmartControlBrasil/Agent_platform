@@ -90,7 +90,7 @@ class CompanySlotKnowledgeInterruptionTests(TestCase):
         self.assertNotIn("company", outcome.invalid_fields)
         missing = outcome.missing_fields
         self.assertIn("phone", missing)
-        self.assertIn("email", missing)
+        self.assertNotIn("email", missing)
 
     def test_ja_passei_does_not_loop_when_company_already_filled(self):
         conversation = self._conversation("ja-passei-loop")
@@ -167,9 +167,9 @@ class CompanySlotKnowledgeInterruptionTests(TestCase):
         lead.refresh_from_db()
         self.assertTrue(name_or_company_satisfied(lead))
         self.assertNotIn("nome real da empresa", turn5.reply.lower())
-        missing = QualificationService().missing_fields(lead)
+        missing = QualificationService().promptable_fields(lead)
         self.assertIn("phone", missing)
-        self.assertIn("email", missing)
+        self.assertNotIn("email", missing)
 
         turn6 = self.service.generate_reply(
             history

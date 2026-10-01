@@ -134,6 +134,8 @@ OPERATIONAL_QUALIFICATION_KEYS = frozenset(
         "contact_reason_shown",
         "privacy_notice_shown",
         "company_not_applicable",
+        "intent_type",
+        "commercial_intent_detected_at",
     }
 )
 
@@ -172,7 +174,7 @@ class QualificationFieldSpec:
 class QualificationPolicy:
     slug: str = "default"
     desired_fields: tuple[str, ...] = ("name", "phone", "email", "company", "need_summary", "city")
-    required_fields: tuple[str, ...] = ("name", "phone", "email", "need_summary")
+    required_fields: tuple[str, ...] = ("need_summary", "phone_or_email")
     custom_fields: tuple[QualificationFieldSpec, ...] = field(default_factory=tuple)
     allow_early_handoff: bool = True
 
@@ -250,6 +252,15 @@ def merge_field_value(lead: LeadDraft, field_name: str, value: str, *, source: s
 
 def max_source(left: str, right: str) -> str:
     return left if SOURCE_STRENGTH.get(left, 0) >= SOURCE_STRENGTH.get(right, 0) else right
+
+
+def has_usable_contact(lead: LeadDraft | None) -> bool:
+    if lead is None:
+        return False
+    return bool(
+        (str(getattr(lead, "phone", "") or "").strip() and is_valid_phone(lead.phone))
+        or (str(getattr(lead, "email", "") or "").strip() and is_valid_email(lead.email))
+    )
 
 
 def is_ready_for_commercial_notification(lead: LeadDraft | None, *, policy: QualificationPolicy | None = None) -> bool:

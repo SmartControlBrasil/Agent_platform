@@ -468,7 +468,10 @@ class ChatApiTests(TestCase):
         self.assertIn("clp", lead_draft.need_summary.lower())
         self.assertIn("chamar", response.json()["reply"].lower())
         conversation = Conversation.objects.get(session_id="session-clp")
-        self.assertEqual(conversation.lead_state, LeadState.COLLECT_NAME_COMPANY)
+        self.assertIn(
+            conversation.lead_state,
+            {LeadState.COLLECT_NAME_COMPANY, LeadState.COLLECT_CONTACT},
+        )
 
     def test_chat_api_robotics_interest_asks_environment(self):
         payload = {
@@ -583,7 +586,10 @@ class ChatApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         conversation = Conversation.objects.get(session_id="session-state-1")
-        self.assertEqual(conversation.lead_state, LeadState.COLLECT_NAME_COMPANY)
+        self.assertIn(
+            conversation.lead_state,
+            {LeadState.COLLECT_NAME_COMPANY, LeadState.COLLECT_CONTACT},
+        )
         self.assertFalse(conversation.is_qualified)
 
     def test_chat_api_phone_without_need_creates_draft_and_asks_need(self):

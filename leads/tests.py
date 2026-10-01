@@ -5,6 +5,7 @@ from conversations.models import Conversation, Message
 from leads.models import LeadDraft
 from leads.services.crm_dispatch import CRMDispatchService
 from leads.services import LeadCaptureService
+from assistant_core.consultative_policy import mark_collection_active
 from assistant_core.state import LeadState
 from assistant_core.summary import build_conversation_summary, format_conversation_summary_notes
 from integrations.smart360.contracts import LeadIngestResponse
@@ -62,10 +63,16 @@ class LeadCaptureServiceTests(TestCase):
         self.assertIn("sistema de atendimento", second.lead_draft.need_summary.lower())
 
     def test_prompt_skips_name_when_already_informed(self):
+        first = self.service.capture_from_message(
+            conversation=self.conversation,
+            message="Quero orçamento para automação industrial em linha de produção.",
+            history=[],
+        )
+        mark_collection_active(first.lead_draft, reason="explicit_quote")
         result = self.service.capture_from_message(
             conversation=self.conversation,
             message="Sou Maria.",
-            history=[],
+            history=[{"role": "user", "content": "Quero orçamento para automação industrial em linha de produção."}],
         )
 
         reply = self.service.build_next_prompt(result.lead_draft, result.missing_fields)
@@ -74,15 +81,21 @@ class LeadCaptureServiceTests(TestCase):
         self.assertNotIn("nome", reply.lower())
 
     def test_prompt_asks_next_missing_field(self):
+        first = self.service.capture_from_message(
+            conversation=self.conversation,
+            message="Quero orçamento para automação industrial em linha de produção.",
+            history=[],
+        )
+        mark_collection_active(first.lead_draft, reason="explicit_quote")
         result = self.service.capture_from_message(
             conversation=self.conversation,
-            message="Sou Maria da ACME. Preciso de automação industrial.",
-            history=[],
+            message="Sou Maria da ACME.",
+            history=[{"role": "user", "content": "Quero orçamento para automação industrial em linha de produção."}],
         )
 
         reply = self.service.build_next_prompt(result.lead_draft, result.missing_fields)
 
-        self.assertIn("telefone ou WhatsApp", reply)
+        self.assertIn("whatsapp", reply.lower())
         self.assertNotIn("nome", reply.lower())
 
     def test_marks_qualified_with_minimum_data(self):
@@ -117,9 +130,7 @@ class LeadCaptureServiceTests(TestCase):
 
         self.assertFalse(result.is_qualified)
         self.assertIn("need_summary", result.missing_fields)
-        self.assertIn("name", result.missing_fields)
-        self.assertIn("phone", result.missing_fields)
-        self.assertIn("email", result.missing_fields)
+        self.assertIn("phone_or_email", result.missing_fields)
 
     def test_conversation_initial_state_is_discovery(self):
         self.assertEqual(self.conversation.lead_state, LeadState.DISCOVERY)
@@ -136,10 +147,16 @@ class LeadCaptureServiceTests(TestCase):
         self.assertIn("need_summary", result.missing_fields)
 
     def test_rejects_generic_name(self):
+        seed = self.service.capture_from_message(
+            conversation=self.conversation,
+            message="Quero orçamento para automação industrial em linha de produção.",
+            history=[],
+        )
+        mark_collection_active(seed.lead_draft, reason="explicit_quote")
         result = self.service.capture_from_message(
             conversation=self.conversation,
             message="Meu nome é teste",
-            history=[],
+            history=[{"role": "user", "content": "Quero orçamento para automação industrial em linha de produção."}],
         )
 
         self.assertEqual(result.lead_draft.name, "")
@@ -160,7 +177,9 @@ class LeadCaptureServiceTests(TestCase):
     def test_rejects_short_phone(self):
         lead = self.service.get_or_create_lead_draft(self.conversation)
         lead.name = "Maria"
-        lead.save(update_fields=["name"])
+        lead.need_summary = "Preciso de automação industrial para linha de produção."
+        mark_collection_active(lead, reason="explicit_quote")
+        lead.save(update_fields=["name", "need_summary"])
         result = self.service.capture_from_message(
             conversation=self.conversation,
             message="999",
@@ -170,7 +189,7 @@ class LeadCaptureServiceTests(TestCase):
         self.assertEqual(result.lead_draft.phone, "")
         self.assertIn("phone", result.invalid_fields)
         reply = self.service.build_next_prompt(result.lead_draft, result.missing_fields, invalid_fields=result.invalid_fields)
-        self.assertIn("ddd", reply.lower())
+        self.assertIn("incompleto", reply.lower())
 
     def test_accepts_br_phone_with_ddd(self):
         result = self.service.capture_from_message(

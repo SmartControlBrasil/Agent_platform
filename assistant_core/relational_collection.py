@@ -219,17 +219,16 @@ def capture_passive_fields(*, lead, message: str, history=None) -> bool:
     if lead is None:
         return False
     data = dict(getattr(lead, "qualification_data", None) or {})
-    if data.get(COLLECTION_ACTIVE_KEY):
-        return False
+    collection_active = bool(data.get(COLLECTION_ACTIVE_KEY))
     changed = False
-    if data.get(RELATIONAL_NAME_ASKED_KEY) and not has_valid_name(lead):
+    if not collection_active and data.get(RELATIONAL_NAME_ASKED_KEY) and not has_valid_name(lead):
         inferred = infer_pending_field_values(message, "name")
         name = inferred.get("name")
         if name and is_valid_name(normalize_name(name)):
             changed |= merge_field_value(lead, "name", normalize_name(name), source=FIELD_SOURCE_EXPLICIT)
             data[RELATIONAL_NAME_CAPTURED_KEY] = True
             data[RELATIONAL_NAME_ASKED_KEY] = False
-    if not has_valid_name(lead):
+    if not collection_active and not has_valid_name(lead):
         inferred = infer_pending_field_values(message, "name")
         name = inferred.get("name")
         if name and is_valid_name(normalize_name(name)) and any(
@@ -238,11 +237,13 @@ def capture_passive_fields(*, lead, message: str, history=None) -> bool:
         ):
             changed |= merge_field_value(lead, "name", normalize_name(name), source=FIELD_SOURCE_EXPLICIT)
             data[RELATIONAL_NAME_CAPTURED_KEY] = True
-    for field_name, validator, normalizer in (
+    passive_field_specs = (
         ("phone", is_valid_phone, normalize_phone),
         ("email", is_valid_email, normalize_email),
-        ("company", is_valid_company, normalize_name),
-    ):
+    )
+    if not collection_active:
+        passive_field_specs += (("company", is_valid_company, normalize_name),)
+    for field_name, validator, normalizer in passive_field_specs:
         current = str(getattr(lead, field_name, "") or "").strip()
         if current and validator(current):
             continue
@@ -266,10 +267,17 @@ def pending_collection_fields(*, lead, history=None, message: str = "") -> list[
     pending: list[str] = []
     if not has_valid_name(lead):
         pending.append("name")
-    if not is_valid_phone(getattr(lead, "phone", "")):
-        pending.append("phone")
-    if not is_valid_email(getattr(lead, "email", "")):
-        pending.append("email")
+    phone = getattr(lead, "phone", "")
+    email = getattr(lead, "email", "")
+    has_contact = bool(
+        (str(phone or "").strip() and is_valid_phone(phone))
+        or (str(email or "").strip() and is_valid_email(email))
+    )
+    if not has_contact:
+        if not is_valid_phone(phone):
+            pending.append("phone")
+        elif not is_valid_email(email):
+            pending.append("email")
     if (
         has_b2b_context(lead=lead, history=history, message=message)
         and not is_valid_company(getattr(lead, "company", ""))
@@ -294,7 +302,7 @@ def build_contact_collection_prompt(
         prefix = ""
         if not data.get(CONTACT_REASON_SHOWN_KEY):
             prefix = (
-                "Para nossa equipe retornar seu atendimento, preciso de um telefone ou WhatsApp e de um e-mail. "
+                "Para nossa equipe retornar seu atendimento, preciso de um telefone ou WhatsApp, ou um e-mail. "
             )
         if "phone" in invalid_fields:
             return f"{prefix}Esse telefone ficou incompleto. Qual é o melhor telefone ou WhatsApp?"

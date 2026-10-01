@@ -88,14 +88,14 @@ class RelationalCollectionTests(TestCase):
         self.assertNotIn("chamar", reply.reply.lower())
         self.assertEqual(self.lead().name, "Marcelo")
 
-    def test_f_known_phone_goes_to_email(self):
+    def test_f_known_phone_completes_usable_contact(self):
         self.ask_relational_name()
         self.turn("Marcelo")
         self.turn(B2B_NEED)
         self.turn("Pode registrar")
         reply = self.turn("11999999999")
-        self.assertIn("e-mail", reply.reply.lower())
-        self.assertNotIn("telefone", reply.reply.lower())
+        self.assertIn("continuidade", reply.reply.lower())
+        self.assertEqual(self.lead().phone, "11999999999")
 
     def test_g_name_without_continuity_does_not_collect_contacts(self):
         self.ask_relational_name()
@@ -109,8 +109,7 @@ class RelationalCollectionTests(TestCase):
     def test_h_b2b_context_asks_company(self):
         self.accept_continuity(B2B_NEED)
         self.turn("Marcelo Silva")
-        self.turn("11999999999")
-        reply = self.turn("marcelo@example.com")
+        reply = self.turn("11999999999")
         self.assertIn("continuidade", reply.reply.lower())
         self.assertEqual(self.promptable(), ["company"])
 
@@ -118,8 +117,7 @@ class RelationalCollectionTests(TestCase):
         reply = self.accept_continuity(PF_NEED, knowledge=PF_KB)
         self.assertIn("chamar", reply.reply.lower())
         self.turn("Ana", knowledge=PF_KB)
-        self.turn("11999999999", knowledge=PF_KB)
-        reply = self.turn("ana@example.com", knowledge=PF_KB)
+        reply = self.turn("11999999999", knowledge=PF_KB)
         self.assertNotIn("empresa", reply.reply.lower())
         self.assertEqual(self.promptable(), [])
         self.assertEqual(self.lead().status, LeadDraft.Status.QUALIFIED)
@@ -181,7 +179,7 @@ class RelationalCollectionTests(TestCase):
         self.turn("Meu WhatsApp é 11988887777")
         lead = self.lead()
         self.assertEqual(lead.phone, "11988887777")
-        self.assertIn("e-mail", self.history[-1]["content"].lower())
+        self.assertNotIn("e-mail", self.history[-1]["content"].lower())
 
     def test_spontaneous_email_after_phone(self):
         self.ask_relational_name()
@@ -201,7 +199,6 @@ class RelationalCollectionTests(TestCase):
         self.accept_continuity(B2B_NEED)
         self.turn("Marcelo Silva")
         self.turn("11999999999")
-        self.turn("marcelo@example.com")
         self.turn("não tenho empresa")
         lead = self.lead()
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
@@ -227,7 +224,7 @@ class RelationalCollectionTests(TestCase):
             conversation=Conversation.objects.create(tenant=self.tenant, session_id=str(uuid.uuid4())),
             need_summary=PF_NEED,
         )
-        self.assertEqual(QualificationService().missing_fields(lead), ["name", "phone", "email"])
+        self.assertEqual(QualificationService().missing_fields(lead), ["phone_or_email"])
 
     def test_possible_enrichment_fields_with_b2b(self):
         lead = LeadDraft.objects.create(

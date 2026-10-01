@@ -71,19 +71,29 @@ def should_block_dialogue_for_locked_lead(conversation, message: str, discovery=
     """Bloqueia só tentativas comerciais duplicadas — não dúvidas consultivas."""
     if not should_lock_lead(conversation):
         return False
-    if can_start_new_cycle(conversation, message):
-        return False
     if discovery is None:
         from assistant_core.discovery import analyze_message
 
         discovery = analyze_message(message)
+    from assistant_core.consultative_policy import CollectionTrigger, collection_already_active, detect_collection_trigger
+
+    if collection_already_active(conversation):
+        from leads.services.commercial import QualificationService, resolve_lead_draft
+
+        lead = resolve_lead_draft(conversation)
+        if lead is not None and not QualificationService().missing_required_fields(lead):
+            if detect_collection_trigger(message) != CollectionTrigger.NONE:
+                return True
+            if bool(getattr(discovery, "should_collect_lead", False)):
+                return True
+        return False
+    if can_start_new_cycle(conversation, message):
+        return False
     from assistant_core.consultative_policy import is_consultative_need_discovery
     from assistant_core.services.decision_outcome import is_consultative_knowledge_turn
 
     if is_consultative_knowledge_turn(discovery, message) or is_consultative_need_discovery(discovery, message):
         return False
-    from assistant_core.consultative_policy import CollectionTrigger, detect_collection_trigger
-
     if detect_collection_trigger(message) != CollectionTrigger.NONE:
         return True
     if bool(getattr(discovery, "should_collect_lead", False)):

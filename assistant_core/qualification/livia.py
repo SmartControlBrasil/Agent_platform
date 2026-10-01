@@ -454,10 +454,11 @@ def message_fills_pending_slot(message: str, pending_field: str) -> bool:
 
 
 def minimum_lead_data_met(lead_draft) -> bool:
-    return all(validator(getattr(lead_draft, field, "")) for field, validator in (
-        ("name", is_valid_name), ("phone", is_valid_phone),
-        ("email", is_valid_email), ("need_summary", is_valid_need_summary),
-    ))
+    has_contact = bool(
+        is_valid_phone(getattr(lead_draft, "phone", ""))
+        or is_valid_email(getattr(lead_draft, "email", ""))
+    )
+    return has_contact and is_valid_need_summary(getattr(lead_draft, "need_summary", ""))
 
 
 def is_company_not_applicable(message: str) -> bool:

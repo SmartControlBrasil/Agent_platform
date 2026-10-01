@@ -83,7 +83,7 @@ class CommercialLifecycleTests(TestCase):
         )
 
         self.assertEqual(outcome.lead_draft.phone, "")
-        self.assertIn("phone", outcome.missing_fields)
+        self.assertIn("phone_or_email", outcome.missing_fields)
 
     def test_email_and_phone_are_explicitly_collected_and_normalized(self):
         outcome = self.service.qualify_from_message(

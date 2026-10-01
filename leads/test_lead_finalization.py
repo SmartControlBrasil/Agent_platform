@@ -112,8 +112,14 @@ class LeadFinalizationTests(TestCase):
         self.capture.capture_from_message(conversation=conversation, message="Marcelo", history=[])
         self.assertEqual(OutboxEvent.objects.count(), 0)
 
-    def test_c_incomplete_lead_does_not_notify(self):
+    def test_c_phone_without_email_remains_notifiable(self):
         lead = _complete_lead(self.tenant, email="")
+        self.assertTrue(is_ready_for_commercial_notification(lead))
+        self.assertTrue(str(lead.phone or "").strip())
+        self.assertFalse(str(lead.email or "").strip())
+
+    def test_c_missing_contact_does_not_notify(self):
+        lead = _complete_lead(self.tenant, phone="", email="")
         self.assertFalse(is_ready_for_commercial_notification(lead))
         with patch.object(self.capture, "_dispatch_webhook_lead_qualified") as dispatch:
             self.capture.capture_from_message(
@@ -121,7 +127,7 @@ class LeadFinalizationTests(TestCase):
                 message="11999998888",
                 history=[],
             )
-            dispatch.assert_not_called()
+            dispatch.assert_called_once()
 
     def test_d_notification_valid_without_company(self):
         lead = _complete_lead(self.tenant)
@@ -305,7 +311,6 @@ class LeadFinalizationTests(TestCase):
         turn("Pode registrar")
         turn("Carlos Silva")
         turn("11999998888")
-        reply = turn("carlos@example.com").reply
         lead = LeadDraft.objects.get(conversation=conversation)
         self.assertTrue(is_ready_for_commercial_notification(lead))
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
@@ -316,7 +321,20 @@ class LeadFinalizationTests(TestCase):
             ).count(),
             1,
         )
-        self.assertIn("continuidade", reply.lower())
+        self.capture.capture_from_message(
+            conversation=conversation,
+            message="carlos@example.com",
+            history=history,
+        )
+        lead.refresh_from_db()
+        self.assertEqual(lead.email, "carlos@example.com")
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+                aggregate_id=str(lead.pk),
+            ).count(),
+            1,
+        )
 
     def test_email_body_structure(self):
         lead = _complete_lead(self.tenant, company="Empresa XYZ")

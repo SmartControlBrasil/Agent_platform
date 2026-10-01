@@ -130,7 +130,7 @@ class LiviaDecisionService:
             from leads.services.commercial import resolve_lead_draft
 
             passive_lead = resolve_lead_draft(conversation)
-            if passive_lead is not None and not (passive_lead.qualification_data or {}).get("collection_active"):
+            if passive_lead is not None:
                 capture_passive_fields(lead=passive_lead, message=current_message, history=history)
             from assistant_core.continuity_policy import resolve_offer_response, DECLINE_REPLY
             from assistant_core.consultative_policy import is_explicit_collection_trigger
@@ -1101,9 +1101,17 @@ class LiviaDecisionService:
             )
             return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
 
+        collection_trigger = None
         if activate_collection:
+            from assistant_core.consultative_policy import CollectionTrigger, detect_collection_trigger
+
+            collection_trigger = detect_collection_trigger(current_message)
             lead_seed = self.lead_capture_service.get_or_create_lead_draft(conversation)
-            mark_collection_active(lead_seed, reason=collection_reason)
+            mark_collection_active(
+                lead_seed,
+                reason=collection_reason,
+                trigger=collection_trigger if collection_trigger != CollectionTrigger.NONE else None,
+            )
 
         result = self.lead_capture_service.capture_from_message(
             conversation=conversation,
@@ -1111,7 +1119,11 @@ class LiviaDecisionService:
             history=history,
         )
         if activate_collection:
-            mark_collection_active(result.lead_draft, reason=collection_reason)
+            mark_collection_active(
+                result.lead_draft,
+                reason=collection_reason,
+                trigger=collection_trigger if collection_trigger != CollectionTrigger.NONE else None,
+            )
         from assistant_core.consultative_policy import is_explicit_human_handoff
 
         if is_explicit_human_handoff(current_message):

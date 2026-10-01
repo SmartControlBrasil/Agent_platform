@@ -18,6 +18,8 @@ from assistant_core.state import LeadState, get_current_state
 COLLECTION_ACTIVE_KEY = "collection_active"
 COLLECTION_PAUSED_KEY = "collection_paused"
 CONTACT_DEFERRED_KEY = "contact_collection_deferred"
+INTENT_TYPE_KEY = "intent_type"
+COMMERCIAL_INTENT_DETECTED_AT_KEY = "commercial_intent_detected_at"
 
 BUDGET_TRIGGERS = (
     "quero um orcamento",
@@ -309,16 +311,44 @@ def pause_collection(lead_draft, *, deferred_contact: bool = True) -> None:
     lead_draft.save(update_fields=update_fields)
 
 
-def mark_collection_active(lead_draft, *, reason: str = "") -> None:
+def resolve_intent_type(*, trigger: CollectionTrigger | None = None, reason: str = "") -> str:
+    if trigger is not None and trigger != CollectionTrigger.NONE:
+        return str(trigger.value)
+    normalized = str(reason or "").strip().lower()
+    if any(token in normalized for token in ("human", "handoff", "attendant", "vendedor")):
+        return CollectionTrigger.HUMAN.value
+    if any(token in normalized for token in ("hire", "contrat", "compra")):
+        return CollectionTrigger.HIRE.value
+    if any(token in normalized for token in ("budget", "quote", "orcamento", "orçamento", "cotacao", "cotação")):
+        return CollectionTrigger.BUDGET.value
+    return "commercial"
+
+
+def mark_collection_active(
+    lead_draft,
+    *,
+    reason: str = "",
+    intent_type: str = "",
+    trigger: CollectionTrigger | None = None,
+) -> None:
     if lead_draft is None or not hasattr(lead_draft, "qualification_data"):
         return
+    from assistant_core.dialogue_memory import COMMERCIAL_INTENT_KEY
+    from django.utils import timezone
+
     data = dict(getattr(lead_draft, "qualification_data", None) or {})
     data[COLLECTION_ACTIVE_KEY] = True
     data[COLLECTION_PAUSED_KEY] = False
     # Novo gatilho explícito reabre coleta mesmo após deferência anterior.
     data[CONTACT_DEFERRED_KEY] = False
+    data[COMMERCIAL_INTENT_KEY] = True
     if reason:
         data["collection_trigger_reason"] = str(reason)[:80]
+    resolved_intent = (intent_type or "").strip() or resolve_intent_type(trigger=trigger, reason=reason)
+    if resolved_intent:
+        data[INTENT_TYPE_KEY] = resolved_intent[:40]
+    if not data.get(COMMERCIAL_INTENT_DETECTED_AT_KEY):
+        data[COMMERCIAL_INTENT_DETECTED_AT_KEY] = timezone.now().isoformat()
     lead_draft.qualification_data = data
     update_fields = ["qualification_data"]
     if hasattr(lead_draft, "updated_at"):

@@ -53,20 +53,20 @@ class ProgressiveCollectionTests(TestCase):
     def b2b_contacts(self):
         self.start()
         self.assertIn("telefone", self.turn("Marcelo Silva").lower())
-        self.assertIn("e-mail", self.turn("11999999999").lower())
-        self.assertIn("continuidade", self.turn("marcelo@example.com").lower())
+        reply = self.turn("11999999999")
+        self.assertIn("continuidade", reply.lower())
 
     def pf_contacts(self):
         self.start(PF_NEED, knowledge=PF_KB)
         self.turn("Marcelo Silva")
         self.turn("11999999999")
-        self.turn("marcelo@example.com")
 
     def assert_complete(self):
         lead = self.lead()
         self.assertEqual(lead.name, "Marcelo Silva")
         self.assertEqual(lead.phone, "11999999999")
-        self.assertEqual(lead.email, "marcelo@example.com")
+        if lead.email:
+            self.assertEqual(lead.email, "marcelo@example.com")
         self.assertIn("temperatura", lead.need_summary)
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
         self.assertEqual(self.pending(), [])
@@ -104,27 +104,27 @@ class ProgressiveCollectionTests(TestCase):
         self.assertNotIn("need_summary", self.pending())
         self.assertEqual(self.lead().qualification_data[STATUS_KEY], "accepted")
 
-    def test_email_does_not_replace_phone(self):
+    def test_email_alone_is_usable_contact(self):
         lead = LeadDraft.objects.create(tenant=self.tenant, conversation=self.conversation,
             name="Marcelo Silva", email="marcelo@example.com", need_summary=B2B_NEED)
-        self.assertIn("phone", QualificationService().missing_fields(lead))
+        self.assertEqual(QualificationService().missing_fields(lead), [])
 
     def test_phone_does_not_replace_email(self):
         lead = LeadDraft.objects.create(tenant=self.tenant, conversation=self.conversation,
             name="Marcelo Silva", phone="11999999999", need_summary=B2B_NEED)
-        self.assertIn("email", QualificationService().missing_fields(lead))
+        self.assertEqual(QualificationService().missing_fields(lead), [])
 
-    def test_company_does_not_replace_name(self):
+    def test_company_does_not_replace_name_for_qualification(self):
         lead = LeadDraft.objects.create(tenant=self.tenant, conversation=self.conversation,
             company="Empresa XYZ", phone="11999999999", email="marcelo@example.com", need_summary=B2B_NEED)
-        self.assertEqual(QualificationService().missing_fields(lead), ["name"])
+        self.assertEqual(QualificationService().missing_fields(lead), [])
+        self.assertEqual(lead.name, "")
 
     def test_need_is_last_when_unknown(self):
         self.turn("Quero orçamento")
-        self.assertEqual(self.pending(), ["name", "phone", "email", "need_summary"])
+        self.assertEqual(self.pending(), ["need_summary", "phone_or_email"])
         self.turn("Marcelo Silva")
         self.turn("11999999999")
-        self.turn("marcelo@example.com")
         reply = self.turn("Preciso automatizar três câmaras na empresa.")
         self.assertEqual(self.pending(), [])
         self.assertNotIn("Em uma frase", reply)
@@ -146,11 +146,10 @@ class ProgressiveCollectionTests(TestCase):
     def test_invalid_email_does_not_advance(self):
         self.start()
         self.turn("Marcelo Silva")
-        self.turn("11999999999")
         reply = self.turn("marcelo@")
-        self.assertEqual(self.promptable()[0], "email")
+        self.assertEqual(self.promptable()[0], "phone")
         self.assertEqual(self.lead().email, "")
-        self.assertIn("e-mail", reply)
+        self.assertIn("telefone", reply.lower())
 
     def test_invalid_phone_does_not_advance(self):
         self.start()
@@ -162,7 +161,6 @@ class ProgressiveCollectionTests(TestCase):
     def test_interruption_at_every_slot(self):
         for slot, fields in (
             ("name", {}), ("phone", {"name": "Marcelo Silva"}),
-            ("email", {"name": "Marcelo Silva", "phone": "11999999999"}),
             ("company", {"name": "Marcelo Silva", "phone": "11999999999", "email": "marcelo@example.com"}),
         ):
             with self.subTest(slot=slot):
@@ -208,7 +206,7 @@ class ProgressiveCollectionTests(TestCase):
             company="Empresa Antiga", email="antiga@example.com", status=LeadDraft.Status.QUALIFIED)
         from operations_portal.selectors import get_lead_detail
         self.assertEqual(get_lead_detail(lead.pk, tenant=self.tenant).pk, lead.pk)
-        self.assertIn("name", QualificationService().missing_fields(lead))
+        self.assertIn("need_summary", QualificationService().missing_fields(lead))
         lead.refresh_from_db()
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
 

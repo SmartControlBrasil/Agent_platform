@@ -306,7 +306,8 @@ class CommercialCollectionStateTests(TestCase):
         lead = self._lead(conversation)
         missing = self.qualification.missing_fields(lead)
         self.assertNotIn("need_summary", missing)
-        self.assertIn("name", missing)
+        pending = self.qualification.promptable_fields(lead)
+        self.assertIn("name", pending)
 
     def test_reply_does_not_concatenate_incompatible_templates(self):
         conversation, decisions = self._run_duno_smoke(self._conversation(session_id="no-hybrid"))
