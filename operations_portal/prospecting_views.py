@@ -52,6 +52,8 @@ from prospecting.application.contact_outcomes import record_prospect_contact_out
 from prospecting.application.commercial_queue import (
     CommercialQueueCategory,
     CommercialQueueCounters,
+    INBOUND_KIND_LABELS,
+    SOURCE_INBOUND_LIVIA,
     build_commercial_queue,
     commercial_queue_counters_from_items,
 )
@@ -257,6 +259,7 @@ def _follow_up_queue_redirect(request):
 
 
 MY_QUEUE_CATEGORY_LABELS = {
+    CommercialQueueCategory.INBOUND_HANDOFF: "Inbound comercial",
     CommercialQueueCategory.FOLLOW_UP_OVERDUE: "Acompanhamento atrasado",
     CommercialQueueCategory.FOLLOW_UP_TODAY: "Acompanhamento hoje",
     CommercialQueueCategory.OUTREACH_PENDING: "Abordagem pendente",
@@ -266,6 +269,7 @@ MY_QUEUE_CATEGORY_LABELS = {
 }
 
 MY_QUEUE_ACTION_LABELS = {
+    CommercialQueueCategory.INBOUND_HANDOFF: "Atender lead inbound",
     CommercialQueueCategory.FOLLOW_UP_OVERDUE: "Executar acompanhamento atrasado",
     CommercialQueueCategory.FOLLOW_UP_TODAY: "Executar acompanhamento de hoje",
     CommercialQueueCategory.OUTREACH_PENDING: "Continuar abordagem",
@@ -287,7 +291,14 @@ def _apply_my_queue_filters(items, *, category="", priority="", prospect_q=""):
     prospect_q = (prospect_q or "").strip()
     if prospect_q:
         needle = prospect_q.casefold()
-        items = [item for item in items if needle in item.display_name.casefold()]
+        items = [
+            item
+            for item in items
+            if needle in item.display_name.casefold()
+            or needle in (item.company or "").casefold()
+            or needle in (item.email or "").casefold()
+            or needle in (item.phone or "").casefold()
+        ]
     return items
 
 
@@ -324,7 +335,11 @@ def _build_my_queue_rows(*, items, tenant, tenant_ids, tenant_names):
         follow_up_qs = follow_up_qs.filter(tenant_id__in=tenant_ids)
     follow_ups = {item.id: item for item in follow_up_qs}
 
-    waiting_prospect_ids = [item.prospect_id for item in items if item.category == CommercialQueueCategory.WAITING_OUTCOME]
+    waiting_prospect_ids = [
+        item.prospect_id
+        for item in items
+        if item.prospect_id and item.category == CommercialQueueCategory.WAITING_OUTCOME
+    ]
     waiting_send_ids = _waiting_outcome_send_ids(tenant=tenant, tenant_ids=tenant_ids, prospect_ids=waiting_prospect_ids)
 
     rows = []
@@ -337,12 +352,19 @@ def _build_my_queue_rows(*, items, tenant, tenant_ids, tenant_names):
                 "follow_up": follow_ups.get(item.follow_up_id),
                 "waiting_send_id": waiting_send_ids.get(item.prospect_id),
                 "tenant_name": tenant_names.get(item.tenant_id, ""),
+                "inbound_kind_label": INBOUND_KIND_LABELS.get(item.inbound_kind, ""),
             }
         )
     return rows
 
 
 def _my_queue_primary_cta_url(*, item, waiting_send_id):
+    if getattr(item, "source", "") == SOURCE_INBOUND_LIVIA:
+        if item.lead_draft_id:
+            return reverse("operations_portal:commercial_lead_detail", args=[item.lead_draft_id])
+        if item.handoff_id:
+            return reverse("operations_portal:commercial_handoff_detail", args=[item.handoff_id])
+        return reverse("operations_portal:commercial_lead_list")
     detail = reverse("operations_portal:prospecting_prospect_detail", args=[item.prospect_id])
     if item.category in {
         CommercialQueueCategory.FOLLOW_UP_OVERDUE,
@@ -360,7 +382,11 @@ def _my_queue_primary_cta_url(*, item, waiting_send_id):
     return detail
 
 
-def _my_queue_primary_cta_label(*, category):
+def _my_queue_primary_cta_label(*, category, item=None):
+    if category == CommercialQueueCategory.INBOUND_HANDOFF:
+        if item is not None and item.lead_draft_id:
+            return "Abrir lead"
+        return "Abrir atendimento"
     if category in {CommercialQueueCategory.FOLLOW_UP_OVERDUE, CommercialQueueCategory.FOLLOW_UP_TODAY}:
         return "Abrir prospect"
     if category == CommercialQueueCategory.OUTREACH_PENDING:
@@ -1245,7 +1271,7 @@ def prospecting_my_queue(request):
     rows = _build_my_queue_rows(items=items, tenant=tenant, tenant_ids=tenant_ids, tenant_names=tenant_names)
     for row in rows:
         row["cta_url"] = _my_queue_primary_cta_url(item=row["item"], waiting_send_id=row["waiting_send_id"])
-        row["cta_label"] = _my_queue_primary_cta_label(category=row["item"].category)
+        row["cta_label"] = _my_queue_primary_cta_label(category=row["item"].category, item=row["item"])
         priority = row["item"].priority
         row["priority_display"] = "—" if priority == Prospect.Priority.UNSET else priority_labels.get(priority, priority)
     page_obj = Paginator(rows, 25).get_page(request.GET.get("page") or 1)

@@ -165,6 +165,7 @@ def _prospecting_my_queue_dashboard(*, tenant, user=None):
         "overdue": counters.follow_up_overdue,
         "today": counters.follow_up_today,
         "outreach_pending": counters.outreach_pending,
+        "inbound_handoff": counters.inbound_handoff,
     }
 
 

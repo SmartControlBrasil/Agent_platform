@@ -259,6 +259,7 @@ class MyQueueFilterForm(_StyledForm):
         required=False,
         choices=[
             ("", "Categoria: todas"),
+            ("INBOUND_HANDOFF", "Inbound comercial"),
             ("FOLLOW_UP_OVERDUE", "Acompanhamento atrasado"),
             ("FOLLOW_UP_TODAY", "Acompanhamento hoje"),
             ("OUTREACH_PENDING", "Abordagem pendente"),

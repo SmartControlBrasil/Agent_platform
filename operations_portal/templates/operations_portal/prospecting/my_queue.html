@@ -10,7 +10,7 @@
         <li class="breadcrumb-item"><a href="{% url 'operations_portal:dashboard' %}">Painel</a></li>
         <li class="breadcrumb-item active">Prospecção · Minha Fila</li>
       </ol>
-      <p class="text-muted small mb-0 mt-1">Próximas ações da prospecção comercial. {{ tenant_scope_note }}</p>
+      <p class="text-muted small mb-0 mt-1">Próximas ações comerciais, outbound e inbound. {{ tenant_scope_note }}</p>
     </div>
   </div>
 
@@ -19,6 +19,7 @@
   {% endif %}
 
   <div class="row g-2 mb-3" aria-label="Resumo da Minha Fila">
+    <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Inbound</div><div class="fs-5 fw-semibold">{{ counters.inbound_handoff }}</div></div></div></div>
     <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Atrasados</div><div class="fs-5 fw-semibold text-danger">{{ counters.follow_up_overdue }}</div></div></div></div>
     <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Hoje</div><div class="fs-5 fw-semibold">{{ counters.follow_up_today }}</div></div></div></div>
     <div class="col-md-4 col-lg-2"><div class="card"><div class="card-body py-2"><div class="text-muted small">Abordagem pendente</div><div class="fs-5 fw-semibold">{{ counters.outreach_pending }}</div></div></div></div>
@@ -59,14 +60,25 @@
             <tr>
               <td>
                 <span class="visually-hidden">{{ row.category_label }}.</span>
-                {% if row.item.category == 'FOLLOW_UP_OVERDUE' %}<span class="badge bg-danger">{{ row.category_label }}</span>
+                {% if row.item.category == 'INBOUND_HANDOFF' %}<span class="badge bg-dark">{{ row.category_label }}</span>
+                {% elif row.item.category == 'FOLLOW_UP_OVERDUE' %}<span class="badge bg-danger">{{ row.category_label }}</span>
                 {% elif row.item.category == 'FOLLOW_UP_TODAY' %}<span class="badge bg-warning text-dark">{{ row.category_label }}</span>
                 {% elif row.item.category == 'OUTREACH_PENDING' %}<span class="badge bg-primary">{{ row.category_label }}</span>
                 {% elif row.item.category == 'WAITING_OUTCOME' %}<span class="badge bg-info text-dark">{{ row.category_label }}</span>
                 {% elif row.item.category == 'MISSING_CONTACT' %}<span class="badge bg-secondary">{{ row.category_label }}</span>
                 {% else %}<span class="badge bg-success">{{ row.category_label }}</span>{% endif %}
               </td>
-              <td><span class="fw-semibold">{{ row.item.display_name }}</span></td>
+              <td>
+                <span class="fw-semibold">{{ row.item.display_name }}</span>
+                {% if row.item.source == 'inbound_livia' %}
+                <div class="small text-muted">Inbound · {{ row.item.origin_label }}{% if row.inbound_kind_label %} · {{ row.inbound_kind_label }}{% endif %}</div>
+                {% if row.item.company %}<div class="small">{{ row.item.company }}</div>{% endif %}
+                {% if row.item.phone or row.item.email %}
+                <div class="small">{{ row.item.phone }}{% if row.item.phone and row.item.email %} · {% endif %}{{ row.item.email }}</div>
+                {% endif %}
+                {% if row.item.need_summary %}<div class="small text-muted">{{ row.item.need_summary|truncatechars:120 }}</div>{% endif %}
+                {% endif %}
+              </td>
               <td>{{ row.priority_display }}</td>
               <td class="small">{{ row.action_label }}</td>
               <td>{% if row.item.sort_timestamp %}{{ row.item.sort_timestamp|date:"d/m/Y H:i" }}{% else %}—{% endif %}</td>

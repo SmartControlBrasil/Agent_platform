@@ -1794,6 +1794,60 @@ class ProspectingMyQueuePortalTests(TestCase):
             403,
         )
 
+    def _inbound_lead(self, *, name="João Inbound", phone="11999999999"):
+        from assistant_core.consultative_policy import mark_collection_active
+        from conversations.models import Conversation
+        from leads.models import LeadDraft
+
+        conversation = Conversation.objects.create(tenant=self.tenant, session_id=str(uuid.uuid4()))
+        lead = LeadDraft.objects.create(
+            tenant=self.tenant,
+            conversation=conversation,
+            name=name,
+            phone=phone,
+            company="XPTO",
+            need_summary="Orçamento para automação.",
+        )
+        mark_collection_active(lead, reason="explicit_quote", intent_type="budget")
+        lead.save(update_fields=["qualification_data", "updated_at"])
+        return lead
+
+    def test_inbound_lead_appears_with_origin_and_cta(self):
+        lead = self._inbound_lead()
+        self.client.force_login(self.admin)
+        response = self.client.get(self.my_queue_url)
+        self.assertContains(response, "João Inbound")
+        self.assertContains(response, "Inbound · Lívia")
+        self.assertContains(response, "Orçamento")
+        self.assertContains(response, reverse("operations_portal:commercial_lead_detail", args=[lead.pk]))
+        self.assertContains(response, "Abrir lead")
+
+    def test_inbound_category_filter_hides_outbound(self):
+        self._inbound_lead(name="Somente Inbound")
+        self._ready_prospect(name="Somente Outbound", identity_key="somente-outbound-mq")
+        self.client.force_login(self.admin)
+        inbound = self.client.get(self.my_queue_url + "?category=INBOUND_HANDOFF")
+        self.assertContains(inbound, "Somente Inbound")
+        self.assertNotContains(inbound, "Somente Outbound")
+        everyone = self.client.get(self.my_queue_url)
+        self.assertContains(everyone, "Somente Inbound")
+        self.assertContains(everyone, "Somente Outbound")
+
+    def test_my_queue_query_count_stable_with_more_inbound_leads(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.client.force_login(self.admin)
+        self._inbound_lead(name="Baseline Inbound MQ")
+        with CaptureQueriesContext(connection) as baseline:
+            self.client.get(f"{self.my_queue_url}?tenant={self.tenant.pk}")
+        baseline_count = len(baseline.captured_queries)
+        for index in range(12):
+            self._inbound_lead(name=f"Extra Inbound MQ {index}")
+        with CaptureQueriesContext(connection) as expanded:
+            self.client.get(f"{self.my_queue_url}?tenant={self.tenant.pk}")
+        self.assertEqual(len(expanded.captured_queries), baseline_count)
+
 
 @override_settings(SECURE_SSL_REDIRECT=False, STORAGES=TEST_STORAGES)
 class ProspectingMyQueueDashboardTests(TestCase):
