@@ -139,6 +139,11 @@ OPERATIONAL_QUALIFICATION_KEYS = frozenset(
         "intent_source",
         "intent_confidence",
         "semantic_intent_reason",
+        "commercial_notification_sent_at",
+        "commercial_notification_dry_run_at",
+        "lead_notification_sent_at",
+        "lead_notification_dry_run_at",
+        "lead_notification_dry_run",
     }
 )
 

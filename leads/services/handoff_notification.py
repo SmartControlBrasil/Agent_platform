@@ -7,7 +7,18 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
-from assistant_core.summary import build_handoff_notification_body
+from assistant_core.summary import (
+    build_commercial_notification_html,
+    build_handoff_notification_body,
+    build_handoff_notification_subject,
+)
+from leads.services.commercial_notification import (
+    cycle_already_dry_run,
+    cycle_already_notified,
+    has_usable_cycle_contact,
+    mark_cycle_notified,
+    related_lead,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +42,17 @@ class HandoffNotificationService:
         dry_run = bool(getattr(settings, "LIVIA_HANDOFF_NOTIFICATIONS_DRY_RUN", True))
         recipient = self._recipient_for(handoff)
 
-        if self._already_sent(handoff):
+        lead = related_lead(handoff=handoff)
+        if cycle_already_notified(lead=lead, handoff=handoff) or self._already_sent(handoff):
             message = "Handoff notification already sent; skipping duplicate."
             self._log("handoff_notification_skipped_duplicate", handoff, message=message)
+            return HandoffNotificationResult(
+                success=True, dry_run=dry_run, channel=self.channel, message=message, skipped=True
+            )
+
+        if not has_usable_cycle_contact(lead=lead, handoff=handoff):
+            message = "Handoff has no usable contact; skipping commercial email."
+            self._log("handoff_notification_missing_contact", handoff, message=message)
             return HandoffNotificationResult(
                 success=True, dry_run=dry_run, channel=self.channel, message=message, skipped=True
             )
@@ -46,8 +65,14 @@ class HandoffNotificationService:
             )
 
         if dry_run:
+            if cycle_already_dry_run(lead=lead, handoff=handoff):
+                message = "Handoff notification dry-run already recorded; skipping duplicate."
+                self._log("handoff_notification_dry_run_duplicate", handoff, message=message)
+                return HandoffNotificationResult(
+                    success=True, dry_run=True, channel=self.channel, message=message, skipped=True
+                )
             message = f"Dry-run handoff notification prepared for {recipient or 'no-recipient'}."
-            self._mark_sent(handoff, dry_run=True)
+            self._mark_sent(handoff, dry_run=True, lead=lead)
             self._log("handoff_notification_dry_run", handoff, message=message)
             return HandoffNotificationResult(
                 success=True, dry_run=True, channel=self.channel, message=message, skipped=False
@@ -60,13 +85,7 @@ class HandoffNotificationService:
                 success=False, dry_run=False, channel=self.channel, message=message, skipped=False
             )
 
-        display_name = (
-            str(getattr(handoff, "visitor_name", "") or "").strip()
-            or str(getattr(handoff, "visitor_company", "") or "").strip()
-            or str(getattr(getattr(handoff, "tenant", None), "name", "") or "").strip()
-            or "Atendimento"
-        )
-        subject = f"Solicitação de atendimento da Lívia - {display_name}"
+        subject = build_handoff_notification_subject(handoff, lead_draft=lead)
         timestamp = timezone.localtime(timezone.now()).strftime("%d/%m/%Y %H:%M")
         body = build_handoff_notification_body(handoff, timestamp=timestamp)
         from_email = str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or "").strip() or recipient
@@ -78,8 +97,16 @@ class HandoffNotificationService:
             to=[recipient],
             bcc=bcc,
         )
-        email.send(fail_silently=False)
-        self._mark_sent(handoff, dry_run=False)
+        email.attach_alternative(build_commercial_notification_html(body), "text/html")
+        try:
+            email.send(fail_silently=False)
+        except Exception as exc:
+            message = f"Handoff notification delivery failed: {exc.__class__.__name__}"
+            self._log("handoff_notification_failed", handoff, message=message)
+            return HandoffNotificationResult(
+                success=False, dry_run=False, channel=self.channel, message=message, skipped=False
+            )
+        self._mark_sent(handoff, dry_run=False, lead=lead)
         try:
             from conversations.models import HandoffRequest
 
@@ -112,17 +139,8 @@ class HandoffNotificationService:
         data = getattr(handoff, "metadata", None) or {}
         return bool(isinstance(data, dict) and data.get(NOTIFICATION_SENT_KEY))
 
-    def _mark_sent(self, handoff, *, dry_run: bool) -> None:
-        if handoff is None or not hasattr(handoff, "metadata"):
-            return
-        data = dict(getattr(handoff, "metadata", None) or {})
-        data[NOTIFICATION_SENT_KEY] = timezone.now().isoformat()
-        data["handoff_notification_dry_run"] = bool(dry_run)
-        handoff.metadata = data
-        update_fields = ["metadata"]
-        if hasattr(handoff, "updated_at"):
-            update_fields.append("updated_at")
-        handoff.save(update_fields=update_fields)
+    def _mark_sent(self, handoff, *, dry_run: bool, lead=None) -> None:
+        mark_cycle_notified(lead=lead, handoff=handoff, dry_run=dry_run)
 
     def _log(self, event: str, handoff, *, message: str) -> None:
         logger.info(

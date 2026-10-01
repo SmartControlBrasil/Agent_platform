@@ -142,7 +142,7 @@ class LeadFinalizationTests(TestCase):
     def test_f_subject_follows_pattern(self):
         lead = _complete_lead(self.tenant, name="Carlos", need_summary="Preciso de robô de limpeza para galpão.")
         subject = build_lead_notification_subject(lead)
-        self.assertEqual(subject, "[Lívia] Novo atendimento — Carlos — Robô de limpeza")
+        self.assertEqual(subject, "Novo lead Lívia — Interesse comercial — Carlos")
 
     def test_g_transcript_has_client_and_livia_in_order(self):
         lead = _complete_lead(self.tenant)
@@ -162,7 +162,7 @@ class LeadFinalizationTests(TestCase):
         transcript = build_conversation_transcript(lead.conversation, lead_draft=lead)
         body = build_lead_notification_body(lead, timestamp="12/09/2026 10:00")
         self.assertIn("RESUMO DO ATENDIMENTO", body)
-        self.assertIn("HISTÓRICO DA CONVERSA", body)
+        self.assertIn("CONVERSA COMPLETA", body)
         self.assertIn(summary_text, body)
         self.assertNotEqual(summary_text.strip(), transcript.strip())
 
@@ -342,10 +342,10 @@ class LeadFinalizationTests(TestCase):
         Message.objects.create(conversation=lead.conversation, role=Message.Role.ASSISTANT, content="Posso ajudar.")
         body = build_lead_notification_body(lead, timestamp="12/09/2026 10:00")
         for section in (
-            "DADOS DO CONTATO",
-            "ASSUNTO",
+            "DADOS DO LEAD",
+            "SOLICITAÇÃO",
             "RESUMO DO ATENDIMENTO",
-            "HISTÓRICO DA CONVERSA",
+            "CONVERSA COMPLETA",
             "Cliente:",
             "Lívia:",
             "INFORMAÇÕES INTERNAS",
@@ -356,4 +356,4 @@ class LeadFinalizationTests(TestCase):
     def test_subject_without_confident_topic_uses_name_only(self):
         lead = _complete_lead(self.tenant, name="Ana", need_summary="Preciso de ajuda com meu projeto.")
         subject = build_lead_notification_subject(lead)
-        self.assertEqual(subject, "[Lívia] Novo atendimento — Ana")
+        self.assertEqual(subject, "Novo lead Lívia — Interesse comercial — Ana")

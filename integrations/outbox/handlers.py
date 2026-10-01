@@ -171,7 +171,18 @@ class HandoffCreatedHandler(BaseOutboxHandler):
         notification_result = HandoffNotificationService().notify(handoff)
         webhook_logs = WebhookDispatchService().dispatch_handoff_created(handoff, event_id=str(event.event_id), envelope=event.payload)
         webhook_result = _classify_webhook_logs(webhook_logs)
-        notification_meta = {"success": notification_result.success, "dry_run": notification_result.dry_run}
+        notification_meta = {
+            "success": notification_result.success,
+            "dry_run": notification_result.dry_run,
+            "skipped": notification_result.skipped,
+            "message": notification_result.message,
+        }
+        if not notification_result.success and not notification_result.skipped:
+            return retryable_failure(
+                "email_delivery_failed",
+                notification_result.message or "Handoff notification email failed.",
+                {"notification": notification_meta, "webhooks": webhook_result.metadata},
+            )
         if webhook_result.retryable:
             handoff.dispatch_state = HandoffRequest.DispatchState.RETRYING
             handoff.save(update_fields=["dispatch_state", "updated_at"])

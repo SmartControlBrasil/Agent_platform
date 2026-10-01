@@ -7,8 +7,18 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
-from assistant_core.summary import build_lead_notification_body, build_lead_notification_subject
+from assistant_core.summary import (
+    build_commercial_notification_html,
+    build_lead_notification_body,
+    build_lead_notification_subject,
+)
 from leads.services.commercial import is_ready_for_commercial_notification
+from leads.services.commercial_notification import (
+    cycle_already_dry_run,
+    cycle_already_notified,
+    has_usable_cycle_contact,
+    mark_cycle_notified,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +48,12 @@ class LeadNotificationService:
             self._log("lead_notification_not_ready", lead_draft, message=message)
             return LeadNotificationResult(success=True, dry_run=dry_run, skipped=True, message=message)
 
-        if self._already_sent(lead_draft):
+        if not has_usable_cycle_contact(lead=lead_draft):
+            message = "Lead has no usable contact; skipping commercial email."
+            self._log("lead_notification_missing_contact", lead_draft, message=message)
+            return LeadNotificationResult(success=True, dry_run=dry_run, skipped=True, message=message)
+
+        if cycle_already_notified(lead=lead_draft) or self._already_sent(lead_draft):
             message = "Lead notification already sent; skipping duplicate."
             self._log("lead_notification_skipped_duplicate", lead_draft, message=message)
             return LeadNotificationResult(success=True, dry_run=False, skipped=True, message=message)
@@ -49,7 +64,7 @@ class LeadNotificationService:
             return LeadNotificationResult(success=True, dry_run=True, skipped=True, message=message)
 
         if dry_run:
-            if self._already_dry_run(lead_draft):
+            if cycle_already_dry_run(lead=lead_draft) or self._already_dry_run(lead_draft):
                 message = "Lead notification dry-run already recorded; skipping duplicate."
                 self._log("lead_notification_dry_run_duplicate", lead_draft, message=message)
                 return LeadNotificationResult(success=True, dry_run=True, skipped=True, message=message)
@@ -82,6 +97,7 @@ class LeadNotificationService:
             to=[recipient],
             bcc=bcc,
         )
+        email.attach_alternative(build_commercial_notification_html(body), "text/html")
         try:
             email.send(fail_silently=False)
         except Exception as exc:
@@ -129,21 +145,10 @@ class LeadNotificationService:
         return bool(isinstance(data, dict) and data.get(NOTIFICATION_DRY_RUN_KEY))
 
     def _mark_delivered(self, lead_draft) -> None:
-        if lead_draft is None or not hasattr(lead_draft, "qualification_data"):
-            return
-        data = dict(getattr(lead_draft, "qualification_data", None) or {})
-        data[NOTIFICATION_SENT_KEY] = timezone.now().isoformat()
-        lead_draft.qualification_data = data
-        lead_draft.save(update_fields=["qualification_data", "updated_at"])
+        mark_cycle_notified(lead=lead_draft, dry_run=False)
 
     def _mark_dry_run(self, lead_draft) -> None:
-        if lead_draft is None or not hasattr(lead_draft, "qualification_data"):
-            return
-        data = dict(getattr(lead_draft, "qualification_data", None) or {})
-        data[NOTIFICATION_DRY_RUN_KEY] = timezone.now().isoformat()
-        data[NOTIFICATION_DRY_RUN_FLAG_KEY] = True
-        lead_draft.qualification_data = data
-        lead_draft.save(update_fields=["qualification_data", "updated_at"])
+        mark_cycle_notified(lead=lead_draft, dry_run=True)
 
     def _log(self, event: str, lead_draft, *, message: str) -> None:
         logger.info(

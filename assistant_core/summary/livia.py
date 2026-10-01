@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 
@@ -88,6 +89,23 @@ def format_conversation_summary_notes(summary: ConversationSummary) -> str:
 
 MAX_TRANSCRIPT_CHARS = 14000
 MAX_TRANSCRIPT_TURNS = 80
+# Transcript comercial: conversas normais cabem inteiras. O teto é só proteção
+# excepcional contra abuso — se for atingido, o e-mail declara o truncamento.
+MAX_COMMERCIAL_TRANSCRIPT_MESSAGES = 500
+MAX_COMMERCIAL_TRANSCRIPT_CHARS = 200000
+MAX_COMMERCIAL_MESSAGE_CHARS = 20000
+
+INTENT_TYPE_LABELS = {
+    "budget": "Orçamento",
+    "quote": "Cotação",
+    "quote_request": "Cotação",
+    "proposta": "Proposta",
+    "hire": "Contratação",
+    "human": "Solicitação de atendente",
+    "human_handoff": "Solicitação de atendente",
+    "commercial": "Interesse comercial",
+    "commercial_interest": "Interesse comercial",
+}
 NOTIFICATION_TOPIC_PATTERNS = (
     (re.compile(r"rob[oô]", re.IGNORECASE), "Robô de limpeza"),
     (re.compile(r"ar[- ]?condicionado", re.IGNORECASE), "Ar-condicionado"),
@@ -112,38 +130,138 @@ INTERNAL_CONTENT_MARKERS = (
 
 
 def build_conversation_transcript(conversation, *, lead_draft=None) -> str:
+    """Transcript limitado para LLM, resumo armazenado e payloads operacionais."""
+    return _build_transcript(
+        conversation,
+        max_turns=MAX_TRANSCRIPT_TURNS,
+        max_chars=MAX_TRANSCRIPT_CHARS,
+        max_line_chars=1200,
+        omit_notice="... ({omitted} mensagens anteriores omitidas para legibilidade) ...",
+        truncate_notice="... (histórico truncado para caber no e-mail) ...",
+    )
+
+
+def build_commercial_notification_transcript(conversation, *, lead_draft=None) -> str:
+    """Transcript comercial: todas as mensagens user/assistant persistidas, sem o teto 80/14k."""
+    return _build_transcript(
+        conversation,
+        max_turns=MAX_COMMERCIAL_TRANSCRIPT_MESSAGES,
+        max_chars=MAX_COMMERCIAL_TRANSCRIPT_CHARS,
+        max_line_chars=MAX_COMMERCIAL_MESSAGE_CHARS,
+        omit_notice=(
+            "[Truncamento excepcional] {omitted} mensagens mais antigas foram omitidas "
+            f"por proteção de tamanho (limite {MAX_COMMERCIAL_TRANSCRIPT_MESSAGES} mensagens)."
+        ),
+        truncate_notice=(
+            "[Truncamento excepcional] o restante da conversa foi omitido "
+            f"por proteção de tamanho (limite {MAX_COMMERCIAL_TRANSCRIPT_CHARS} caracteres)."
+        ),
+    )
+
+
+def _build_transcript(
+    conversation,
+    *,
+    max_turns: int,
+    max_chars: int,
+    max_line_chars: int,
+    omit_notice: str,
+    truncate_notice: str,
+) -> str:
     messages = _conversation_messages(conversation)
     if not messages:
         return "Sem histórico registrado nesta conversa."
 
-    selected = messages[-MAX_TRANSCRIPT_TURNS:] if len(messages) > MAX_TRANSCRIPT_TURNS else messages
+    selected = messages[-max_turns:] if len(messages) > max_turns else messages
     omitted = len(messages) - len(selected)
     lines: list[str] = []
     total_chars = 0
     if omitted > 0:
-        lines.append(f"... ({omitted} mensagens anteriores omitidas para legibilidade) ...")
+        lines.append(omit_notice.format(omitted=omitted))
         lines.append("")
 
     for message in selected:
-        content = _sanitize_transcript_line(message.content)
+        content = _sanitize_transcript_line(message.content, max_chars=max_line_chars)
         if not content:
             continue
         speaker = "Cliente" if message.role == Message.Role.USER else "Lívia"
         line = f"{speaker}: {content}"
-        if total_chars + len(line) > MAX_TRANSCRIPT_CHARS:
-            lines.append("... (histórico truncado para caber no e-mail) ...")
+        if total_chars + len(line) > max_chars:
+            lines.append(truncate_notice)
             break
         lines.append(line)
         total_chars += len(line)
     return "\n".join(lines) if lines else "Sem histórico registrado nesta conversa."
 
 
-def build_lead_notification_subject(lead_draft) -> str:
-    name = str(getattr(lead_draft, "name", "") or "").strip() or "Lead sem identificação"
-    topic = _notification_subject_topic(lead_draft)
-    if topic:
-        return f"[Lívia] Novo atendimento — {name} — {topic}"
-    return f"[Lívia] Novo atendimento — {name}"
+def _display_or_missing(value) -> str:
+    cleaned = str(value or "").strip()
+    return cleaned or "Não informado"
+
+
+def _related_explicit_handoff(*, lead_draft=None, handoff=None):
+    if handoff is not None:
+        return handoff
+    conversation = getattr(lead_draft, "conversation", None)
+    tenant = getattr(lead_draft, "tenant", None)
+    if conversation is None:
+        return None
+    try:
+        return conversation.handoff_requests.filter(
+            tenant=tenant,
+            reason="explicit_request",
+        ).first()
+    except Exception:
+        return None
+
+
+def resolve_commercial_intent_label(*, lead_draft=None, handoff=None) -> str:
+    related = _related_explicit_handoff(lead_draft=lead_draft, handoff=handoff)
+    if related is not None:
+        reason = str(getattr(related, "reason", "") or "").strip().lower()
+        if reason in {"explicit_request", "human_requested", "human"}:
+            return INTENT_TYPE_LABELS["human"]
+    data = dict(getattr(lead_draft, "qualification_data", None) or {}) if lead_draft is not None else {}
+    intent_type = str(data.get("intent_type") or "").strip().lower()
+    if intent_type in INTENT_TYPE_LABELS:
+        return INTENT_TYPE_LABELS[intent_type]
+    trigger = str(data.get("collection_trigger_reason") or "").strip().lower()
+    if "human" in trigger or "handoff" in trigger or "atendente" in trigger:
+        return INTENT_TYPE_LABELS["human"]
+    if "hire" in trigger or "contrat" in trigger:
+        return INTENT_TYPE_LABELS["hire"]
+    if "quote" in trigger or "proposta" in trigger:
+        return INTENT_TYPE_LABELS["quote"]
+    if any(token in trigger for token in ("budget", "orcamento", "orçamento", "cotacao", "cotação")):
+        return INTENT_TYPE_LABELS["budget"]
+    if trigger:
+        return INTENT_TYPE_LABELS["commercial"]
+    return INTENT_TYPE_LABELS["commercial"]
+
+
+def _subject_party(*, lead_draft=None, handoff=None) -> str:
+    company = str(getattr(lead_draft, "company", "") or "").strip()
+    if not company and handoff is not None:
+        company = str(getattr(handoff, "visitor_company", "") or "").strip()
+    if company:
+        return company
+    name = str(getattr(lead_draft, "name", "") or "").strip()
+    if not name and handoff is not None:
+        name = str(getattr(handoff, "visitor_name", "") or "").strip()
+    return name
+
+
+def build_lead_notification_subject(lead_draft, *, handoff=None) -> str:
+    intent_label = resolve_commercial_intent_label(lead_draft=lead_draft, handoff=handoff)
+    party = _subject_party(lead_draft=lead_draft, handoff=handoff)
+    if party:
+        return f"Novo lead Lívia — {intent_label} — {party}"
+    return f"Novo lead Lívia — {intent_label}"
+
+
+def build_handoff_notification_subject(handoff, *, lead_draft=None) -> str:
+    lead = lead_draft if lead_draft is not None else getattr(handoff, "lead_draft", None)
+    return build_lead_notification_subject(lead, handoff=handoff)
 
 
 def build_lead_notification_summary_text(conversation, *, lead_draft=None) -> str:
@@ -160,6 +278,7 @@ def build_lead_notification_summary_text(conversation, *, lead_draft=None) -> st
 
 
 def get_transcript_truncation_notice(conversation) -> str:
+    """Aviso do transcript limitado (LLM/resumo). O e-mail comercial usa o transcript completo."""
     messages = _conversation_messages(conversation)
     notices: list[str] = []
     if len(messages) > MAX_TRANSCRIPT_TURNS:
@@ -167,41 +286,93 @@ def get_transcript_truncation_notice(conversation) -> str:
     return " ".join(notices)
 
 
-def build_lead_notification_body(lead_draft, *, timestamp: str = "") -> str:
-    conversation = getattr(lead_draft, "conversation", None)
+def get_commercial_transcript_truncation_notice(conversation) -> str:
+    messages = _conversation_messages(conversation)
+    notices: list[str] = []
+    if len(messages) > MAX_COMMERCIAL_TRANSCRIPT_MESSAGES:
+        notices.append(
+            f"[Truncamento excepcional] conversa com {len(messages)} mensagens; "
+            f"exibindo as {MAX_COMMERCIAL_TRANSCRIPT_MESSAGES} mais recentes."
+        )
+    return " ".join(notices)
+
+
+def build_commercial_notification_html(body: str) -> str:
+    return (
+        '<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap;">'
+        f"{html.escape(str(body or ''))}"
+        "</pre>"
+    )
+
+
+def build_lead_notification_body(lead_draft, *, timestamp: str = "", handoff=None) -> str:
+    conversation = getattr(lead_draft, "conversation", None) if lead_draft is not None else getattr(handoff, "conversation", None)
     summary = build_conversation_summary(conversation, lead_draft=lead_draft)
-    transcript = build_conversation_transcript(conversation, lead_draft=lead_draft)
+    transcript = build_commercial_notification_transcript(conversation, lead_draft=lead_draft)
     summary_text = build_lead_notification_summary_text(conversation, lead_draft=lead_draft)
-    truncation = get_transcript_truncation_notice(conversation)
-    tenant_slug = summary.tenant_slug or str(getattr(getattr(lead_draft, "tenant", None), "slug", "") or "")
+    truncation = get_commercial_transcript_truncation_notice(conversation)
+    tenant = getattr(lead_draft, "tenant", None) if lead_draft is not None else getattr(handoff, "tenant", None)
+    tenant_name = str(getattr(tenant, "name", "") or "").strip()
+    tenant_slug = summary.tenant_slug or str(getattr(tenant, "slug", "") or "")
     conversation_id = getattr(conversation, "pk", "") or ""
+    session_id = str(getattr(conversation, "session_id", "") or "").strip()
     lead_id = getattr(lead_draft, "pk", "") or ""
-    source_page = summary.source_page or str(getattr(conversation, "source_page", "") or "").strip()
+    source_page = (
+        summary.source_page
+        or str(getattr(conversation, "source_page", "") or "").strip()
+        or str(getattr(handoff, "source_page", "") or "").strip()
+    )
+    intent_label = resolve_commercial_intent_label(lead_draft=lead_draft, handoff=handoff)
+    name = _first_present(getattr(lead_draft, "name", ""), getattr(handoff, "visitor_name", ""))
+    phone = _first_present(getattr(lead_draft, "phone", ""), getattr(handoff, "visitor_phone", ""))
+    email = _first_present(getattr(lead_draft, "email", ""), getattr(handoff, "visitor_email", ""))
+    company = _first_present(getattr(lead_draft, "company", ""), getattr(handoff, "visitor_company", ""))
+    need = (
+        summary.need_summary
+        or str(getattr(lead_draft, "need_summary", "") or "").strip()
+        or "Não informado"
+    )
+    commercial_status = str(getattr(lead_draft, "commercial_status", "") or "").strip() if lead_draft is not None else ""
+    handoff_status = str(getattr(lead_draft, "handoff_status", "") or "").strip() if lead_draft is not None else ""
+    if handoff is not None and not handoff_status:
+        handoff_status = str(getattr(handoff, "status", "") or "").strip()
 
     lines = [
-        "NOVO ATENDIMENTO — LÍVIA",
+        "NOVO LEAD — LÍVIA",
         "",
-        "DADOS DO CONTATO",
+        "DADOS DO LEAD",
         "",
-        f"Nome: {getattr(lead_draft, 'name', '') or 'Não informado'}",
-        f"Telefone/WhatsApp: {getattr(lead_draft, 'phone', '') or 'Não informado'}",
-        f"E-mail: {getattr(lead_draft, 'email', '') or 'Não informado'}",
+        f"Nome: {_display_or_missing(name)}",
+        f"Telefone: {_display_or_missing(phone)}",
+        f"E-mail: {_display_or_missing(email)}",
+        f"Empresa: {_display_or_missing(company)}",
+        "",
+        "SOLICITAÇÃO",
+        "",
+        f"Tipo de intenção: {intent_label}",
+        f"Resumo da necessidade: {need}",
     ]
-    company = str(getattr(lead_draft, "company", "") or "").strip()
-    if company:
-        lines.append(f"Empresa: {company}")
+    if commercial_status:
+        lines.append(f"Status comercial: {commercial_status}")
+    if handoff_status:
+        lines.append(f"Status de handoff: {handoff_status}")
     lines.extend(
         [
+            f"Data/hora: {timestamp or 'Não informado'}",
             "",
-            "ASSUNTO",
+            "ORIGEM",
             "",
-            summary.need_summary or str(getattr(lead_draft, "need_summary", "") or "").strip() or "Não informado",
+            f"Tenant: {_display_or_missing(tenant_name or tenant_slug)}",
+            "Origem: Widget / Site",
+            f"Página de origem: {_display_or_missing(source_page)}",
+            f"URL da página: {_display_or_missing(source_page)}",
+            f"Identificador da conversa: {_display_or_missing(session_id or conversation_id)}",
             "",
             "RESUMO DO ATENDIMENTO",
             "",
             summary_text,
             "",
-            "HISTÓRICO DA CONVERSA",
+            "CONVERSA COMPLETA",
             "",
         ]
     )
@@ -214,14 +385,11 @@ def build_lead_notification_body(lead_draft, *, timestamp: str = "") -> str:
             "",
             "INFORMAÇÕES INTERNAS",
             "",
-            f"Tenant: {tenant_slug or 'não informado'}",
+            f"Tenant slug: {tenant_slug or 'não informado'}",
             f"Conversation ID: {conversation_id or 'não informado'}",
             f"Lead ID: {lead_id or 'não informado'}",
-            f"Data/hora: {timestamp or 'não informada'}",
         ]
     )
-    if source_page:
-        lines.append(f"Origem/página: {source_page}")
     return "\n".join(lines)
 
 
@@ -237,54 +405,24 @@ def _notification_subject_topic(lead_draft) -> str:
 
 
 def build_handoff_notification_body(handoff, *, timestamp: str = "") -> str:
-    conversation = getattr(handoff, "conversation", None)
     lead_draft = getattr(handoff, "lead_draft", None)
-    summary = build_conversation_summary(conversation, lead_draft=lead_draft)
-    transcript = build_conversation_transcript(conversation, lead_draft=lead_draft)
-    origin = summary.source_page or str(getattr(handoff, "source_page", "") or "") or "livia-platform"
-    reason = str(getattr(handoff, "reason", "") or "").strip() or "solicitação de atendimento"
-    tenant_slug = summary.tenant_slug or str(getattr(getattr(handoff, "tenant", None), "slug", "") or "")
-    return "\n".join(
-        [
-            "Solicitação de atendimento da Lívia",
-            "",
-            f"Tenant: {tenant_slug}",
-            f"Data/hora: {timestamp or 'não informada'}",
-            f"Origem: {origin}",
-            "",
-            "Dados disponíveis:",
-            f"Nome: {getattr(handoff, 'visitor_name', '') or getattr(lead_draft, 'name', '') or 'Não informado'}",
-            f"Empresa: {getattr(handoff, 'visitor_company', '') or getattr(lead_draft, 'company', '') or 'Não informado'}",
-            f"Telefone: {getattr(handoff, 'visitor_phone', '') or getattr(lead_draft, 'phone', '') or 'Não informado'}",
-            f"E-mail: {getattr(handoff, 'visitor_email', '') or getattr(lead_draft, 'email', '') or 'Não informado'}",
-            "",
-            f"Motivo do handoff: {reason}",
-            "",
-            "Resumo da necessidade:",
-            summary.need_summary or "Não informada",
-            "",
-            "Resumo executivo:",
-            f"Interesse em {AREA_LABELS.get(summary.service_area, summary.service_area or 'indefinido')}; "
-            f"urgência {summary.urgency}; próximo passo: {summary.recommended_next_step}",
-            "",
-            "Pontos importantes:",
-            *[f"- {note}" for note in (summary.conversation_notes or ("Não identificado.",))],
-            "",
-            "Próxima ação sugerida:",
-            "Retornar o contato com o contexto da conversa.",
-            "",
-            "Histórico da conversa:",
-            transcript,
-        ]
-    )
+    return build_lead_notification_body(lead_draft, timestamp=timestamp, handoff=handoff)
 
 
-def _sanitize_transcript_line(text: str) -> str:
+def _first_present(*values) -> str:
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _sanitize_transcript_line(text: str, *, max_chars: int = 1200) -> str:
     cleaned = re.sub(r"\s+", " ", str(text or "").strip())
     lowered = cleaned.lower()
     if any(marker in lowered for marker in INTERNAL_CONTENT_MARKERS):
         return ""
-    return cleaned[:1200]
+    return cleaned[:max_chars]
 
 
 def _conversation_messages(conversation):

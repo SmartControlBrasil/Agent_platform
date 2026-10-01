@@ -163,7 +163,8 @@ class HandoffService:
             lead_draft = getattr(conversation, "lead_draft", None)
 
         handoff.lead_draft = lead_draft
-        handoff.reason = decision.reason
+        if created or decision.reason == HandoffRequest.Reason.EXPLICIT_REQUEST or handoff.reason != HandoffRequest.Reason.EXPLICIT_REQUEST:
+            handoff.reason = decision.reason
         handoff.priority = self._max_priority(getattr(handoff, "priority", ""), decision.priority)
         handoff.visitor_name = self._first(
             getattr(lead_draft, "name", ""),
