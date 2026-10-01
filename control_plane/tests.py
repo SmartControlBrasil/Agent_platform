@@ -13,6 +13,7 @@ from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
 from tools.application.client_identity import create_service_client_credential
+from tools.application.identity import request_pairing
 from tools.models import (
     AgentToolBinding,
     ServiceClient,
@@ -22,6 +23,7 @@ from tools.models import (
     ToolExecution,
     ToolExecutor,
     ToolExecutorCapability,
+    ToolExecutorPairingRequest,
 )
 
 
@@ -592,6 +594,46 @@ class ControlPlaneTestCase(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+
+    def test_executor_pairing_tenant_dropdown_shows_pk_and_slug_and_approve_works(self):
+        tenant_oper = Tenant.objects.create(name="SCB", slug="smart-control-brasil", domain="scb-oper.example")
+        tenant_smoke = Tenant.objects.create(name="SCB", slug="scb-smoke-report", domain="scb-smoke.example")
+        TenantMembership.objects.create(
+            tenant=tenant_oper,
+            user=self.user_a,
+            role=TenantMembership.Role.TENANT_ADMIN,
+        )
+        TenantMembership.objects.create(
+            tenant=tenant_smoke,
+            user=self.user_a,
+            role=TenantMembership.Role.TENANT_ADMIN,
+        )
+        pairing = request_pairing(
+            executor_type=ToolExecutor.ExecutorType.BROWSER_EXTENSION,
+            requested_name="Pairing Label Test",
+        )
+
+        list_response = self.client.get(reverse("control_plane:executor_pairing_list"))
+        oper_label = f'SCB — #{tenant_oper.pk} — smart-control-brasil'
+        smoke_label = f'SCB — #{tenant_smoke.pk} — scb-smoke-report'
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertContains(list_response, oper_label)
+        self.assertContains(list_response, smoke_label)
+        self.assertContains(list_response, f'value="{tenant_oper.pk}"')
+        self.assertContains(list_response, f'value="{tenant_smoke.pk}"')
+
+        approve = self.client.post(
+            reverse("control_plane:executor_pairing_approve", args=[pairing.pk]),
+            {"tenant_id": tenant_oper.pk},
+        )
+        pairing.refresh_from_db()
+
+        self.assertEqual(approve.status_code, 302)
+        self.assertEqual(pairing.status, ToolExecutorPairingRequest.Status.APPROVED)
+        self.assertEqual(pairing.tenant_id, tenant_oper.pk)
+        self.assertIsNotNone(pairing.executor_id)
+        self.assertEqual(pairing.executor.tenant_id, tenant_oper.pk)
 
     def test_executor_detail_can_assign_and_toggle_generic_capability(self):
         executor = ToolExecutor.objects.create(

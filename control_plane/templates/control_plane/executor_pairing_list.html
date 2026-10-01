@@ -11,7 +11,7 @@
         <td>{{ pairing.requested_name }}</td><td>{{ pairing.executor_type }}</td><td>{{ pairing.tenant.name|default:"Pending assignment" }}</td><td>{{ pairing.status }}</td><td>{{ pairing.pairing_code }}</td><td>{{ pairing.expires_at }}</td>
         <td>{% if pairing.status == 'PENDING' %}
           <form method="post" action="{% url 'control_plane:executor_pairing_approve' pairing.pk %}" class="ap-actions">{% csrf_token %}
-            <select name="tenant_id">{% for tenant in manageable_tenants %}<option value="{{ tenant.pk }}">{{ tenant.name }}</option>{% endfor %}</select>
+            <select name="tenant_id">{% for tenant in manageable_tenants %}<option value="{{ tenant.pk }}">{{ tenant.name }} — #{{ tenant.pk }} — {{ tenant.slug }}</option>{% endfor %}</select>
             <button class="btn btn-sm btn-primary">Approve</button>
           </form>
           <form method="post" action="{% url 'control_plane:executor_pairing_reject' pairing.pk %}" style="margin-top:6px">{% csrf_token %}<button class="btn btn-sm btn-outline-danger">Reject</button></form>
