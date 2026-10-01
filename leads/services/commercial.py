@@ -136,6 +136,9 @@ OPERATIONAL_QUALIFICATION_KEYS = frozenset(
         "company_not_applicable",
         "intent_type",
         "commercial_intent_detected_at",
+        "intent_source",
+        "intent_confidence",
+        "semantic_intent_reason",
     }
 )
 

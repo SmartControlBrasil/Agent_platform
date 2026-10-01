@@ -125,6 +125,10 @@ class CollectionDecision:
     should_collect: bool
     trigger: CollectionTrigger = CollectionTrigger.NONE
     reason: str = ""
+    intent_source: str = ""
+    intent_confidence: float | None = None
+    semantic_reason: str = ""
+    intent_label: str = ""
 
 
 def is_conceptual_price_question(text: str) -> bool:
@@ -330,6 +334,9 @@ def mark_collection_active(
     reason: str = "",
     intent_type: str = "",
     trigger: CollectionTrigger | None = None,
+    intent_source: str = "",
+    confidence: float | None = None,
+    semantic_reason: str = "",
 ) -> None:
     if lead_draft is None or not hasattr(lead_draft, "qualification_data"):
         return
@@ -349,6 +356,21 @@ def mark_collection_active(
         data[INTENT_TYPE_KEY] = resolved_intent[:40]
     if not data.get(COMMERCIAL_INTENT_DETECTED_AT_KEY):
         data[COMMERCIAL_INTENT_DETECTED_AT_KEY] = timezone.now().isoformat()
+    from assistant_core.services.semantic_commercial_intent import (
+        INTENT_CONFIDENCE_KEY,
+        INTENT_SOURCE_DETERMINISTIC,
+        INTENT_SOURCE_KEY,
+        SEMANTIC_INTENT_REASON_KEY,
+    )
+
+    if intent_source:
+        data[INTENT_SOURCE_KEY] = str(intent_source)[:40]
+    elif not data.get(INTENT_SOURCE_KEY):
+        data[INTENT_SOURCE_KEY] = INTENT_SOURCE_DETERMINISTIC
+    if confidence is not None:
+        data[INTENT_CONFIDENCE_KEY] = round(float(confidence), 3)
+    if semantic_reason:
+        data[SEMANTIC_INTENT_REASON_KEY] = str(semantic_reason)[:200]
     lead_draft.qualification_data = data
     update_fields = ["qualification_data"]
     if hasattr(lead_draft, "updated_at"):
@@ -356,7 +378,111 @@ def mark_collection_active(
     lead_draft.save(update_fields=update_fields)
 
 
-def decide_collection(*, current_message: str, conversation=None, lead_draft=None, discovery=None) -> CollectionDecision:
+def activate_collection_from_gate(
+    lead_draft,
+    gate: CollectionDecision | None,
+    *,
+    current_message: str = "",
+) -> None:
+    if lead_draft is None or gate is None or not gate.should_collect:
+        return
+    trigger = gate.trigger if gate.trigger != CollectionTrigger.NONE else detect_collection_trigger(current_message)
+    from assistant_core.services.semantic_commercial_intent import INTENT_SOURCE_DETERMINISTIC
+
+    mark_collection_active(
+        lead_draft,
+        reason=gate.reason,
+        trigger=trigger if trigger != CollectionTrigger.NONE else None,
+        intent_type=gate.intent_label,
+        intent_source=gate.intent_source or INTENT_SOURCE_DETERMINISTIC,
+        confidence=gate.intent_confidence,
+        semantic_reason=gate.semantic_reason,
+    )
+
+
+def _should_skip_semantic_classifier(*, conversation, lead_draft, current_message: str) -> bool:
+    from assistant_core.dialogue_memory import COMMERCIAL_INTENT_KEY
+    from assistant_core.services.semantic_commercial_intent import is_semantic_intent_enabled
+    from leads.services.commercial import resolve_lead_draft
+
+    if not is_semantic_intent_enabled():
+        return True
+    if not str(current_message or "").strip():
+        return True
+    if detect_collection_trigger(current_message) != CollectionTrigger.NONE:
+        return True
+    lead = resolve_lead_draft(conversation, lead_draft)
+    qd = dict(getattr(lead, "qualification_data", None) or {}) if lead is not None else {}
+    if qd.get(COMMERCIAL_INTENT_KEY):
+        return True
+    if qd.get(COLLECTION_ACTIVE_KEY):
+        return True
+    return False
+
+
+def _semantic_collection_decision(
+    *,
+    current_message: str,
+    conversation=None,
+    lead_draft=None,
+    history=None,
+    semantic_classifier=None,
+) -> CollectionDecision | None:
+    if _should_skip_semantic_classifier(
+        conversation=conversation,
+        lead_draft=lead_draft,
+        current_message=current_message,
+    ):
+        return None
+    from assistant_core.dialogue_memory import COMMERCIAL_INTENT_KEY
+    from assistant_core.services.semantic_commercial_intent import (
+        CommercialIntentLabel,
+        SemanticCommercialIntentService,
+        SuggestedCommercialAction,
+        INTENT_SOURCE_SEMANTIC,
+    )
+    from leads.services.commercial import resolve_lead_draft
+
+    service = semantic_classifier or SemanticCommercialIntentService()
+    lead = resolve_lead_draft(conversation, lead_draft)
+    qd = dict(getattr(lead, "qualification_data", None) or {}) if lead is not None else {}
+    decision = service.classify(
+        current_message=current_message,
+        history=history,
+        need_summary=str(getattr(lead, "need_summary", "") or ""),
+        collection_active=bool(qd.get(COLLECTION_ACTIVE_KEY)),
+        commercial_intent_known=bool(qd.get(COMMERCIAL_INTENT_KEY)),
+        tenant_id=getattr(getattr(conversation, "tenant", None), "id", None),
+        conversation_id=getattr(conversation, "id", None),
+    )
+    if not service.should_act_on(decision):
+        return None
+    trigger = CollectionTrigger.BUDGET
+    if decision.intent == CommercialIntentLabel.HUMAN_HANDOFF or decision.suggested_action == SuggestedCommercialAction.REQUEST_HANDOFF:
+        trigger = CollectionTrigger.HUMAN
+    elif decision.intent == CommercialIntentLabel.QUOTE_REQUEST:
+        trigger = CollectionTrigger.BUDGET
+    reason = f"semantic_{decision.intent.value}"
+    return CollectionDecision(
+        should_collect=True,
+        trigger=trigger,
+        reason=reason,
+        intent_source=INTENT_SOURCE_SEMANTIC,
+        intent_confidence=decision.confidence,
+        semantic_reason=decision.reason,
+        intent_label=decision.intent.value,
+    )
+
+
+def decide_collection(
+    *,
+    current_message: str,
+    conversation=None,
+    lead_draft=None,
+    discovery=None,
+    history=None,
+    semantic_classifier=None,
+) -> CollectionDecision:
     from assistant_core.dialogue_memory import is_contact_deferred, wants_consultative_continue
 
     if is_contact_deferred(current_message) or wants_consultative_continue(current_message):
@@ -426,6 +552,15 @@ def decide_collection(*, current_message: str, conversation=None, lead_draft=Non
             )
         ):
             return CollectionDecision(True, trigger=CollectionTrigger.BUDGET, reason="volunteered_contact_with_need_markers")
+    semantic = _semantic_collection_decision(
+        current_message=current_message,
+        conversation=conversation,
+        lead_draft=lead_draft,
+        history=history,
+        semantic_classifier=semantic_classifier,
+    )
+    if semantic is not None:
+        return semantic
     return CollectionDecision(False, reason="consultative_mode")
 
 

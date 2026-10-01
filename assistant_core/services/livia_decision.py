@@ -165,6 +165,7 @@ class LiviaDecisionService:
             current_message=current_message,
             conversation=conversation,
             discovery=discovery,
+            history=history,
         )
         if conversation is not None and collection_gate.should_collect and turn.kind == TurnKind.OTHER:
             return self._handle_qualification(
@@ -176,6 +177,7 @@ class LiviaDecisionService:
                 assistant_profile=assistant_profile,
                 knowledge_context=knowledge_context,
                 activate_collection=True,
+                collection_gate=collection_gate,
                 collection_reason=getattr(collection_gate, "reason", "") or "",
             )
         if conversation is not None and turn.kind != TurnKind.OTHER:
@@ -248,6 +250,7 @@ class LiviaDecisionService:
                 current_message=current_message,
                 conversation=conversation,
                 discovery=discovery,
+                history=history,
             )
             if not collection.should_collect:
                 if self._should_answer_informatively_from_knowledge(discovery, knowledge_context):
@@ -335,6 +338,7 @@ class LiviaDecisionService:
                 assistant_profile=assistant_profile,
                 knowledge_context=knowledge_context,
                 activate_collection=True,
+                collection_gate=collection,
                 collection_reason=getattr(collection, "reason", "") or "",
             )
         if intent == "contact_data":
@@ -342,6 +346,7 @@ class LiviaDecisionService:
                 current_message=current_message,
                 conversation=conversation,
                 discovery=discovery,
+                history=history,
             )
             if collection.should_collect:
                 return self._handle_qualification(
@@ -353,6 +358,7 @@ class LiviaDecisionService:
                     assistant_profile=assistant_profile,
                     knowledge_context=knowledge_context,
                     activate_collection=True,
+                    collection_gate=collection,
                     collection_reason=getattr(collection, "reason", "") or "",
                 )
             if has_basic_contact(current_message) and (has_quote_request or has_commercial_interest):
@@ -384,6 +390,7 @@ class LiviaDecisionService:
                 current_message=current_message,
                 conversation=conversation,
                 discovery=discovery,
+                history=history,
             )
             if not collection.should_collect:
                 return self._handle_consultative_conversation(
@@ -405,6 +412,7 @@ class LiviaDecisionService:
                 assistant_profile=assistant_profile,
                 knowledge_context=knowledge_context,
                 activate_collection=True,
+                collection_gate=collection,
                 collection_reason=getattr(collection, "reason", "") or "",
             )
         if has_support_request or has_technical_question:
@@ -1090,6 +1098,7 @@ class LiviaDecisionService:
         knowledge_context: str = "",
         activate_collection: bool = False,
         collection_reason: str = "",
+        collection_gate=None,
     ) -> LiviaReply:
         if conversation is None:
             decision = LiviaReply(intent=intent, reply=build_contextual_reply(intent=intent))
@@ -1103,15 +1112,22 @@ class LiviaDecisionService:
 
         collection_trigger = None
         if activate_collection:
-            from assistant_core.consultative_policy import CollectionTrigger, detect_collection_trigger
+            from assistant_core.consultative_policy import CollectionTrigger, activate_collection_from_gate, detect_collection_trigger
 
             collection_trigger = detect_collection_trigger(current_message)
             lead_seed = self.lead_capture_service.get_or_create_lead_draft(conversation)
-            mark_collection_active(
-                lead_seed,
-                reason=collection_reason,
-                trigger=collection_trigger if collection_trigger != CollectionTrigger.NONE else None,
-            )
+            if collection_gate is not None:
+                activate_collection_from_gate(
+                    lead_seed,
+                    collection_gate,
+                    current_message=current_message,
+                )
+            else:
+                mark_collection_active(
+                    lead_seed,
+                    reason=collection_reason,
+                    trigger=collection_trigger if collection_trigger != CollectionTrigger.NONE else None,
+                )
 
         result = self.lead_capture_service.capture_from_message(
             conversation=conversation,
@@ -1119,11 +1135,18 @@ class LiviaDecisionService:
             history=history,
         )
         if activate_collection:
-            mark_collection_active(
-                result.lead_draft,
-                reason=collection_reason,
-                trigger=collection_trigger if collection_trigger != CollectionTrigger.NONE else None,
-            )
+            if collection_gate is not None:
+                activate_collection_from_gate(
+                    result.lead_draft,
+                    collection_gate,
+                    current_message=current_message,
+                )
+            else:
+                mark_collection_active(
+                    result.lead_draft,
+                    reason=collection_reason,
+                    trigger=collection_trigger if collection_trigger != CollectionTrigger.NONE else None,
+                )
         from assistant_core.consultative_policy import is_explicit_human_handoff
 
         if is_explicit_human_handoff(current_message):
