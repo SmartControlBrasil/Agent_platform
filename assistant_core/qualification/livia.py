@@ -56,6 +56,13 @@ INVALID_NAME_SNIPPETS = (
     "manutencao",
     "manutenção",
     "limpeza",
+    "duno",
+    "dune",
+    "hygibot",
+    "hygi bot",
+    "duno bot",
+    "dune bot",
+    "bot",
     "robo",
     "robô",
     "galpao",
@@ -75,6 +82,8 @@ NEED_STATEMENT_MARKERS = (
 PRODUCT_CONTEXT_SNIPPETS = (
     "robo",
     "robô",
+    "duno",
+    "dune",
     "robotica",
     "robótica",
     "limpeza",
@@ -200,6 +209,9 @@ NEED_CONTEXT_KEYWORDS = (
     "xyron",
     "liro",
     "hygibot",
+    "hygi bot",
+    "duno bot",
+    "dune bot",
     "esteira",
     "bike",
     "academia",
@@ -410,7 +422,7 @@ def is_valid_need_summary(value) -> bool:
     if not has_context:
         return False
     if len(cleaned) < 18 and not re.search(
-        r"\b(?:site|loja|clp|ihm|robo|robô|ia|bancada|cozinha|banheiro|escada|granito|marmore|mármore|nicho|gourmet|galpao|galpão|limpar|limpeza|escola|fabrica|fábrica|condominio|condomínio|industria|indústria|recepcao|recepção|deposito|depósito|armazem|armazém)\b",
+        r"\b(?:site|loja|clp|ihm|robo|robô|duno|dune|hygibot|hygi bot|duno bot|dune bot|ia|bancada|cozinha|banheiro|escada|granito|marmore|mármore|nicho|gourmet|galpao|galpão|limpar|limpeza|escola|fabrica|fábrica|condominio|condomínio|industria|indústria|recepcao|recepção|deposito|depósito|armazem|armazém)\b",
         normalized,
     ):
         return False

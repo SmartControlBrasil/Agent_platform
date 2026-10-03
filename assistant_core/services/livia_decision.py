@@ -1198,9 +1198,7 @@ class LiviaDecisionService:
             )
         from leads.services.commercial import is_ready_for_commercial_notification
 
-        if is_ready_for_commercial_notification(result.lead_draft) or (
-            result.is_qualified and not result.missing_fields
-        ):
+        if is_ready_for_commercial_notification(result.lead_draft):
             reply = build_contextual_reply(intent=intent, missing_fields=[])
         decision = LiviaReply(intent=intent, reply=reply, collection_prompt=True)
         decision = self._finalize_handoff(decision, conversation, result.lead_draft, discovery, current_message)

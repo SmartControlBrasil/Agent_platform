@@ -105,6 +105,37 @@ class CommercialCollectionStateTests(TestCase):
             decisions.append(decision)
         return conversation, decisions
 
+    def test_duno_product_answer_after_budget_keeps_name_pending(self):
+        conversation = self._conversation(session_id="budget-duno-product-answer")
+        history: list[dict[str, str]] = []
+
+        first = self.service.generate_reply(
+            history,
+            "gostaria de um orçamento",
+            conversation=conversation,
+        )
+        history.extend([
+            {"role": "user", "content": "gostaria de um orçamento"},
+            {"role": "assistant", "content": first.reply},
+        ])
+
+        second = self.service.generate_reply(
+            history,
+            "sim o duno bot",
+            conversation=conversation,
+        )
+        lead = self._lead(conversation)
+
+        self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        self.assertEqual(lead.name, "")
+        self.assertIn("duno", lead.need_summary.lower())
+        self.assertEqual(self.qualification.promptable_fields(lead), ["name", "phone", "email", "company"])
+        self.assertFalse(OutboxEvent.objects.filter(tenant=self.tenant).exists())
+        lowered = second.reply.lower()
+        self.assertTrue(any(token in lowered for token in ("chamar", "nome")), second.reply)
+        self.assertNotIn("registrei seus dados", lowered)
+        self.assertNotIn("encaminhei sua solicitação", lowered)
+
     def test_budget_starts_collection(self):
         conversation = self._conversation(session_id="budget-start")
         decision = self.service.generate_reply(
