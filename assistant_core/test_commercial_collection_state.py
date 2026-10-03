@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from django.test import TestCase, override_settings
+from django.core import mail
+import uuid
+from django.test import Client, TestCase, override_settings
 
 from assistant_core.consultative_policy import (
     COLLECTION_ACTIVE_KEY,
@@ -18,9 +20,11 @@ from assistant_core.services import LiviaDecisionService
 from assistant_core.summary import build_lead_notification_body
 from conversations.models import Conversation, HandoffRequest, Message
 from integrations.models import OutboxEvent
+from integrations.outbox.handlers import LeadQualifiedHandler
 from leads.models import LeadDraft
-from leads.services.commercial import QualificationService
+from leads.services.commercial import QualificationService, is_ready_for_commercial_notification
 from tenants.models import AssistantProfile, Tenant
+from assistant_core.relational_collection import pending_collection_fields
 
 
 class CommercialCollectionStateTests(TestCase):
@@ -431,6 +435,107 @@ class CommercialCollectionStateTests(TestCase):
         self.assertIsNotNone(decisions[3].handoff_request_id)
         self.assertIn("chamar", decisions[3].reply.lower())
         self.assertEqual(HandoffRequest.objects.filter(conversation=conversation).count(), 1)
+
+
+    @override_settings(
+        ALLOWED_HOSTS=["testserver"],
+        LIVIA_ALLOW_ORIGINLESS_PUBLIC_API=True,
+        LIVIA_AI_ENABLED=False,
+        LIVIA_RAG_ENABLED=False,
+        LIVIA_CHAT_RATE_LIMIT_ENABLED=False,
+        LIVIA_LEAD_NOTIFICATIONS_ENABLED=True,
+        LIVIA_LEAD_NOTIFICATIONS_DRY_RUN=False,
+        DEFAULT_FROM_EMAIL="no-reply@example.com",
+    )
+    def test_real_serralheria_budget_flow_requires_email_and_company(self):
+        self.tenant.slug = "smart-control-brasil"
+        self.tenant.name = "Smart Control Brasil"
+        self.tenant.save(update_fields=["slug", "name", "updated_at"])
+        profile = self.tenant.assistant_profile
+        profile.notification_email = "comercial@smartcontrolbrasil.com.br"
+        profile.business_domain = "marketing digital e automação"
+        profile.save(update_fields=["notification_email", "business_domain", "updated_at"])
+        client = Client()
+        session_id = "real-serralheria-budget-flow"
+        turns = [
+            "me fale sobre trafego pago",
+            "sim gostaria de aumentar meu numero de clientes",
+            "é uma serralheria",
+            "gostaria de contato",
+            "certo gostaria de um orçamento",
+            "Marcelo",
+            "11962196100",
+            "marcelo@example.com",
+            "Serralheria Marcelo",
+        ]
+        replies: list[str] = []
+
+        for index, message in enumerate(turns, start=1):
+            response = client.post(
+                "/api/chat/",
+                {"message": message, "session_id": session_id, "tenant": self.tenant.slug},
+                content_type="application/json",
+                HTTP_X_LIVIA_TENANT=self.tenant.slug,
+                HTTP_X_LIVIA_REQUEST_ID=str(uuid.uuid4()),
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            replies.append(response.json()["reply"])
+
+            if message == "certo gostaria de um orçamento":
+                self.assertTrue(any(token in replies[-1].lower() for token in ("chamar", "nome")), replies[-1])
+            if message == "11962196100":
+                lead = self._lead(Conversation.objects.get(session_id=session_id))
+                self.assertEqual(lead.name, "Marcelo")
+                self.assertEqual(lead.phone, "11962196100")
+                self.assertEqual(lead.email, "")
+                self.assertEqual(lead.company, "")
+                self.assertEqual(pending_collection_fields(lead=lead), ["email", "company"])
+                self.assertFalse(is_ready_for_commercial_notification(lead))
+                self.assertFalse(OutboxEvent.objects.filter(tenant=self.tenant).exists())
+                lowered = replies[-1].lower()
+                self.assertIn("e-mail", lowered)
+                self.assertNotIn("dados essenciais", lowered)
+                self.assertNotIn("continuidade do atendimento", lowered)
+                self.assertNotIn("encaminhei sua solicitação", lowered)
+            if message == "marcelo@example.com":
+                lead = self._lead(Conversation.objects.get(session_id=session_id))
+                self.assertEqual(lead.email, "marcelo@example.com")
+                self.assertEqual(pending_collection_fields(lead=lead), ["company"])
+                self.assertFalse(is_ready_for_commercial_notification(lead))
+                self.assertIn("empresa", replies[-1].lower())
+                self.assertFalse(OutboxEvent.objects.filter(tenant=self.tenant).exists())
+
+        conversation = Conversation.objects.get(session_id=session_id)
+        lead = self._lead(conversation)
+        self.assertEqual(lead.name, "Marcelo")
+        self.assertEqual(lead.phone, "11962196100")
+        self.assertEqual(lead.email, "marcelo@example.com")
+        self.assertEqual(lead.company, "Serralheria Marcelo")
+        self.assertEqual(pending_collection_fields(lead=lead), [])
+        self.assertTrue(is_ready_for_commercial_notification(lead))
+        self.assertIn("encaminhei", replies[-1].lower())
+        events = OutboxEvent.objects.filter(
+            tenant=self.tenant,
+            aggregate_id=str(lead.pk),
+            event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+        )
+        self.assertEqual(events.count(), 1)
+        first_delivery = LeadQualifiedHandler().process(events.get())
+        second_delivery = LeadQualifiedHandler().process(events.get())
+        self.assertEqual(first_delivery.status, "succeeded")
+        self.assertTrue(second_delivery.metadata["email"]["skipped"])
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["comercial@smartcontrolbrasil.com.br"])
+        self.assertIn("Marcelo", sent.subject)
+        self.assertIn("Serralheria Marcelo", sent.subject)
+        for expected in turns:
+            self.assertIn(expected, sent.body)
+        for forbidden in ("observability", "system prompt", "api_key", "OPENAI", "embedding"):
+            self.assertNotIn(forbidden, sent.body)
+        self.assertIn("CONVERSA COMPLETA", sent.body)
+        self.assertIn("VISITANTE: me fale sobre trafego pago", sent.body)
+        self.assertIn("LÍVIA:", sent.body)
 
     @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
     def test_scb_widget_budget_e2e_collection_order(self):

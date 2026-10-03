@@ -218,7 +218,7 @@ class LeadCaptureService:
         if next_field == "name_or_company":
             return "Ótimo. Para eu dar sequência, qual é o seu nome ou o nome da empresa?"
         if next_field == "phone_or_email":
-            return "Entendi. Me passa seu telefone/WhatsApp ou e-mail para eu continuar."
+            return "Qual é o melhor telefone ou WhatsApp para nossa equipe falar com você?"
         return "Perfeito. Pode me passar mais um dado para eu continuar?"
 
     def _sync_conversation(self, conversation: Conversation, lead_draft: LeadDraft, state: str) -> None:

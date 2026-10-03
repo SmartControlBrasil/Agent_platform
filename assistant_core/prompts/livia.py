@@ -58,7 +58,7 @@ def ask_name_or_company_reply() -> str:
 
 
 def ask_phone_or_email_reply() -> str:
-    return "Entendi. Me passa seu telefone/WhatsApp ou e-mail para eu continuar."
+    return "Qual é o melhor telefone ou WhatsApp para nossa equipe falar com você?"
 
 
 def qualified_reply() -> str:
@@ -105,9 +105,9 @@ def _reply_for_missing_fields(missing_fields: list[str]) -> str:
         return ask_need_summary_reply()
     granular_prompts = {
         "name": "Qual é o seu nome?",
-        "phone": "Qual é o melhor telefone ou WhatsApp para contato?",
+        "phone": "Qual é o melhor telefone ou WhatsApp para nossa equipe falar com você?",
         "email": "Qual é o seu e-mail?",
-        "company": "Qual empresa você representa, se for o caso?",
+        "company": "Qual é o nome da sua empresa?",
     }
     if first_missing in granular_prompts:
         return granular_prompts[first_missing]

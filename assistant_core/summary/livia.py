@@ -345,14 +345,16 @@ def build_lead_notification_body(lead_draft, *, timestamp: str = "", handoff=Non
         "DADOS DO LEAD",
         "",
         f"Nome: {_display_or_missing(name)}",
+        f"Telefone / WhatsApp: {_display_or_missing(phone)}",
         f"Telefone: {_display_or_missing(phone)}",
         f"E-mail: {_display_or_missing(email)}",
         f"Empresa: {_display_or_missing(company)}",
         "",
         "SOLICITAÇÃO",
         "",
+        "Interesse / contexto:",
+        need,
         f"Tipo de intenção: {intent_label}",
-        f"Resumo da necessidade: {need}",
     ]
     if commercial_status:
         lines.append(f"Status comercial: {commercial_status}")
@@ -387,10 +389,12 @@ def build_lead_notification_body(lead_draft, *, timestamp: str = "", handoff=Non
             "",
             "INFORMAÇÕES INTERNAS",
             "",
+            "IDENTIFICADORES",
+            "",
             f"Tenant slug: {tenant_slug or 'não informado'}",
-            f"Conversation ID: {conversation_id or 'não informado'}",
-            f"Lead ID: {lead_id or 'não informado'}",
-            f"Handoff ID: {handoff_id or 'não informado'}",
+            f"Conversation: {conversation_id or 'não informado'}",
+            f"Lead: {lead_id or 'não informado'}",
+            f"Handoff: {handoff_id or 'não informado'}",
         ]
     )
     return "\n".join(lines)

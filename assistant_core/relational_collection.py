@@ -295,8 +295,8 @@ def build_contact_collection_prompt(
         if not data.get(CONTACT_REASON_SHOWN_KEY):
             prefix = "Para nossa equipe retornar seu atendimento, "
         if "phone" in invalid_fields:
-            return f"{prefix}Esse telefone ficou incompleto. Qual é o melhor telefone ou WhatsApp?"
-        return f"{prefix}Qual é o melhor telefone ou WhatsApp?"
+            return f"{prefix}Esse telefone ficou incompleto. Qual é o melhor telefone ou WhatsApp para nossa equipe falar com você?"
+        return f"{prefix}Qual é o melhor telefone ou WhatsApp para nossa equipe falar com você?"
     if field == "email":
         if "email" in invalid_fields:
             return "Esse e-mail parece incompleto. Qual é o seu e-mail?"

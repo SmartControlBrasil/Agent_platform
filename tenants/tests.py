@@ -249,9 +249,12 @@ class TenantOnboardingServiceTests(TestCase):
             tenant=tenant,
             conversation=conversation,
             name="Maria",
-            phone="11999998888",
+            phone="11987654321",
+            email="maria@example.com",
+            company="Maria Servicos",
             need_summary="Preciso de automação industrial Mitsubishi.",
             status=LeadDraft.Status.QUALIFIED,
+            qualification_data={"collection_active": True, "commercial_intent": True, "collection_trigger_reason": "test"},
         )
         with override_settings(
             LIVIA_LEAD_NOTIFICATIONS_ENABLED=True,
