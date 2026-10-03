@@ -57,7 +57,8 @@ def build_openai_conversation_prompt(
             "",
             "REGRAS COMERCIAIS (imutáveis — decididas pelo sistema):",
             "- Você NÃO altera lead_state, collection_active, handoff, tenant ou qualificação.",
-            "- Você gera linguagem; o sistema decide estado comercial.",
+            "- O sistema decide O QUE fazer; você decide COMO responder naturalmente.",
+            "- Respeite CURRENT ACTION como ação obrigatória da próxima resposta.",
             "- Não ofereça registrar ou encaminhar atendimento por iniciativa própria; a oferta de continuidade é decidida pelo sistema.",
             f"- collection_active: {commercial.get('collection_active', False)}",
             "- Quando collection_active=false: NÃO peça nome, telefone, e-mail ou empresa.",
@@ -91,6 +92,12 @@ def build_openai_conversation_prompt(
         f"domínio: {tenant_domain or 'não informado'}",
         f"assistente: {profile['assistant_name']}",
         "",
+        "=== CURRENT ACTION (obrigatória; não altere) ===",
+        str(commercial.get("decision", {}).get("action") or commercial.get("action") or "ANSWER"),
+        "",
+        "=== DECISION PAYLOAD (estruturado; não exponha ao visitante) ===",
+        json.dumps(commercial.get("decision", {}) or {}, ensure_ascii=False, indent=2),
+        "",
         "=== ESTADO DETERMINÍSTICO (não altere) ===",
         f"lead_state: {commercial.get('lead_state', 'discovery')}",
         f"commercial_intent: {commercial.get('commercial_intent', False)}",
@@ -100,6 +107,7 @@ def build_openai_conversation_prompt(
         f"handoff_active: {commercial.get('handoff_active', False)}",
         f"intent: {discovery.get('intent', '') or commercial.get('intent', '')}",
         f"campos comerciais permitidos: {_format_allowed_fields(commercial.get('allowed_collection_fields', []))}",
+        f"campos pendentes: {_format_allowed_fields(commercial.get('pending_fields', []))}",
         f"campos já conhecidos: {_format_known_lead_fields(commercial.get('known_lead_fields', {}))}",
         "",
         "=== MEMÓRIA DE DIÁLOGO ===",
@@ -136,6 +144,8 @@ def build_openai_conversation_prompt(
 def build_commercial_state_context(*, conversation, decision) -> dict:
     """Extrai estado comercial determinístico para o prompt (sem expor secrets)."""
     lead_state = str(getattr(conversation, "lead_state", "") or "discovery")
+    structured = getattr(decision, "structured_decision", None)
+    decision_payload = structured.to_prompt_payload() if structured is not None else {}
     state: dict = {
         "lead_state": lead_state,
         "collection_active": False,
@@ -144,6 +154,9 @@ def build_commercial_state_context(*, conversation, decision) -> dict:
         "commercial_intent": False,
         "handoff_active": bool(getattr(decision, "handoff_request_id", None)),
         "intent": str(getattr(decision, "intent", "") or ""),
+        "action": decision_payload.get("action", "ANSWER"),
+        "decision": decision_payload,
+        "pending_fields": list(decision_payload.get("pending_fields", []) or []),
         "allowed_collection_fields": [],
         "known_lead_fields": {},
     }
@@ -171,6 +184,8 @@ def build_commercial_state_context(*, conversation, decision) -> dict:
 
             missing = LeadCaptureService().calculate_missing_fields(lead)
             state["allowed_collection_fields"] = list(missing or [])
+            if not state["pending_fields"]:
+                state["pending_fields"] = list(missing or [])
         except Exception:
             state["allowed_collection_fields"] = []
 

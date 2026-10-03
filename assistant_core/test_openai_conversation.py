@@ -15,6 +15,7 @@ from assistant_core.services.chat_processing import (
     _DeterministicChatResult,
     _refine_response_with_ai_if_enabled,
 )
+from assistant_core.services.conversation_decision import ConversationAction, ConversationDecision
 from assistant_core.services.livia_decision import LiviaDecisionService, LiviaReply
 from assistant_core.services.openai_grounded_conversation import (
     OpenAIGroundedConversationService,
@@ -274,14 +275,166 @@ class OpenAIConversationTests(TestCase):
             message="quero um orçamento",
             conversation=self.conversation,
             discovery=analyze_message("quero um orçamento"),
-            decision=LiviaReply(intent="quote_request", reply="Ótimo. Qual é o seu nome?"),
+            decision=LiviaReply(
+                intent="quote_request",
+                reply="Ótimo. Qual é o seu nome?",
+                structured_decision=ConversationDecision(
+                    action=ConversationAction.ASK_NAME,
+                    intent="quote_request",
+                    pending_fields=["name", "phone", "email", "company"],
+                    commercial_intent=True,
+                    collection_active=True,
+                ),
+            ),
             knowledge_context="",
             dialogue_memory=DialogueMemory(),
         )
         self.assertTrue(result.used)
         prompt = self._prompt_blob(client)
         self.assertIn("collection_active: True", prompt)
+        self.assertIn("CURRENT ACTION", prompt)
+        self.assertIn("ASK_NAME", prompt)
         self.assertIn("campos comerciais permitidos: name, phone, email, company", prompt)
+        self.assertIn("campos pendentes: name, phone, email, company", prompt)
+
+    def test_ask_email_action_reaches_openai_prompt(self):
+        lead = LeadDraft.objects.create(
+            tenant=self.tenant,
+            conversation=self.conversation,
+            name="Marcelo",
+            phone="11962196100",
+            need_summary="orçamento comercial",
+        )
+        mark_collection_active(lead, reason="explicit_quote")
+
+        service, client = self._service_with_client("Perfeito, Marcelo. Qual e-mail podemos usar para seguir?")
+        result = service.generate(
+            tenant=self.tenant,
+            assistant_profile=self.profile,
+            message="11962196100",
+            conversation=self.conversation,
+            discovery=analyze_message("11962196100"),
+            decision=LiviaReply(
+                intent="contact_data",
+                reply="Qual é o seu e-mail?",
+                collection_prompt=True,
+                structured_decision=ConversationDecision(
+                    action=ConversationAction.ASK_EMAIL,
+                    intent="contact_data",
+                    pending_fields=["email", "company"],
+                    commercial_intent=True,
+                    collection_active=True,
+                    known_fields={"name": "Marcelo", "phone": "11962196100"},
+                ),
+            ),
+            knowledge_context="",
+            dialogue_memory=DialogueMemory(),
+        )
+
+        self.assertTrue(result.used)
+        prompt = self._prompt_blob(client)
+        self.assertIn("ASK_EMAIL", prompt)
+        self.assertIn('"pending_fields": [', prompt)
+        self.assertIn('"email"', prompt)
+        self.assertIn('"company"', prompt)
+        self.assertIn("campos já conhecidos: name=Marcelo, phone=11962196100", prompt)
+
+    def test_ask_company_action_reaches_openai_prompt(self):
+        lead = LeadDraft.objects.create(
+            tenant=self.tenant,
+            conversation=self.conversation,
+            name="Marcelo",
+            phone="11962196100",
+            email="marcelo@example.com",
+            need_summary="orçamento comercial",
+        )
+        mark_collection_active(lead, reason="explicit_quote")
+
+        service, client = self._service_with_client("Perfeito. Qual é o nome da sua empresa?")
+        result = service.generate(
+            tenant=self.tenant,
+            assistant_profile=self.profile,
+            message="marcelo@example.com",
+            conversation=self.conversation,
+            discovery=analyze_message("marcelo@example.com"),
+            decision=LiviaReply(
+                intent="contact_data",
+                reply="Qual é o nome da sua empresa?",
+                collection_prompt=True,
+                structured_decision=ConversationDecision(
+                    action=ConversationAction.ASK_COMPANY,
+                    intent="contact_data",
+                    pending_fields=["company"],
+                    commercial_intent=True,
+                    collection_active=True,
+                    known_fields={
+                        "name": "Marcelo",
+                        "phone": "11962196100",
+                        "email": "marcelo@example.com",
+                    },
+                ),
+            ),
+            knowledge_context="",
+            dialogue_memory=DialogueMemory(),
+        )
+
+        self.assertTrue(result.used)
+        prompt = self._prompt_blob(client)
+        self.assertIn("ASK_COMPANY", prompt)
+        self.assertIn('"pending_fields": [', prompt)
+        self.assertIn('"company"', prompt)
+        self.assertIn("campos pendentes: company", prompt)
+
+    def test_complete_handoff_action_reaches_openai_prompt(self):
+        lead = LeadDraft.objects.create(
+            tenant=self.tenant,
+            conversation=self.conversation,
+            name="Marcelo",
+            phone="11962196100",
+            email="marcelo@example.com",
+            company="Serralheria Marcelo",
+            need_summary="orçamento comercial",
+            status=LeadDraft.Status.QUALIFIED,
+        )
+        mark_collection_active(lead, reason="explicit_quote")
+
+        service, client = self._service_with_client(
+            "Perfeito. Registrei seus dados e encaminhei sua solicitação para nossa equipe comercial."
+        )
+        result = service.generate(
+            tenant=self.tenant,
+            assistant_profile=self.profile,
+            message="Serralheria Marcelo",
+            conversation=self.conversation,
+            discovery=analyze_message("Serralheria Marcelo"),
+            decision=LiviaReply(
+                intent="commercial_interest",
+                reply="Perfeito. Registrei seus dados e encaminhei sua solicitação para nossa equipe comercial.",
+                collection_prompt=True,
+                structured_decision=ConversationDecision(
+                    action=ConversationAction.COMPLETE_HANDOFF,
+                    intent="commercial_interest",
+                    pending_fields=[],
+                    commercial_intent=True,
+                    collection_active=True,
+                    should_finalize=True,
+                    known_fields={
+                        "name": "Marcelo",
+                        "phone": "11962196100",
+                        "email": "marcelo@example.com",
+                        "company": "Serralheria Marcelo",
+                    },
+                ),
+            ),
+            knowledge_context="",
+            dialogue_memory=DialogueMemory(),
+        )
+
+        self.assertTrue(result.used)
+        prompt = self._prompt_blob(client)
+        self.assertIn("COMPLETE_HANDOFF", prompt)
+        self.assertIn('"should_finalize": true', prompt.lower())
+        self.assertIn("campos pendentes: nenhum (collection_active=false)", prompt)
 
     def test_scenario5_openai_timeout_keeps_deterministic_reply(self):
         from conversations.models import ChatRequest

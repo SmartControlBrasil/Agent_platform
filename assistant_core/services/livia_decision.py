@@ -36,6 +36,12 @@ from assistant_core.services.deterministic_synthesis import (
     prefer_contextual_reply_over_fallback,
     synthesize_deterministic_reply,
 )
+from assistant_core.services.conversation_decision import (
+    ConversationAction,
+    ConversationDecision,
+    action_for_pending_fields,
+    known_lead_fields,
+)
 from assistant_core.prompts.livia_ai import build_livia_ai_prompt
 from assistant_core.qualification import has_basic_contact
 from assistant_core.state import LeadState, can_start_new_cycle, set_state, should_block_dialogue_for_locked_lead
@@ -56,6 +62,7 @@ class LiviaReply:
     handoff_reason: str = ""
     continuity_action: str = ""
     collection_prompt: bool = False
+    structured_decision: ConversationDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -587,6 +594,7 @@ class LiviaDecisionService:
                 append_followup=turn.kind == TurnKind.NEED_ENRICHMENT,
                 dialogue_memory=dialogue_memory,
             )
+        structured_decision = None
         if collection_already_active(conversation, lead_draft) and lead_draft is not None:
             from leads.services.commercial import QualificationService
 
@@ -601,9 +609,19 @@ class LiviaDecisionService:
                     pending,
                     invalid_fields=[],
                 )
+                structured_decision = self._build_collection_decision(
+                    intent=intent,
+                    lead_draft=lead_draft,
+                    pending_fields=pending,
+                    rag_required=bool(str(knowledge_context or "").strip()),
+                )
+                structured_decision = replace(
+                    structured_decision,
+                    action=ConversationAction.ANSWER_AND_RESUME_COLLECTION,
+                )
                 if resume and resume.lower() not in reply.lower():
                     reply = f"{reply.rstrip()} {resume}".strip()
-        decision = LiviaReply(intent=intent, reply=reply)
+        decision = LiviaReply(intent=intent, reply=reply, structured_decision=structured_decision)
         decision = self._finalize_handoff(decision, conversation, lead_draft, discovery, current_message)
         return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
 
@@ -1077,6 +1095,7 @@ class LiviaDecisionService:
                 current_message=current_message,
                 dialogue_memory=dialogue_memory,
             )
+        structured_decision = None
         if collection_already_active(conversation, lead_draft) and lead_draft is not None:
             from leads.services.commercial import QualificationService
 
@@ -1091,9 +1110,19 @@ class LiviaDecisionService:
                     pending,
                     invalid_fields=[],
                 )
+                structured_decision = self._build_collection_decision(
+                    intent=intent,
+                    lead_draft=lead_draft,
+                    pending_fields=pending,
+                    rag_required=bool(str(knowledge_context or "").strip()),
+                )
+                structured_decision = replace(
+                    structured_decision,
+                    action=ConversationAction.ANSWER_AND_RESUME_COLLECTION,
+                )
                 if resume and resume.lower() not in reply.lower():
                     reply = f"{reply.rstrip()} {resume}".strip()
-        decision = LiviaReply(intent=intent, reply=reply)
+        decision = LiviaReply(intent=intent, reply=reply, structured_decision=structured_decision)
         if not pure_consultative and not knowledge_during_collection:
             decision = self._finalize_handoff(decision, conversation, lead_draft, discovery, current_message)
         return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
@@ -1118,6 +1147,29 @@ class LiviaDecisionService:
             knowledge_context=knowledge_context,
             append_followup=True,
             dialogue_memory=dialogue_memory,
+        )
+
+    def _build_collection_decision(
+        self,
+        *,
+        intent: str,
+        lead_draft,
+        pending_fields: list[str],
+        complete: bool = False,
+        rag_required: bool = False,
+        response_source: str = "fallback",
+    ) -> ConversationDecision:
+        qd = dict(getattr(lead_draft, "qualification_data", None) or {})
+        return ConversationDecision(
+            action=action_for_pending_fields(pending_fields, complete=complete),
+            intent=intent,
+            pending_fields=list(pending_fields or []),
+            commercial_intent=bool(qd.get("commercial_intent") or qd.get("collection_active")),
+            collection_active=bool(qd.get("collection_active")),
+            rag_required=rag_required,
+            should_finalize=complete,
+            known_fields=known_lead_fields(lead_draft),
+            response_source=response_source,
         )
 
     def _handle_qualification(
@@ -1198,9 +1250,22 @@ class LiviaDecisionService:
             )
         from leads.services.commercial import is_ready_for_commercial_notification
 
-        if is_ready_for_commercial_notification(result.lead_draft):
+        ready_for_notification = is_ready_for_commercial_notification(result.lead_draft)
+        if ready_for_notification:
             reply = build_contextual_reply(intent=intent, missing_fields=[])
-        decision = LiviaReply(intent=intent, reply=reply, collection_prompt=True)
+        structured_decision = self._build_collection_decision(
+            intent=intent,
+            lead_draft=result.lead_draft,
+            pending_fields=[] if ready_for_notification else result.missing_fields,
+            complete=ready_for_notification,
+            rag_required=bool(str(knowledge_context or "").strip()),
+        )
+        decision = LiviaReply(
+            intent=intent,
+            reply=reply,
+            collection_prompt=True,
+            structured_decision=structured_decision,
+        )
         decision = self._finalize_handoff(decision, conversation, result.lead_draft, discovery, current_message)
         return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
 

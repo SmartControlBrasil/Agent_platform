@@ -1300,6 +1300,80 @@ class LiviaOptionalAIResponseTests(TestCase):
         self.assertEqual(LeadDraft.objects.filter(conversation=conversation).count(), 0)
 
     @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="key-test")
+    def test_collection_prompt_is_refined_by_ai_with_structured_action(self):
+        from assistant_core.services.chat_processing import _DeterministicChatResult, _refine_response_with_ai_if_enabled
+        from assistant_core.services.conversation_decision import ConversationAction, ConversationDecision
+        from assistant_core.services.livia_decision import LiviaReply
+        from assistant_core.services.openai_grounded_conversation import OpenAIConversationResult
+
+        conversation = Conversation.objects.create(tenant=self.tenant, session_id="ai-collection-action")
+        lead = LeadDraft.objects.create(
+            tenant=self.tenant,
+            conversation=conversation,
+            name="Marcelo",
+            phone="11962196100",
+            qualification_data={"collection_active": True, "commercial_intent": True},
+        )
+        assistant_message = Message.objects.create(
+            conversation=conversation,
+            role=Message.Role.ASSISTANT,
+            content="Qual é o seu e-mail?",
+        )
+        chat_request = ChatRequest.objects.create(
+            tenant=self.tenant,
+            conversation=conversation,
+            session_id="ai-collection-action",
+            request_id=uuid.uuid4(),
+            request_fingerprint="f" * 64,
+            status=ChatRequest.Status.COMPLETED,
+            response_payload={"reply": "Qual é o seu e-mail?", "intent": "contact_data", "observability": {}},
+            response_status_code=200,
+        )
+        decision = LiviaReply(
+            intent="contact_data",
+            reply="Qual é o seu e-mail?",
+            collection_prompt=True,
+            structured_decision=ConversationDecision(
+                action=ConversationAction.ASK_EMAIL,
+                intent="contact_data",
+                pending_fields=["email", "company"],
+                commercial_intent=True,
+                collection_active=True,
+                known_fields={"name": "Marcelo", "phone": "11962196100"},
+            ),
+        )
+        deterministic_result = _DeterministicChatResult(
+            chat_request=chat_request,
+            tenant=self.tenant,
+            conversation=conversation,
+            assistant_profile=self.profile,
+            history=[],
+            user_message="11962196100",
+            decision=decision,
+            assistant_message=assistant_message,
+            response_payload={"reply": decision.reply, "intent": decision.intent, "observability": {}},
+        )
+        with patch("assistant_core.services.chat_processing._can_refine_with_ai", return_value=True), patch(
+            "assistant_core.services.openai_grounded_conversation.OpenAIGroundedConversationService.generate",
+            return_value=OpenAIConversationResult(
+                text="Perfeito, Marcelo. Qual é o melhor e-mail para seguirmos?",
+                used=True,
+                status="completed",
+            ),
+        ) as generate:
+            payload = _refine_response_with_ai_if_enabled(
+                deterministic_result=deterministic_result,
+                decision_service=LiviaDecisionService(),
+            )
+
+        generate.assert_called_once()
+        self.assertEqual(payload["reply"], "Perfeito, Marcelo. Qual é o melhor e-mail para seguirmos?")
+        self.assertEqual(payload["observability"].get("response_source"), "llm")
+        lead.refresh_from_db()
+        self.assertEqual(lead.email, "")
+        self.assertEqual(lead.company, "")
+
+    @override_settings(LIVIA_AI_ENABLED=True, LIVIA_AI_DRY_RUN=False, LIVIA_OPENAI_API_KEY="key-test")
     def test_lead_state_is_not_changed_by_ai(self):
         conversation = Conversation.objects.create(tenant=self.tenant, session_id="ai-state")
         ai_client = FakeAIClient(OpenAIChatResult(text="Claro, me conte a área principal.", success=True, dry_run=False))

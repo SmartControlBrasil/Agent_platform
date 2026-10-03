@@ -228,6 +228,10 @@ def _persist_chat_processing_state(
             # commercial_intent (memória) = gatilho comercial persistido para coleta/handoff.
             "is_fallback": bool(is_generic_fallback_reply(assistant_reply)),
             "intent": getattr(decision, "intent", "") or "",
+            "decision_action": str(getattr(getattr(decision, "structured_decision", None), "action", "") or ""),
+            "pending_fields": list(getattr(getattr(decision, "structured_decision", None), "pending_fields", []) or []),
+            "response_source": getattr(getattr(decision, "structured_decision", None), "response_source", "fallback") or "fallback",
+            "rag_used": bool(str(knowledge_context or "").strip()),
             "retrieval_attempted": bool(knowledge_result and knowledge_result.mode in {"semantic", "keyword"}),
             "retrieval_status": getattr(knowledge_result, "retrieval_status", "") or "",
             "retrieval_hit": bool(getattr(knowledge_result, "retrieval_hit", False)),
@@ -320,8 +324,6 @@ def _refine_response_with_ai_if_enabled(
         return deterministic_result.response_payload
     if getattr(deterministic_result.decision, "continuity_action", ""):
         return deterministic_result.response_payload
-    if getattr(deterministic_result.decision, "collection_prompt", False):
-        return deterministic_result.response_payload
     if deterministic_result.response_payload.get("human_handoff", {}).get("active"):
         return deterministic_result.response_payload
 
@@ -405,6 +407,8 @@ def _refine_response_with_ai_if_enabled(
                 "ai_fallback_used": False,
                 "ai_rag_docs": ai_result.metadata.get("rag_docs", []),
                 "continuity_action": continuity_action,
+                "response_source": "llm",
+                "llm_response_generated": True,
                 **gate_diagnostics,
             },
         )

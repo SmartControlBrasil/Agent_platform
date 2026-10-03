@@ -58,6 +58,7 @@ class OpenAIGroundedConversationService:
         deterministic_reply: str = "",
     ) -> OpenAIConversationResult:
         commercial_state = build_commercial_state_context(conversation=conversation, decision=decision)
+        decision_action = str(commercial_state.get("action") or "ANSWER")
         rag_docs = _extract_rag_doc_refs(knowledge_context, knowledge_result, dialogue_memory)
         grounded = bool(str(knowledge_context or "").strip())
 
@@ -105,6 +106,7 @@ class OpenAIGroundedConversationService:
                     "grounded": grounded,
                     "rag_docs": rag_docs,
                     "collection_active": commercial_state.get("collection_active"),
+                    "decision_action": decision_action,
                     "fallback_used": True,
                 },
             )
@@ -114,7 +116,7 @@ class OpenAIGroundedConversationService:
                 latency_ms=latency_ms,
                 error_type=exc.__class__.__name__,
                 grounded=grounded,
-                metadata={"rag_docs": rag_docs, "collection_active": commercial_state.get("collection_active")},
+                metadata={"rag_docs": rag_docs, "collection_active": commercial_state.get("collection_active"), "decision_action": decision_action},
             )
 
         latency_ms = int((time.monotonic() - started) * 1000)
@@ -142,6 +144,7 @@ class OpenAIGroundedConversationService:
                     "grounded": grounded,
                     "rag_docs": rag_docs,
                     "collection_active": commercial_state.get("collection_active"),
+                    "decision_action": decision_action,
                     "fallback_used": True,
                 },
             )
@@ -155,7 +158,7 @@ class OpenAIGroundedConversationService:
                 completion_tokens=result.completion_tokens,
                 total_tokens=result.total_tokens,
                 grounded=grounded,
-                metadata={"rag_docs": rag_docs, "collection_active": commercial_state.get("collection_active")},
+                metadata={"rag_docs": rag_docs, "collection_active": commercial_state.get("collection_active"), "decision_action": decision_action},
             )
 
         logger.info(
@@ -196,6 +199,7 @@ class OpenAIGroundedConversationService:
             metadata={
                 "rag_docs": rag_docs,
                 "collection_active": commercial_state.get("collection_active"),
+                "decision_action": decision_action,
                 "provider": "openai",
             },
         )

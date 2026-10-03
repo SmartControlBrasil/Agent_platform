@@ -13,8 +13,10 @@ from assistant_core.qualification import (
     message_fills_pending_slot,
     message_is_plausible_phone_candidate,
 )
+from assistant_core.services.conversation_decision import ConversationAction
 from assistant_core.services import LiviaDecisionService
 from conversations.models import Conversation, HandoffRequest
+from integrations.models import OutboxEvent
 from leads.models import LeadDraft
 from leads.services.commercial import QualificationService
 from tenants.models import AssistantProfile, Tenant
@@ -199,6 +201,137 @@ class SlotIntentRoutingDuringCollectionTests(TestCase):
         lead = self._lead(conversation)
         self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
         self.assertIn("chamar", decision.reply.lower())
+
+    def test_structured_action_ask_email_after_phone(self):
+        conversation = self._conversation("action-ask-email")
+        self.service.generate_reply([], "quero um orçamento", conversation=conversation)
+        self.service.generate_reply(self._history("quero um orçamento"), "Marcelo", conversation=conversation)
+        decision = self.service.generate_reply(
+            self._history("quero um orçamento", "Marcelo"),
+            "11962196100",
+            conversation=conversation,
+        )
+        self.assertIsNotNone(decision.structured_decision)
+        structured = decision.structured_decision
+        self.assertEqual(structured.action, ConversationAction.ASK_EMAIL)
+        self.assertEqual(structured.pending_fields, ["email", "company"])
+        self.assertTrue(structured.collection_active)
+
+    def test_structured_action_answer_and_resume_collection_on_knowledge_interrupt(self):
+        conversation = self._conversation("action-resume-collection")
+        history: list[dict[str, str]] = []
+
+        for msg in ("quero um orçamento", "Marcelo", "11962196100"):
+            decision = self.service.generate_reply(history, msg, conversation=conversation, knowledge_context=self.kb_duno)
+            history.extend([{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}])
+
+        interrupt = "vocês trabalham com Python?"
+        decision = self.service.generate_reply(
+            history,
+            interrupt,
+            conversation=conversation,
+            knowledge_context=self.kb_duno,
+        )
+        lead = self._lead(conversation)
+        self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        self.assertIsNotNone(decision.structured_decision)
+        structured = decision.structured_decision
+        self.assertEqual(structured.action, ConversationAction.ANSWER_AND_RESUME_COLLECTION)
+        self.assertEqual(structured.pending_fields, ["email", "company"])
+        self.assertTrue(structured.rag_required)
+        self.assertIn("e-mail", decision.reply.lower())
+
+    def test_structured_action_complete_handoff_after_company(self):
+        conversation = self._conversation("action-complete-handoff")
+        history: list[dict[str, str]] = []
+        for msg in (
+            "quero um orçamento",
+            "Marcelo",
+            "11962196100",
+            "marcelo@example.com",
+            "Serralheria Marcelo",
+        ):
+            decision = self.service.generate_reply(history, msg, conversation=conversation, knowledge_context=self.kb_duno)
+            history.extend([{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}])
+
+        lead = self._lead(conversation)
+        lead.refresh_from_db()
+        self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
+        self.assertIsNotNone(decision.structured_decision)
+        structured = decision.structured_decision
+        self.assertEqual(structured.action, ConversationAction.COMPLETE_HANDOFF)
+        self.assertEqual(structured.pending_fields, [])
+        self.assertTrue(structured.should_finalize)
+
+    def test_e2e_serralheria_conversation_keeps_actions_order(self):
+        conversation = self._conversation("e2e-serralheria")
+        history: list[dict[str, str]] = []
+        turns = [
+            "me fale sobre trafego pago",
+            "sim gostaria de aumentar meu numero de clientes",
+            "é uma serralheria",
+            "gostaria de contato",
+            "certo gostaria de um orçamento",
+            "Marcelo",
+            "11962196100",
+            "marcelo@example.com",
+            "Serralheria Marcelo",
+        ]
+
+        actions: list[ConversationAction | None] = []
+        for msg in turns:
+            decision = self.service.generate_reply(history, msg, conversation=conversation, knowledge_context=self.kb_duno)
+            actions.append(getattr(getattr(decision, "structured_decision", None), "action", None))
+            history.extend([{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}])
+
+        self.assertEqual(actions[4], ConversationAction.ASK_NAME)
+        self.assertEqual(actions[5], ConversationAction.ASK_PHONE)
+        self.assertEqual(actions[6], ConversationAction.ASK_EMAIL)
+        self.assertEqual(actions[7], ConversationAction.ASK_COMPANY)
+        self.assertEqual(actions[8], ConversationAction.COMPLETE_HANDOFF)
+        lead = self._lead(conversation)
+        self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+                aggregate_id=str(lead.pk),
+            ).count(),
+            1,
+        )
+
+    def test_e2e_duno_budget_keeps_name_slot_and_no_qualified_event(self):
+        conversation = self._conversation("e2e-duno")
+        history: list[dict[str, str]] = []
+        first = self.service.generate_reply(
+            history,
+            "gostaria de um orçamento",
+            conversation=conversation,
+            knowledge_context=self.kb_duno,
+        )
+        history.extend(
+            [
+                {"role": "user", "content": "gostaria de um orçamento"},
+                {"role": "assistant", "content": first.reply},
+            ]
+        )
+        second = self.service.generate_reply(
+            history,
+            "sim o duno bot",
+            conversation=conversation,
+            knowledge_context=self.kb_duno,
+        )
+
+        lead = self._lead(conversation)
+        self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        self.assertEqual(second.structured_decision.action, ConversationAction.ASK_NAME)
+        self.assertNotEqual((lead.name or "").strip().lower(), "duno bot")
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+                aggregate_id=str(lead.pk),
+            ).count(),
+            0,
+        )
 
     def test_tenant_isolation(self):
         other = Tenant.objects.create(
