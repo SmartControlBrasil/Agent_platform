@@ -15,10 +15,12 @@ from django.utils import timezone
 from conversations.models import ChatRequest, Conversation, HandoffRequest, Message
 from integrations.models import OutboxEvent
 from integrations.openai.client import OpenAIChatResult
+from agents.models import AgentDefinition, AgentInstallation, AgentVersion
 from assistant_core.state import LeadState
 from assistant_core.services.chat_idempotency import build_request_fingerprint, reserve_chat_request
 from assistant_core.services import LiviaDecisionService
 from leads.models import LeadDraft
+from projects.models import Project
 from tenants.models import AssistantProfile, Tenant, TenantAllowedOrigin
 
 
@@ -120,6 +122,69 @@ class ChatApiTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["reply"], "Este atendimento não está disponível no momento.")
         self.assertEqual(Conversation.objects.count(), 0)
+
+    def test_chat_api_keeps_legacy_compatibility_without_livia_agent_installation(self):
+        payload = {
+            "tenant": self.tenant.slug,
+            "session_id": "without-installation",
+            "message": "Olá",
+        }
+
+        response = self.client.post(
+            "/api/chat/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("agent_installation_id", response.json().get("observability", {}))
+        self.assertEqual(Conversation.objects.count(), 1)
+
+    def test_chat_api_uses_livia_agent_installation_configuration(self):
+        project = Project.objects.create(tenant=self.tenant, name="Site institucional", slug="site")
+        definition, _ = AgentDefinition.objects.update_or_create(
+            slug="livia",
+            defaults={"name": "Lívia", "agent_type": "conversational_sales", "is_active": True},
+        )
+        version, _ = AgentVersion.objects.update_or_create(
+            agent_definition=definition,
+            version="legacy-initial",
+            defaults={"runtime_handler": "livia", "status": AgentVersion.Status.ACTIVE},
+        )
+        installation = AgentInstallation.objects.create(
+            tenant=self.tenant,
+            project=project,
+            agent_definition=definition,
+            agent_version=version,
+            name="Lívia SCB",
+            configuration={
+                "public_name": "Lívia SCB",
+                "tone": "profissional, claro e natural",
+                "primary_goal": "Resolver primeiro. Converter depois.",
+                "short_description": "Assistente virtual comercial e técnica da Smart Control Brasil.",
+            },
+        )
+        payload = {
+            "tenant": self.tenant.slug,
+            "session_id": "with-installation",
+            "message": "Olá",
+        }
+
+        with patch("assistant_core.views.process_chat_request", return_value={"reply": "Olá", "observability": {}}) as process:
+            response = self.client.post(
+                "/api/chat/",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        profile = process.call_args.kwargs["assistant_profile_override"]
+        self.assertEqual(profile.name, "Lívia SCB")
+        self.assertEqual(profile.primary_goal, "Resolver primeiro. Converter depois.")
+        observability = response.json()["observability"]
+        self.assertEqual(observability["agent_installation_id"], str(installation.id))
+        self.assertEqual(observability["project_slug"], "site")
+        self.assertEqual(observability["configuration_source"], "agent_installation")
 
     def test_chat_api_rejects_empty_message(self):
         payload = {

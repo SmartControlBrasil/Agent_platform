@@ -2,9 +2,12 @@ import json
 import logging
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
+from agents.infrastructure.livia_configuration import LiviaConfigurationResolver
+from agents.models import AgentInstallation
 from tenants.origins import log_origin_block, resolve_public_tenant, validate_tenant_origin
 
 from .security.ip import get_client_ip
@@ -18,6 +21,7 @@ from .services.chat_idempotency import (
     build_request_fingerprint,
     complete_chat_request,
     fail_chat_request,
+    update_completed_chat_request_response,
     parse_request_id,
     reserve_chat_request,
 )
@@ -43,6 +47,61 @@ def _json_response(payload, *, status=200, replay=False):
     response = JsonResponse(payload, status=status)
     response["X-Livia-Idempotent-Replay"] = "true" if replay else "false"
     return response
+
+
+def _active_assistant_profile(tenant):
+    try:
+        assistant_profile = tenant.assistant_profile
+    except ObjectDoesNotExist:
+        return None
+    if assistant_profile is not None and not assistant_profile.is_active:
+        return None
+    return assistant_profile
+
+
+def _resolve_livia_installation(tenant):
+    return (
+        AgentInstallation.objects.select_related("tenant", "project", "agent_definition", "agent_version")
+        .filter(
+            tenant=tenant,
+            project__tenant=tenant,
+            project__is_active=True,
+            is_enabled=True,
+            agent_definition__slug="livia",
+            agent_definition__is_active=True,
+            agent_version__status="active",
+            agent_version__runtime_handler="livia",
+        )
+        .order_by("created_at", "id")
+        .first()
+    )
+
+
+def _build_livia_effective_profile(*, tenant, installation):
+    return LiviaConfigurationResolver().build_effective_profile(
+        installation=installation,
+        tenant=tenant,
+        assistant_profile=_active_assistant_profile(tenant),
+    )
+
+
+def _annotate_agent_platform_observability(payload, *, installation, effective_profile):
+    updated = dict(payload)
+    observability = dict(updated.get("observability") or {})
+    observability.update(
+        {
+            "agent_definition": installation.agent_definition.slug,
+            "agent_version": installation.agent_version.version,
+            "agent_installation_id": str(installation.id),
+            "project_id": str(installation.project_id),
+            "project_slug": installation.project.slug,
+            "runtime_handler": installation.agent_version.runtime_handler,
+            "configuration_source": "agent_installation",
+            "runtime_configuration": effective_profile.runtime_configuration.as_metadata(),
+        }
+    )
+    updated["observability"] = observability
+    return updated
 
 
 @csrf_exempt
@@ -146,6 +205,19 @@ def chat_api(request):
     chat_request = reservation.chat_request
     client_ip = get_client_ip(request)
     try:
+        installation = _resolve_livia_installation(tenant)
+        effective_profile = None
+        if installation is not None:
+            try:
+                effective_profile = _build_livia_effective_profile(tenant=tenant, installation=installation)
+            except ValidationError:
+                logger.exception(
+                    "livia_agent_configuration_invalid tenant_slug=%s installation_id=%s",
+                    tenant.slug,
+                    installation.id,
+                )
+                effective_profile = None
+
         rate_limit = check_chat_rate_limit(tenant.slug, client_ip)
         if not rate_limit.allowed:
             logger.info(
@@ -178,7 +250,15 @@ def chat_api(request):
             session_id=session_id,
             user_message=user_message,
             source_page=source_page,
+            assistant_profile_override=effective_profile,
         )
+        if installation is not None and effective_profile is not None:
+            response_payload = _annotate_agent_platform_observability(
+                response_payload,
+                installation=installation,
+                effective_profile=effective_profile,
+            )
+            update_completed_chat_request_response(chat_request, response_payload=response_payload, status_code=200)
         return _json_response(response_payload, status=200, replay=False)
     except Exception:
         fail_chat_request(chat_request, error_code="unexpected_error")
