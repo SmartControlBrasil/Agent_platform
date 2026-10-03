@@ -21,7 +21,7 @@ from leads.services.commercial import has_usable_contact, is_ready_for_commercia
 from tenants.models import AssistantProfile, Tenant
 
 
-@override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+@override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False, LIVIA_CHAT_RATE_LIMIT_ENABLED=False)
 class CommercialIntentEarlyTests(TestCase):
     def setUp(self):
         self.tenant_a = Tenant.objects.create(
@@ -104,27 +104,31 @@ class CommercialIntentEarlyTests(TestCase):
         response2 = self._chat("Como funciona a manutenção preventiva?", session_id="budget-b")
         self.assertEqual(response2.status_code, 200)
 
-    def test_c_name_and_phone_without_email(self):
+    def test_c_name_phone_email_company_ready(self):
         session = "contact-c"
         self._chat("Quero um orçamento para automação de painel industrial.", session_id=session)
         self._chat("Meu nome é João.", session_id=session)
         self._chat("Meu telefone é 11999999999.", session_id=session)
+        self._chat("joao@xpto.com.br", session_id=session)
+        self._chat("Empresa XPTO", session_id=session)
         lead = self._lead(session)
         self.assertIsNotNone(lead)
         self.assertEqual(lead.name, "João")
         self.assertTrue(has_usable_contact(lead))
-        self.assertFalse(str(lead.email or "").strip())
+        self.assertTrue(str(lead.email or "").strip())
         self.assertTrue(is_ready_for_commercial_notification(lead))
 
-    def test_d_email_without_phone(self):
+    def test_d_email_phone_company_ready(self):
         session = "contact-d"
         self._chat("Quero uma cotação para sistema web.", session_id=session)
-        self._chat("Me chamo Ana.", session_id=session)
+        self._chat("Meu nome é Ana.", session_id=session)
         self._chat("Meu e-mail é ana@empresa.com.br", session_id=session)
+        self._chat("11999999999", session_id=session)
+        self._chat("Empresa Ana", session_id=session)
         lead = self._lead(session)
         self.assertIsNotNone(lead)
         self.assertTrue(has_usable_contact(lead))
-        self.assertFalse(str(lead.phone or "").strip())
+        self.assertTrue(str(lead.phone or "").strip())
         self.assertTrue(is_ready_for_commercial_notification(lead))
 
     def test_e_all_contact_fields_persisted(self):

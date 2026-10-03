@@ -184,7 +184,7 @@ def _build_transcript(
         content = _sanitize_transcript_line(message.content, max_chars=max_line_chars)
         if not content:
             continue
-        speaker = "Cliente" if message.role == Message.Role.USER else "Lívia"
+        speaker = "VISITANTE" if message.role == Message.Role.USER else "LÍVIA"
         line = f"{speaker}: {content}"
         if total_chars + len(line) > max_chars:
             lines.append(truncate_notice)
@@ -252,11 +252,12 @@ def _subject_party(*, lead_draft=None, handoff=None) -> str:
 
 
 def build_lead_notification_subject(lead_draft, *, handoff=None) -> str:
-    intent_label = resolve_commercial_intent_label(lead_draft=lead_draft, handoff=handoff)
-    party = _subject_party(lead_draft=lead_draft, handoff=handoff)
-    if party:
-        return f"Novo lead Lívia — {intent_label} — {party}"
-    return f"Novo lead Lívia — {intent_label}"
+    name = _first_present(getattr(lead_draft, "name", ""), getattr(handoff, "visitor_name", ""))
+    company = _first_present(getattr(lead_draft, "company", ""), getattr(handoff, "visitor_company", ""))
+    parts = [part for part in (name, company) if part]
+    if parts:
+        return "[Lívia] Novo lead comercial — " + " — ".join(parts)
+    return "[Lívia] Novo lead comercial"
 
 
 def build_handoff_notification_subject(handoff, *, lead_draft=None) -> str:
@@ -317,6 +318,7 @@ def build_lead_notification_body(lead_draft, *, timestamp: str = "", handoff=Non
     conversation_id = getattr(conversation, "pk", "") or ""
     session_id = str(getattr(conversation, "session_id", "") or "").strip()
     lead_id = getattr(lead_draft, "pk", "") or ""
+    handoff_id = getattr(handoff, "pk", "") or ""
     source_page = (
         summary.source_page
         or str(getattr(conversation, "source_page", "") or "").strip()
@@ -388,6 +390,7 @@ def build_lead_notification_body(lead_draft, *, timestamp: str = "", handoff=Non
             f"Tenant slug: {tenant_slug or 'não informado'}",
             f"Conversation ID: {conversation_id or 'não informado'}",
             f"Lead ID: {lead_id or 'não informado'}",
+            f"Handoff ID: {handoff_id or 'não informado'}",
         ]
     )
     return "\n".join(lines)

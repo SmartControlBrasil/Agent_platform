@@ -173,9 +173,9 @@ class LeadCaptureService:
                 return prompt
         prompts = {
             "name": "Certo. Como posso te chamar?",
-            "phone": "Qual é o melhor telefone ou WhatsApp?",
+            "phone": "Qual é o melhor telefone ou WhatsApp para nossa equipe falar com você?",
             "email": "Qual é o seu e-mail?",
-            "company": "Qual é o nome da empresa ou instituição?",
+            "company": "Qual é o nome da sua empresa?",
             "need_summary": "Em uma frase, o que você precisa ou qual problema está enfrentando?",
         }
         if missing_fields and missing_fields[0] in prompts:
@@ -208,7 +208,7 @@ class LeadCaptureService:
             )
             if not has_name_or_company:
                 return build_enrichment_reply(lead_draft)
-            return "Perfeito. Já tenho os dados essenciais para seguir com o atendimento."
+            return "Perfeito. Registrei seus dados e encaminhei sua solicitação para nossa equipe comercial."
         if intent == "budget" and "need_summary" in missing_fields:
             return "Perfeito. Antes do contato, me conta em uma frase qual é a sua necessidade principal."
 

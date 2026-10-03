@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from assistant_core.consultative_policy import (
     COLLECTION_ACTIVE_KEY,
@@ -15,7 +15,8 @@ from assistant_core.conversation_turns import classify_conversation_turn, is_nee
 from assistant_core.discovery import analyze_message
 from assistant_core.qualification import is_valid_name, is_valid_need_summary, message_fills_pending_slot
 from assistant_core.services import LiviaDecisionService
-from conversations.models import Conversation, HandoffRequest
+from assistant_core.summary import build_lead_notification_body
+from conversations.models import Conversation, HandoffRequest, Message
 from integrations.models import OutboxEvent
 from leads.models import LeadDraft
 from leads.services.commercial import QualificationService
@@ -137,7 +138,7 @@ class CommercialCollectionStateTests(TestCase):
         )
         self.assertNotIn("necessidade principal", decision.reply.lower())
 
-    def test_next_slot_advances_to_name_or_company(self):
+    def test_next_slot_advances_to_name(self):
         conversation = self._conversation(session_id="next-slot-name")
         self.service.generate_reply([], "quero um orçamento", conversation=conversation)
         decision = self.service.generate_reply(
@@ -146,7 +147,7 @@ class CommercialCollectionStateTests(TestCase):
             conversation=conversation,
         )
         lowered = decision.reply.lower()
-        self.assertTrue(any(token in lowered for token in ("chamar", "nome", "empresa")))
+        self.assertTrue(any(token in lowered for token in ("chamar", "nome")))
 
     def test_um_galpao_not_name(self):
         self.assertFalse(is_valid_name("um galpão"))
@@ -399,3 +400,58 @@ class CommercialCollectionStateTests(TestCase):
         self.assertIsNotNone(decisions[3].handoff_request_id)
         self.assertIn("chamar", decisions[3].reply.lower())
         self.assertEqual(HandoffRequest.objects.filter(conversation=conversation).count(), 1)
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_scb_widget_budget_e2e_collection_order(self):
+        """Fase 15: conversa consultiva → orçamento → nome → telefone → e-mail → empresa."""
+        kb = (
+            "[KNOWLEDGE_BASE]\nConteúdo:\n"
+            "A Smart Control Brasil desenvolve sistemas web, automação e integrações.\n"
+            "[/KNOWLEDGE_BASE]"
+        )
+        conversation = self._conversation(session_id="scb-widget-e2e")
+        history: list[dict[str, str]] = []
+
+        def turn(msg: str, *, knowledge: str = ""):
+            decision = self.service.generate_reply(
+                history,
+                msg,
+                conversation=conversation,
+                knowledge_context=knowledge or kb,
+            )
+            history.extend(
+                [{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}]
+            )
+            return decision
+
+        turn("Olá")
+        r2 = turn("Vocês desenvolvem sistemas web?")
+        self.assertNotIn("chamar", r2.reply.lower())
+        r3 = turn("Quero um orçamento")
+        self.assertIn("chamar", r3.reply.lower())
+        turn("Marcelo")
+        r5 = turn("11962196100")
+        self.assertIn("e-mail", r5.reply.lower())
+        r6 = turn("marcelo@example.com")
+        self.assertIn("empresa", r6.reply.lower())
+        r7 =         turn("Smart Control Brasil")
+        self.assertIn("encaminhei", r7.reply.lower())
+        for item in history:
+            role = Message.Role.USER if item["role"] == "user" else Message.Role.ASSISTANT
+            Message.objects.create(conversation=conversation, role=role, content=item["content"])
+        lead = self._lead(conversation)
+        self.assertEqual(lead.name, "Marcelo")
+        self.assertEqual(lead.phone, "11962196100")
+        self.assertEqual(lead.email, "marcelo@example.com")
+        self.assertEqual(lead.company, "Smart Control Brasil")
+        self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                aggregate_id=str(lead.pk),
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).count(),
+            1,
+        )
+        body = build_lead_notification_body(lead, timestamp="03/10/2026 12:00")
+        self.assertIn("VISITANTE: Olá", body)
+        self.assertIn("Quero um orçamento", body)

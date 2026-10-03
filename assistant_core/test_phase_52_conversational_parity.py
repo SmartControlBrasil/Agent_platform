@@ -181,8 +181,8 @@ class Phase52NameCompanyTests(TestCase):
         turn("11999999999")
         reply = turn("ana@example.com")
         lead = LeadDraft.objects.get(conversation=conversation)
-        self.assertNotIn("empresa", reply.reply.lower())
-        self.assertNotIn("company", pending_collection_fields(lead=lead))
+        self.assertIn("empresa", reply.reply.lower())
+        self.assertIn("company", pending_collection_fields(lead=lead))
 
     @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
     def test_n_b2b_context_may_prompt_company(self):
@@ -205,7 +205,7 @@ class Phase52NameCompanyTests(TestCase):
         turn("11999999999")
         reply = turn("marcelo@example.com")
         lead = LeadDraft.objects.get(conversation=conversation)
-        self.assertIn("continuidade", reply.reply.lower())
+        self.assertIn("empresa", reply.reply.lower())
         self.assertEqual(pending_collection_fields(lead=lead), ["company"])
 
 
@@ -241,12 +241,11 @@ class Phase52HandoffOrderTests(TestCase):
         self.assertIn("telefone", reply.reply.lower())
         self.assertIn("retornar", reply.reply.lower())
 
-    def test_q_after_phone_does_not_require_email(self):
+    def test_q_after_phone_asks_email_next(self):
         self.turn("Gostaria que alguém da equipe entrasse em contato.")
         self.turn("Marcelo")
         reply = self.turn("11999999999")
-        self.assertNotIn("e-mail", reply.reply.lower())
-        self.assertIn("essenciais", reply.reply.lower())
+        self.assertIn("e-mail", reply.reply.lower())
 
     def test_r_known_relational_name_skips_name_prompt(self):
         self.history = [
@@ -275,8 +274,7 @@ class Phase52HandoffOrderTests(TestCase):
             qualification_data={"collection_active": True},
         )
         reply = self.turn("Quero orçamento.")
-        self.assertNotIn("e-mail", reply.reply.lower())
-        self.assertIn("essenciais", reply.reply.lower())
+        self.assertIn("e-mail", reply.reply.lower())
 
     def test_t_spontaneous_data_is_not_reasked(self):
         reply = self.turn(
@@ -284,7 +282,7 @@ class Phase52HandoffOrderTests(TestCase):
         )
         lowered = reply.reply.lower()
         self.assertNotIn("chamar", lowered)
-        self.assertNotIn("e-mail", lowered)
+        self.assertIn("e-mail", lowered)
         lead = self.lead()
         self.assertEqual(lead.name, "Carlos")
         self.assertEqual(lead.phone, "11988887777")

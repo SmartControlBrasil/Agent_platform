@@ -38,6 +38,7 @@ def _ready_lead(tenant, *, session_id=None):
         name="Carlos Silva",
         phone="11999998888",
         email="carlos@example.com",
+        company="Empresa XYZ",
         need_summary=B2B_NEED,
         status=LeadDraft.Status.QUALIFIED,
         qualification_status=LeadDraft.QualificationStatus.QUALIFIED,

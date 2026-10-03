@@ -495,6 +495,8 @@ class LiviaDecisionService:
         knowledge_context: str,
         dialogue_memory=None,
     ) -> LiviaReply:
+        from assistant_core.consultative_policy import collection_already_active
+
         result = None
         if conversation is not None:
             result = self.lead_capture_service.capture_from_message(
@@ -585,6 +587,22 @@ class LiviaDecisionService:
                 append_followup=turn.kind == TurnKind.NEED_ENRICHMENT,
                 dialogue_memory=dialogue_memory,
             )
+        if collection_already_active(conversation, lead_draft) and lead_draft is not None:
+            from leads.services.commercial import QualificationService
+
+            pending = QualificationService().promptable_fields(
+                lead_draft,
+                history=history,
+                message=current_message,
+            )
+            if pending and pending[0] != "need_summary":
+                resume = self.lead_capture_service.build_next_prompt(
+                    lead_draft,
+                    pending,
+                    invalid_fields=[],
+                )
+                if resume and resume.lower() not in reply.lower():
+                    reply = f"{reply.rstrip()} {resume}".strip()
         decision = LiviaReply(intent=intent, reply=reply)
         decision = self._finalize_handoff(decision, conversation, lead_draft, discovery, current_message)
         return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
@@ -1059,6 +1077,22 @@ class LiviaDecisionService:
                 current_message=current_message,
                 dialogue_memory=dialogue_memory,
             )
+        if collection_already_active(conversation, lead_draft) and lead_draft is not None:
+            from leads.services.commercial import QualificationService
+
+            pending = QualificationService().promptable_fields(
+                lead_draft,
+                history=history,
+                message=current_message,
+            )
+            if pending and pending[0] != "need_summary":
+                resume = self.lead_capture_service.build_next_prompt(
+                    lead_draft,
+                    pending,
+                    invalid_fields=[],
+                )
+                if resume and resume.lower() not in reply.lower():
+                    reply = f"{reply.rstrip()} {resume}".strip()
         decision = LiviaReply(intent=intent, reply=reply)
         if not pure_consultative and not knowledge_during_collection:
             decision = self._finalize_handoff(decision, conversation, lead_draft, discovery, current_message)

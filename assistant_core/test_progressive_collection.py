@@ -54,12 +54,16 @@ class ProgressiveCollectionTests(TestCase):
         self.start()
         self.assertIn("telefone", self.turn("Marcelo Silva").lower())
         reply = self.turn("11999999999")
-        self.assertIn("continuidade", reply.lower())
+        self.assertIn("e-mail", reply.lower())
+        reply = self.turn("marcelo@example.com")
+        self.assertIn("empresa", reply.lower())
 
     def pf_contacts(self):
         self.start(PF_NEED, knowledge=PF_KB)
         self.turn("Marcelo Silva")
         self.turn("11999999999")
+        self.turn("marcelo@example.com")
+        self.turn("Pessoa física")
 
     def assert_complete(self):
         lead = self.lead()
@@ -73,7 +77,7 @@ class ProgressiveCollectionTests(TestCase):
 
     def test_full_company_flow(self):
         self.b2b_contacts()
-        self.assertEqual(self.lead().status, LeadDraft.Status.QUALIFIED)
+        self.assertEqual(self.lead().status, LeadDraft.Status.DRAFT)
         self.assertEqual(self.promptable(), ["company"])
         self.turn("Empresa XYZ")
         self.assert_complete()
@@ -83,14 +87,14 @@ class ProgressiveCollectionTests(TestCase):
         self.pf_contacts()
         lead = self.lead()
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
-        self.assertEqual(lead.company, "")
+        self.assertEqual(lead.company, "Pessoa física")
         self.assertEqual(self.promptable(), [])
 
     def test_spontaneous_contacts_are_all_reused(self):
         self.start()
         reply = self.turn("Meu nome é Marcelo Silva, meu telefone é 11999999999 e meu e-mail é marcelo@example.com")
-        self.assertEqual(self.pending(), [])
-        self.assertIn("continuidade", reply)
+        self.assertEqual(self.pending(), ["company"])
+        self.assertIn("empresa", reply.lower())
         self.assertEqual(self.lead().name, "Marcelo Silva")
 
     def test_spontaneous_company_resolves_optional_slot(self):
@@ -122,10 +126,11 @@ class ProgressiveCollectionTests(TestCase):
 
     def test_need_is_last_when_unknown(self):
         self.turn("Quero orçamento")
-        self.assertEqual(self.pending(), ["need_summary", "phone_or_email"])
+        self.assertEqual(self.pending(), ["name", "phone", "email", "company"])
         self.turn("Marcelo Silva")
         self.turn("11999999999")
-        reply = self.turn("Preciso automatizar três câmaras na empresa.")
+        self.turn("marcelo@example.com")
+        reply = self.turn("Empresa XYZ")
         self.assertEqual(self.pending(), [])
         self.assertNotIn("Em uma frase", reply)
 
@@ -188,7 +193,7 @@ class ProgressiveCollectionTests(TestCase):
                 mark_collection_active(lead)
                 self.turn(text)
                 self.assertEqual(self.lead().status, LeadDraft.Status.QUALIFIED)
-                self.assertEqual(self.lead().company, "")
+                self.assertEqual(self.lead().company, "Pessoa física")
 
     def test_explicit_human_request_does_not_require_email(self):
         self.turn("Quero falar com alguém, é urgente")
@@ -253,4 +258,4 @@ class ProgressiveCollectionTests(TestCase):
         self.assertTrue(lead.qualification_data.get("collection_active"))
         self.assertEqual(lead.need_summary.strip(), before_need.strip())
         self.assertGreater(len(reply.strip()), 20)
-        self.assertNotIn("chamar", reply.lower())
+        self.assertIn("chamar", reply.lower())

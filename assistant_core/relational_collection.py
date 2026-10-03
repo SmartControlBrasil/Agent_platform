@@ -269,19 +269,11 @@ def pending_collection_fields(*, lead, history=None, message: str = "") -> list[
         pending.append("name")
     phone = getattr(lead, "phone", "")
     email = getattr(lead, "email", "")
-    has_contact = bool(
-        (str(phone or "").strip() and is_valid_phone(phone))
-        or (str(email or "").strip() and is_valid_email(email))
-    )
-    if not has_contact:
-        if not is_valid_phone(phone):
-            pending.append("phone")
-        elif not is_valid_email(email):
-            pending.append("email")
-    if (
-        has_b2b_context(lead=lead, history=history, message=message)
-        and not is_valid_company(getattr(lead, "company", ""))
-    ):
+    if not is_valid_phone(phone):
+        pending.append("phone")
+    if not is_valid_email(email):
+        pending.append("email")
+    if not is_valid_company(getattr(lead, "company", "")):
         pending.append("company")
     return pending
 
@@ -301,9 +293,7 @@ def build_contact_collection_prompt(
     if field == "phone":
         prefix = ""
         if not data.get(CONTACT_REASON_SHOWN_KEY):
-            prefix = (
-                "Para nossa equipe retornar seu atendimento, preciso de um telefone ou WhatsApp, ou um e-mail. "
-            )
+            prefix = "Para nossa equipe retornar seu atendimento, "
         if "phone" in invalid_fields:
             return f"{prefix}Esse telefone ficou incompleto. Qual é o melhor telefone ou WhatsApp?"
         return f"{prefix}Qual é o melhor telefone ou WhatsApp?"
@@ -312,7 +302,7 @@ def build_contact_collection_prompt(
             return "Esse e-mail parece incompleto. Qual é o seu e-mail?"
         return "Qual é o seu e-mail?"
     if field == "company":
-        return "Qual é o nome da empresa ou instituição?"
+        return "Qual é o nome da sua empresa?"
     return ""
 
 def mark_contact_reason_shown(lead) -> None:

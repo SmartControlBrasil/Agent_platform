@@ -46,7 +46,7 @@ def _complete_lead(
     phone="11999998888",
     email="carlos@example.com",
     need_summary=B2B_NEED,
-    company="",
+    company="Empresa XYZ",
     reason="continuity_offer_accepted",
     session_id=None,
 ):
@@ -112,9 +112,9 @@ class LeadFinalizationTests(TestCase):
         self.capture.capture_from_message(conversation=conversation, message="Marcelo", history=[])
         self.assertEqual(OutboxEvent.objects.count(), 0)
 
-    def test_c_phone_without_email_remains_notifiable(self):
+    def test_c_phone_without_email_is_not_ready(self):
         lead = _complete_lead(self.tenant, email="")
-        self.assertTrue(is_ready_for_commercial_notification(lead))
+        self.assertFalse(is_ready_for_commercial_notification(lead))
         self.assertTrue(str(lead.phone or "").strip())
         self.assertFalse(str(lead.email or "").strip())
 
@@ -127,11 +127,11 @@ class LeadFinalizationTests(TestCase):
                 message="11999998888",
                 history=[],
             )
-            dispatch.assert_called_once()
+            dispatch.assert_not_called()
 
-    def test_d_notification_valid_without_company(self):
-        lead = _complete_lead(self.tenant)
-        self.assertTrue(is_ready_for_commercial_notification(lead))
+    def test_d_notification_requires_company(self):
+        lead = _complete_lead(self.tenant, company="")
+        self.assertFalse(is_ready_for_commercial_notification(lead))
 
     def test_e_company_present_in_email_body(self):
         lead = _complete_lead(self.tenant, company="Empresa XYZ")
@@ -142,7 +142,7 @@ class LeadFinalizationTests(TestCase):
     def test_f_subject_follows_pattern(self):
         lead = _complete_lead(self.tenant, name="Carlos", need_summary="Preciso de robô de limpeza para galpão.")
         subject = build_lead_notification_subject(lead)
-        self.assertEqual(subject, "Novo lead Lívia — Interesse comercial — Carlos")
+        self.assertEqual(subject, "[Lívia] Novo lead comercial — Carlos — Empresa XYZ")
 
     def test_g_transcript_has_client_and_livia_in_order(self):
         lead = _complete_lead(self.tenant)
@@ -150,9 +150,9 @@ class LeadFinalizationTests(TestCase):
         Message.objects.create(conversation=lead.conversation, role=Message.Role.ASSISTANT, content="Posso ajudar com isso.")
         Message.objects.create(conversation=lead.conversation, role=Message.Role.SYSTEM, content="prompt interno")
         transcript = build_conversation_transcript(lead.conversation, lead_draft=lead)
-        self.assertIn("Cliente:", transcript)
-        self.assertIn("Lívia:", transcript)
-        self.assertLess(transcript.index("Cliente:"), transcript.index("Lívia:"))
+        self.assertIn("VISITANTE:", transcript)
+        self.assertIn("LÍVIA:", transcript)
+        self.assertLess(transcript.index("VISITANTE:"), transcript.index("LÍVIA:"))
         self.assertNotIn("prompt interno", transcript)
 
     def test_h_summary_exists_and_is_not_full_transcript(self):
@@ -260,7 +260,7 @@ class LeadFinalizationTests(TestCase):
         Message.objects.create(conversation=lead.conversation, role=Message.Role.SYSTEM, content="system prompt")
         Message.objects.create(conversation=lead.conversation, role=Message.Role.USER, content="Olá")
         transcript = build_conversation_transcript(lead.conversation, lead_draft=lead)
-        self.assertIn("Cliente: Olá", transcript)
+        self.assertIn("VISITANTE: Olá", transcript)
         self.assertNotIn("system prompt", transcript)
 
     def test_n_spontaneous_contacts_generate_same_notification_when_ready(self):
@@ -268,8 +268,8 @@ class LeadFinalizationTests(TestCase):
         lead = LeadDraft.objects.create(tenant=self.tenant, conversation=conversation, qualification_data={})
         mark_collection_active(lead, reason="explicit_quote")
         message = (
-            "Sou Ana Silva, meu telefone é 11988887777, meu e-mail é ana@example.com "
-            "e preciso automatizar três câmaras na empresa."
+            "Sou Ana Silva, telefone 11988887777, email ana@example.com, "
+            "sou da Empresa XYZ."
         )
         outcome = self.capture.capture_from_message(conversation=conversation, message=message, history=[])
         self.assertTrue(outcome.is_qualified)
@@ -312,6 +312,10 @@ class LeadFinalizationTests(TestCase):
         turn("Carlos Silva")
         turn("11999998888")
         lead = LeadDraft.objects.get(conversation=conversation)
+        self.assertFalse(is_ready_for_commercial_notification(lead))
+        turn("carlos@example.com")
+        turn("Empresa XYZ")
+        lead.refresh_from_db()
         self.assertTrue(is_ready_for_commercial_notification(lead))
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
         self.assertEqual(
@@ -346,8 +350,8 @@ class LeadFinalizationTests(TestCase):
             "SOLICITAÇÃO",
             "RESUMO DO ATENDIMENTO",
             "CONVERSA COMPLETA",
-            "Cliente:",
-            "Lívia:",
+            "VISITANTE:",
+            "LÍVIA:",
             "INFORMAÇÕES INTERNAS",
         ):
             self.assertIn(section, body)
@@ -356,4 +360,4 @@ class LeadFinalizationTests(TestCase):
     def test_subject_without_confident_topic_uses_name_only(self):
         lead = _complete_lead(self.tenant, name="Ana", need_summary="Preciso de ajuda com meu projeto.")
         subject = build_lead_notification_subject(lead)
-        self.assertEqual(subject, "Novo lead Lívia — Interesse comercial — Ana")
+        self.assertEqual(subject, "[Lívia] Novo lead comercial — Ana — Empresa XYZ")

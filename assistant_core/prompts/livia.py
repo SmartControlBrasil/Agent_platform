@@ -62,7 +62,7 @@ def ask_phone_or_email_reply() -> str:
 
 
 def qualified_reply() -> str:
-    return "Perfeito. Registrei seus dados para continuidade do atendimento."
+    return "Perfeito. Registrei seus dados e encaminhei sua solicitação para nossa equipe comercial."
 
 
 def build_contextual_reply(*, intent: str, missing_fields: list[str] | None = None) -> str:

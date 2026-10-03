@@ -159,6 +159,7 @@ KNOWN_CUSTOM_FIELD_KEYS = frozenset(
     }
 )
 CONTACT_FIELDS = {"name", "phone", "email", "company"}
+COMMERCIAL_COLLECTION_FIELDS = ("name", "phone", "email", "company")
 SOURCE_STRENGTH = {
     FIELD_SOURCE_UNKNOWN: 0,
     FIELD_SOURCE_INFERRED: 1,
@@ -271,6 +272,25 @@ def has_usable_contact(lead: LeadDraft | None) -> bool:
     )
 
 
+def missing_commercial_collection_fields(lead: LeadDraft | None) -> list[str]:
+    if lead is None:
+        return list(COMMERCIAL_COLLECTION_FIELDS)
+    missing: list[str] = []
+    if not is_valid_name(getattr(lead, "name", "")):
+        missing.append("name")
+    if not is_valid_phone(getattr(lead, "phone", "")):
+        missing.append("phone")
+    if not is_valid_email(getattr(lead, "email", "")):
+        missing.append("email")
+    if not is_valid_company(getattr(lead, "company", "")):
+        missing.append("company")
+    return missing
+
+
+def has_complete_commercial_collection(lead: LeadDraft | None) -> bool:
+    return not missing_commercial_collection_fields(lead)
+
+
 def is_ready_for_commercial_notification(lead: LeadDraft | None, *, policy: QualificationPolicy | None = None) -> bool:
     return QualificationService().is_ready_for_commercial_notification(lead, policy=policy)
 
@@ -309,7 +329,7 @@ class QualificationService:
         from assistant_core.qualification.livia import is_company_not_applicable
         if collection_active and pending and pending[0] == "company" and is_company_not_applicable(message):
             lead.qualification_data = {**(lead.qualification_data or {}), "company_not_applicable": True}
-            changed = True
+            changed |= merge_field_value(lead, "company", "Pessoa física", source=FIELD_SOURCE_EXPLICIT)
         if pending and collection_active:
             allow_infer = pending[0] == "need_summary" or not is_consultative_context_answer(message)
             if allow_infer:
@@ -428,7 +448,9 @@ class QualificationService:
         return LeadDraft.objects.create(tenant=conversation.tenant, conversation=conversation), True
 
     def missing_required_fields(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None) -> list[str]:
-        """Campos obrigatórios para qualificação material do lead (company não entra aqui)."""
+        """Campos obrigatórios para qualificação material do lead."""
+        if (lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY):
+            return missing_commercial_collection_fields(lead)
         policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
         missing = []
         for field_name in policy.required_fields:
@@ -452,7 +474,7 @@ class QualificationService:
         return missing
 
     def missing_fields(self, lead: LeadDraft, *, policy: QualificationPolicy | None = None) -> list[str]:
-        """Campos materialmente ausentes para qualificação (company não entra aqui)."""
+        """Campos materialmente ausentes para qualificação."""
         policy = policy or self.policy or QualificationPolicy.for_tenant(lead.tenant)
         return list(self.missing_required_fields(lead, policy=policy))
 
@@ -503,7 +525,7 @@ class QualificationService:
         qd = dict(getattr(lead, "qualification_data", None) or {})
         if not qd.get(COLLECTION_ACTIVE_KEY):
             return False
-        if self.missing_required_fields(lead, policy=policy):
+        if not has_complete_commercial_collection(lead):
             return False
         return self._has_commercial_notification_intent(lead)
 

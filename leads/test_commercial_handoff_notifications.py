@@ -126,34 +126,38 @@ class CommercialHandoffNotificationTests(TestCase):
         self.assertTrue(result.skipped)
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_c_budget_plus_phone_does_not_require_email(self):
+    def test_c_budget_requires_phone_email_and_company(self):
         self.turn("Quero orçamento para automação industrial do galpão.")
         self.turn("Meu nome é João.")
         self.turn("Meu telefone é 11999999999.")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         self.assertTrue(is_ready_for_commercial_notification(lead))
-        self.assertEqual(lead.email, "")
+        self.assertEqual(lead.email, "joao@xpto.com.br")
         LeadQualifiedHandler().process(self._outbox_lead(lead))
         self.assertEqual(len(mail.outbox), 1)
         body = mail.outbox[0].body
         self.assertIn("João", body)
         self.assertIn("11999999999", body)
-        self.assertIn("E-mail: Não informado", body)
-        self.assertIn("Novo lead Lívia — Orçamento", mail.outbox[0].subject)
+        self.assertIn("E-mail: joao@xpto.com.br", body)
+        self.assertIn("[Lívia] Novo lead comercial", mail.outbox[0].subject)
 
-    def test_d_budget_plus_email_without_phone(self):
+    def test_d_budget_requires_email_phone_and_company(self):
         conversation = Conversation.objects.create(tenant=self.tenant, session_id=str(uuid.uuid4()))
         history = []
         self.turn("Quero orçamento para automação industrial do galpão.", conversation=conversation, history=history)
         self.turn("Meu nome é João.", conversation=conversation, history=history)
         self.turn("Meu e-mail é joao@empresa.com.br", conversation=conversation, history=history)
+        self.turn("11999999999", conversation=conversation, history=history)
+        self.turn("Empresa XPTO", conversation=conversation, history=history)
         lead = self.lead(conversation)
         self.assertTrue(is_ready_for_commercial_notification(lead))
-        self.assertFalse(str(lead.phone or "").strip())
+        self.assertTrue(str(lead.phone or "").strip())
         LeadQualifiedHandler().process(self._outbox_lead(lead))
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("joao@empresa.com.br", mail.outbox[0].body)
-        self.assertIn("Telefone: Não informado", mail.outbox[0].body)
+        self.assertIn("Telefone: 11999999999", mail.outbox[0].body)
 
     def test_e_all_fields_appear(self):
         lead = LeadDraft.objects.create(
@@ -162,7 +166,7 @@ class CommercialHandoffNotificationTests(TestCase):
             name="João Silva",
             phone="11999999999",
             email="joao@xpto.com.br",
-            company="XPTO Automação",
+            company="Empresa XPTO",
             need_summary="Preciso automatizar três painéis no galpão.",
             status=LeadDraft.Status.QUALIFIED,
         )
@@ -171,7 +175,7 @@ class CommercialHandoffNotificationTests(TestCase):
         self.assertIn("Nome: João Silva", body)
         self.assertIn("Telefone: 11999999999", body)
         self.assertIn("E-mail: joao@xpto.com.br", body)
-        self.assertIn("Empresa: XPTO Automação", body)
+        self.assertIn("Empresa: Empresa XPTO", body)
 
     def test_f_missing_company_is_not_invented(self):
         lead = LeadDraft.objects.create(
@@ -191,6 +195,8 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Quero falar com um atendente sobre automação industrial do galpão.")
         self.turn("Meu nome é João.")
         self.turn("Meu telefone é 11999999999.")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         handoff = HandoffRequest.objects.get(conversation=self.conversation)
         self.assertTrue(lead.qualification_data.get("commercial_intent"))
@@ -204,6 +210,8 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Quero falar com um atendente.")
         self.turn("João")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         handoff = HandoffRequest.objects.filter(conversation=self.conversation).first()
         self.assertIsNotNone(handoff)
@@ -217,6 +225,8 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Preciso de cotação.")
         self.turn("Meu nome é João.")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         first = LeadQualifiedHandler().process(self._outbox_lead(lead))
         second = LeadQualifiedHandler().process(self._outbox_lead(lead))
@@ -228,6 +238,8 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Quero orçamento para automação industrial do galpão.")
         self.turn("Meu nome é João.")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         LeadQualifiedHandler().process(self._outbox_lead(lead))
         self.assertEqual(len(mail.outbox), 1)
@@ -241,6 +253,8 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Quero orçamento para automação industrial do galpão.")
         self.turn("Meu nome é João.")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         LeadQualifiedHandler().process(self._outbox_lead(lead))
         self.turn("Minha empresa é XPTO.")
@@ -269,17 +283,17 @@ class CommercialHandoffNotificationTests(TestCase):
             Message.objects.create(conversation=self.conversation, role=Message.Role.USER, content=user)
             Message.objects.create(conversation=self.conversation, role=Message.Role.ASSISTANT, content=assistant)
         body = build_lead_notification_body(lead)
-        self.assertIn("Cliente: Olá", body)
-        self.assertIn("Cliente: Mensagem extra do cliente", body)
-        self.assertIn("Lívia: Resposta extra da Lívia", body)
-        self.assertLess(body.index("Cliente: Olá"), body.index("Cliente: Mensagem extra do cliente"))
+        self.assertIn("VISITANTE: Olá", body)
+        self.assertIn("VISITANTE: Mensagem extra do cliente", body)
+        self.assertIn("LÍVIA: Resposta extra da Lívia", body)
+        self.assertLess(body.index("VISITANTE: Olá"), body.index("VISITANTE: Mensagem extra do cliente"))
 
     def test_m_system_message_excluded(self):
         Message.objects.create(conversation=self.conversation, role=Message.Role.SYSTEM, content="prompt interno secreto")
         Message.objects.create(conversation=self.conversation, role=Message.Role.USER, content="Quero orçamento")
         transcript = build_commercial_notification_transcript(self.conversation)
         self.assertNotIn("prompt interno secreto", transcript)
-        self.assertIn("Cliente: Quero orçamento", transcript)
+        self.assertIn("VISITANTE: Quero orçamento", transcript)
 
     def test_n_long_conversation_is_not_silently_cut_at_14k(self):
         chunk = "Preciso detalhar o projeto de automação do galpão " * 20
@@ -297,7 +311,7 @@ class CommercialHandoffNotificationTests(TestCase):
         limited = build_conversation_transcript(self.conversation)
         commercial = build_commercial_notification_transcript(self.conversation)
         self.assertGreater(len(commercial), MAX_TRANSCRIPT_CHARS)
-        self.assertIn("Cliente: 0 ", commercial)
+        self.assertIn("VISITANTE: 0 ", commercial)
         self.assertNotIn("[Truncamento excepcional]", commercial)
         self.assertTrue(
             "omitidas para legibilidade" in limited or "histórico truncado" in limited or len(limited) <= MAX_TRANSCRIPT_CHARS + 200
@@ -309,15 +323,17 @@ class CommercialHandoffNotificationTests(TestCase):
             Message.objects.create(conversation=self.conversation, role=Message.Role.ASSISTANT, content=f"turno-livia-{index}")
         limited = build_conversation_transcript(self.conversation)
         commercial = build_commercial_notification_transcript(self.conversation)
-        self.assertIn("Cliente: turno-user-0", commercial)
-        self.assertIn("Cliente: turno-user-89", commercial)
-        self.assertNotIn("Cliente: turno-user-0", limited)
+        self.assertIn("VISITANTE: turno-user-0", commercial)
+        self.assertIn("VISITANTE: turno-user-89", commercial)
+        self.assertNotIn("VISITANTE: turno-user-0", limited)
         self.assertGreater(len(self.conversation.messages.exclude(role=Message.Role.SYSTEM)), MAX_TRANSCRIPT_TURNS)
 
     def test_p_smtp_failure_keeps_domain_and_retries(self):
         self.turn("Quero orçamento para automação industrial do galpão.")
         self.turn("João")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         event = self._outbox_lead(lead)
         with patch("leads.services.lead_notification.EmailMultiAlternatives.send", side_effect=OSError("smtp down")):
@@ -332,6 +348,8 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Quero orçamento para automação industrial do galpão.")
         self.turn("João")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         event = self._outbox_lead(lead)
         with patch("leads.services.lead_notification.EmailMultiAlternatives.send", side_effect=OSError("smtp down")):
@@ -347,9 +365,13 @@ class CommercialHandoffNotificationTests(TestCase):
         self.turn("Quero orçamento para automação industrial do galpão.", conversation=self.conversation, history=self.history)
         self.turn("João Alfa", conversation=self.conversation, history=self.history)
         self.turn("11999999999", conversation=self.conversation, history=self.history)
+        self.turn("joao@alfa.example", conversation=self.conversation, history=self.history)
+        self.turn("Empresa Alfa", conversation=self.conversation, history=self.history)
         self.turn("Quero orçamento para automação industrial do galpão.", conversation=conv_b, history=hist_b)
         self.turn("Maria Beta", conversation=conv_b, history=hist_b)
         self.turn("11988887777", conversation=conv_b, history=hist_b)
+        self.turn("maria@beta.example", conversation=conv_b, history=hist_b)
+        self.turn("Empresa Beta", conversation=conv_b, history=hist_b)
         lead_a = self.lead(self.conversation)
         lead_b = self.lead(conv_b)
         LeadNotificationService().notify(lead_a)
@@ -365,7 +387,7 @@ class CommercialHandoffNotificationTests(TestCase):
             tenant=self.tenant,
             conversation=self.conversation,
             name="João Silva",
-            company="XPTO Automação",
+            company="Empresa XPTO",
             phone="11999999999",
             need_summary="Preciso de orçamento para automação industrial.",
             status=LeadDraft.Status.QUALIFIED,
@@ -373,26 +395,28 @@ class CommercialHandoffNotificationTests(TestCase):
         mark_collection_active(lead, reason="explicit_quote")
         self.assertEqual(
             build_lead_notification_subject(lead),
-            "Novo lead Lívia — Orçamento — XPTO Automação",
+            "[Lívia] Novo lead comercial — João Silva — Empresa XPTO",
         )
         lead.company = ""
         lead.save(update_fields=["company"])
-        self.assertEqual(build_lead_notification_subject(lead), "Novo lead Lívia — Orçamento — João Silva")
+        self.assertEqual(build_lead_notification_subject(lead), "[Lívia] Novo lead comercial — João Silva")
         lead.name = ""
         lead.save(update_fields=["name"])
-        self.assertEqual(build_lead_notification_subject(lead), "Novo lead Lívia — Orçamento")
+        self.assertEqual(build_lead_notification_subject(lead), "[Lívia] Novo lead comercial")
 
     def test_t_logs_do_not_include_transcript_or_visitor_pii(self):
         self.turn("Quero orçamento para automação industrial do galpão.")
         self.turn("Meu nome é João.")
         self.turn("11999999999")
+        self.turn("joao@xpto.com.br")
+        self.turn("Empresa XPTO")
         lead = self.lead()
         with self.assertLogs("leads.services.lead_notification", level="INFO") as captured:
             LeadNotificationService().notify(lead)
         joined = "\n".join(captured.output)
         self.assertNotIn("11999999999", joined)
         self.assertNotIn("CONVERSA COMPLETA", joined)
-        self.assertNotIn("Cliente: Quero orçamento", joined)
+        self.assertNotIn("VISITANTE: Quero orçamento", joined)
 
     def test_human_without_contact_does_not_email(self):
         self.turn("Quero falar com um atendente.")

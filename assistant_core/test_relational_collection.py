@@ -94,7 +94,7 @@ class RelationalCollectionTests(TestCase):
         self.turn(B2B_NEED)
         self.turn("Pode registrar")
         reply = self.turn("11999999999")
-        self.assertIn("continuidade", reply.reply.lower())
+        self.assertIn("e-mail", reply.reply.lower())
         self.assertEqual(self.lead().phone, "11999999999")
 
     def test_g_name_without_continuity_does_not_collect_contacts(self):
@@ -110,17 +110,17 @@ class RelationalCollectionTests(TestCase):
         self.accept_continuity(B2B_NEED)
         self.turn("Marcelo Silva")
         reply = self.turn("11999999999")
-        self.assertIn("continuidade", reply.reply.lower())
-        self.assertEqual(self.promptable(), ["company"])
+        self.assertIn("e-mail", reply.reply.lower())
+        self.assertEqual(self.promptable(), ["email", "company"])
 
     def test_i_personal_flow_does_not_ask_company(self):
         reply = self.accept_continuity(PF_NEED, knowledge=PF_KB)
         self.assertIn("chamar", reply.reply.lower())
         self.turn("Ana", knowledge=PF_KB)
         reply = self.turn("11999999999", knowledge=PF_KB)
-        self.assertNotIn("empresa", reply.reply.lower())
-        self.assertEqual(self.promptable(), [])
-        self.assertEqual(self.lead().status, LeadDraft.Status.QUALIFIED)
+        self.assertIn("e-mail", reply.reply.lower())
+        self.assertEqual(self.promptable(), ["email", "company"])
+        self.assertEqual(self.lead().status, LeadDraft.Status.DRAFT)
 
     def test_j_known_company_is_not_asked_again(self):
         lead = LeadDraft.objects.create(
@@ -179,7 +179,7 @@ class RelationalCollectionTests(TestCase):
         self.turn("Meu WhatsApp é 11988887777")
         lead = self.lead()
         self.assertEqual(lead.phone, "11988887777")
-        self.assertNotIn("e-mail", self.history[-1]["content"].lower())
+        self.assertIn("e-mail", self.history[-1]["content"].lower())
 
     def test_spontaneous_email_after_phone(self):
         self.ask_relational_name()
@@ -199,10 +199,11 @@ class RelationalCollectionTests(TestCase):
         self.accept_continuity(B2B_NEED)
         self.turn("Marcelo Silva")
         self.turn("11999999999")
+        self.turn("marcelo@example.com")
         self.turn("não tenho empresa")
         lead = self.lead()
         self.assertEqual(lead.status, LeadDraft.Status.QUALIFIED)
-        self.assertEqual(lead.company, "")
+        self.assertEqual(lead.company, "Pessoa física")
 
     def test_relational_name_capture_keeps_collection_inactive(self):
         self.establish_consultative_relationship()
