@@ -441,6 +441,24 @@ def widget_js(request):
       }
     }
 
+    function refocusInput() {
+      if (!isOpen || !widgetEnabled) {
+        return;
+      }
+      const focusInput = function () {
+        try {
+          input.focus();
+        } catch (error) {
+          /* ignore focus errors on unsupported browsers */
+        }
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(focusInput);
+      } else {
+        setTimeout(focusInput, 0);
+      }
+    }
+
     function openPanel() {
       if (!widgetEnabled) {
         return;
@@ -565,6 +583,7 @@ def widget_js(request):
       } finally {
         isSending = false;
         setLoading(input, sendButton, false);
+        refocusInput();
       }
     }
 

@@ -591,3 +591,109 @@ class CommercialCollectionStateTests(TestCase):
         body = build_lead_notification_body(lead, timestamp="03/10/2026 12:00")
         self.assertIn("VISITANTE: Olá", body)
         self.assertIn("Quero um orçamento", body)
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_beverage_segment_does_not_fill_company_slot(self):
+        from assistant_core.conversation_turns import looks_like_business_segment_description
+        from assistant_core.qualification import is_valid_company
+        from assistant_core.services.conversation_decision import ConversationAction
+
+        self.assertTrue(looks_like_business_segment_description("é uma loja de bebidas"))
+        self.assertFalse(is_valid_company("loja de bebidas"))
+
+        conversation = self._conversation(session_id="bebidas-segment")
+        history: list[dict[str, str]] = []
+        turns = [
+            "Olá gostaria de ter um site",
+            "quero uma loja com delivery",
+            "é uma loja de bebidas",
+            "gostaria que alguem entrasse em contato comigo",
+            "José",
+            "1145454545",
+            "jose@gmail.com",
+        ]
+
+        def chat(msg: str):
+            decision = self.service.generate_reply(history, msg, conversation=conversation)
+            history.extend(
+                [{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}]
+            )
+            return decision
+
+        for message in turns[:-3]:
+            chat(message)
+        chat("José")
+        chat("1145454545")
+        decision = chat("jose@gmail.com")
+        lead = self._lead(conversation)
+        self.assertEqual(lead.name, "José")
+        self.assertEqual(lead.phone, "1145454545")
+        self.assertEqual(lead.email, "jose@gmail.com")
+        self.assertEqual(lead.company, "")
+        self.assertEqual(pending_collection_fields(lead=lead), ["company"])
+        self.assertFalse(is_ready_for_commercial_notification(lead))
+        structured = decision.structured_decision
+        self.assertIsNotNone(structured)
+        self.assertEqual(structured.action, ConversationAction.ASK_COMPANY)
+
+        final = chat("José Bebidas")
+        lead.refresh_from_db()
+        self.assertEqual(lead.company, "José Bebidas")
+        from leads.services.commercial import has_complete_commercial_collection
+
+        self.assertTrue(has_complete_commercial_collection(lead))
+        self.assertEqual(final.structured_decision.action, ConversationAction.COMPLETE_HANDOFF)
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                aggregate_id=str(lead.pk),
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).count(),
+            1,
+        )
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_thank_you_after_complete_handoff_does_not_repeat_or_reenqueue(self):
+        from assistant_core.services.conversation_decision import ConversationAction
+        from leads.services.commercial_notification import commercial_handoff_completed
+
+        conversation = self._conversation(session_id="post-handoff-thanks")
+        history: list[dict[str, str]] = []
+
+        def chat(msg: str):
+            decision = self.service.generate_reply(history, msg, conversation=conversation)
+            history.extend(
+                [{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}]
+            )
+            return decision
+
+        chat("quero um orçamento")
+        chat("José")
+        chat("1145454545")
+        chat("jose@gmail.com")
+        complete = chat("José Bebidas")
+        lead = self._lead(conversation)
+        self.assertEqual(complete.structured_decision.action, ConversationAction.COMPLETE_HANDOFF)
+        self.assertTrue(commercial_handoff_completed(lead=lead))
+        events_after_complete = OutboxEvent.objects.filter(
+            tenant=self.tenant,
+            aggregate_id=str(lead.pk),
+            event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+        ).count()
+
+        thanks = chat("muito obrigado")
+        lead.refresh_from_db()
+        self.assertTrue(commercial_handoff_completed(lead=lead))
+        if thanks.structured_decision is not None:
+            self.assertNotEqual(thanks.structured_decision.action, ConversationAction.COMPLETE_HANDOFF)
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                aggregate_id=str(lead.pk),
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).count(),
+            events_after_complete,
+        )
+        lowered = thanks.reply.lower()
+        self.assertNotIn("seus dados foram registrados", lowered)
+        self.assertNotIn("encaminhei sua solicitação", lowered)

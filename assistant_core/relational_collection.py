@@ -241,8 +241,6 @@ def capture_passive_fields(*, lead, message: str, history=None) -> bool:
         ("phone", is_valid_phone, normalize_phone),
         ("email", is_valid_email, normalize_email),
     )
-    if not collection_active:
-        passive_field_specs += (("company", is_valid_company, normalize_name),)
     for field_name, validator, normalizer in passive_field_specs:
         current = str(getattr(lead, field_name, "") or "").strip()
         if current and validator(current):

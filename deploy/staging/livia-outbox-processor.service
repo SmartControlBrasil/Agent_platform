@@ -1,0 +1,39 @@
+# Lívia Platform — processador da outbox transacional (template)
+# NÃO instalar automaticamente.
+#
+# Instalação manual (operador):
+#   sudo cp deploy/staging/livia-outbox-processor.service /etc/systemd/system/
+#   sudo cp deploy/staging/livia-outbox-processor.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now livia-outbox-processor.timer
+#
+# Execução sob demanda:
+#   sudo systemctl start livia-outbox-processor.service
+#
+# Logs:
+#   journalctl -u livia-outbox-processor.service -f
+
+[Unit]
+Description=Livia outbox processor (lead.qualified and related events)
+After=network.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=livia-staging
+Group=livia-staging
+WorkingDirectory=/opt/livia-platform
+EnvironmentFile=/opt/livia-platform/.env
+
+ExecStart=/opt/livia-platform/.venv/bin/python manage.py process_outbox --execute --once --batch-size 50
+
+Restart=no
+TimeoutStartSec=600
+
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

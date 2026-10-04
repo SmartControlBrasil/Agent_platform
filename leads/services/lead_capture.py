@@ -127,7 +127,10 @@ class LeadCaptureService:
 
     def _should_enqueue_commercial_notification(self, lead_draft: LeadDraft) -> bool:
         from leads.services.commercial import is_ready_for_commercial_notification
+        from leads.services.commercial_notification import cycle_already_notified
 
+        if cycle_already_notified(lead=lead_draft):
+            return False
         return is_ready_for_commercial_notification(lead_draft)
 
     def _dispatch_webhook_lead_qualified(self, lead_draft: LeadDraft) -> None:

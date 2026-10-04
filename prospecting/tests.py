@@ -1935,15 +1935,20 @@ class ProspectingFollowUpQueueTests(TestCase):
     def test_tenant_isolation_and_counters(self):
         from prospecting.application.follow_up_queue import compute_follow_up_queue_counters
 
-        now = timezone.now()
-        self._pending_at(now - timedelta(days=1), idempotency_key="q-overdue-counter")
-        self._pending_at(now + timedelta(hours=2), idempotency_key="q-today-counter")
-        self._pending_at(now + timedelta(days=1), tenant=self.other_tenant, prospect=self.other_prospect, idempotency_key="other-1")
-        counters = compute_follow_up_queue_counters(tenant=self.tenant, now=now)
+        fixed_now = timezone.localtime(timezone.now()).replace(hour=12, minute=0, second=0, microsecond=0)
+        self._pending_at(fixed_now - timedelta(days=1), idempotency_key="q-overdue-counter")
+        self._pending_at(fixed_now + timedelta(hours=2), idempotency_key="q-today-counter")
+        self._pending_at(
+            fixed_now + timedelta(days=1),
+            tenant=self.other_tenant,
+            prospect=self.other_prospect,
+            idempotency_key="other-1",
+        )
+        counters = compute_follow_up_queue_counters(tenant=self.tenant, now=fixed_now)
         self.assertEqual(counters.pending_total, 2)
         self.assertEqual(counters.overdue, 1)
         self.assertEqual(counters.today, 1)
-        other_counters = compute_follow_up_queue_counters(tenant=self.other_tenant, now=now)
+        other_counters = compute_follow_up_queue_counters(tenant=self.other_tenant, now=fixed_now)
         self.assertEqual(other_counters.pending_total, 1)
 
     def test_latest_outcome_annotation(self):

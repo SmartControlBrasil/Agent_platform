@@ -103,11 +103,31 @@ def looks_like_environment_answer(text: str) -> bool:
     return bool(re.search(r"\b\d+\s*m\b", normalized))
 
 
+def looks_like_business_segment_description(text: str) -> bool:
+    """Ramo/segmento consultivo (ex.: loja de bebidas) — não é razão social."""
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if re.search(r"^(?:e|é|eh)\s+(?:uma|um)\s+", normalized):
+        return True
+    if re.search(r"^(?:somos|sou)\s+(?:uma|um)\s+", normalized):
+        return True
+    if re.search(r"\bloja de\b", normalized) and len(normalized.split()) <= 8:
+        return True
+    if re.search(r"\b(?:negocio|negócio|ramo|segmento) de\b", normalized):
+        return True
+    if re.search(r"^(?:minha|nossa)\s+loja\b", normalized) and " ltda" not in normalized:
+        return True
+    return False
+
+
 def is_consultative_context_answer(text: str) -> bool:
     """Resposta técnica/contextual — não preenche slot comercial de nome/contato."""
     normalized = normalize_text(text)
     if not normalized:
         return False
+    if looks_like_business_segment_description(text):
+        return True
     if looks_like_environment_answer(normalized):
         return True
     if is_direct_question(text):

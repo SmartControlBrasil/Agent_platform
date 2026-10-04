@@ -1,0 +1,20 @@
+# Timer periódico do processador de outbox (template)
+# NÃO instalar automaticamente.
+#
+# Instalação manual (operador):
+#   sudo cp deploy/staging/livia-outbox-processor.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now livia-outbox-processor.timer
+
+[Unit]
+Description=Run Livia outbox processor periodically
+Requires=livia-outbox-processor.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=livia-outbox-processor.service
+
+[Install]
+WantedBy=timers.target

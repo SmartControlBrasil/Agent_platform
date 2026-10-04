@@ -68,6 +68,10 @@ def build_openai_conversation_prompt(
             "- Solicite somente o primeiro campo permitido ainda pendente, com uma pergunta. Nome, telefone e e-mail são campos independentes; empresa não substitui nome.",
             "- Não repita o aviso de privacidade; ele é exibido pelo sistema no início da coleta.",
             "- Perguntas diretas do visitante devem ser respondidas antes de qualquer pergunta de qualificação.",
+            "- Em COMPLETE_HANDOFF: confirme registro e encaminhamento à equipe comercial; "
+            "não prometa prazo de retorno (evite 'em breve', 'hoje', '24 horas' ou equivalentes).",
+            "- Após handoff concluído (commercial_handoff_completed): responda normalmente; "
+            "não repita confirmação de registro ou encaminhamento comercial.",
             "",
             "CONTINUIDADE:",
             "- Interprete pronomes e frases curtas usando MEMÓRIA DE DIÁLOGO e active_knowledge_subject.",
@@ -105,6 +109,7 @@ def build_openai_conversation_prompt(
         f"collection_paused: {commercial.get('collection_paused', False)}",
         f"contact_deferred: {commercial.get('contact_deferred', False)}",
         f"handoff_active: {commercial.get('handoff_active', False)}",
+        f"commercial_handoff_completed: {commercial.get('commercial_handoff_completed', False)}",
         f"intent: {discovery.get('intent', '') or commercial.get('intent', '')}",
         f"campos comerciais permitidos: {_format_allowed_fields(commercial.get('allowed_collection_fields', []))}",
         f"campos pendentes: {_format_allowed_fields(commercial.get('pending_fields', []))}",
@@ -177,6 +182,16 @@ def build_commercial_state_context(*, conversation, decision) -> dict:
         if value:
             known[field_name] = value[:200]
     state["known_lead_fields"] = known
+    state["commercial_handoff_completed"] = False
+    try:
+        from leads.services.commercial_notification import commercial_handoff_completed
+
+        state["commercial_handoff_completed"] = commercial_handoff_completed(lead=lead)
+    except Exception:
+        pass
+
+    if state["collection_active"] and state["commercial_handoff_completed"]:
+        state["collection_active"] = False
 
     if state["collection_active"]:
         try:

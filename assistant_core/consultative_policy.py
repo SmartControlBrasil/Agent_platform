@@ -496,6 +496,15 @@ def decide_collection(
         return CollectionDecision(False, reason="contact_deferred_consultative")
 
     trigger = detect_collection_trigger(current_message)
+    from assistant_core.state import can_start_new_cycle
+    from leads.services.commercial import resolve_lead_draft
+    from leads.services.commercial_notification import commercial_handoff_completed
+
+    active_lead = resolve_lead_draft(conversation, lead_draft)
+    if active_lead is not None and commercial_handoff_completed(lead=active_lead):
+        if not can_start_new_cycle(conversation, current_message):
+            return CollectionDecision(False, reason="commercial_handoff_completed")
+
     if collection_already_active(conversation, lead_draft=lead_draft):
         from assistant_core.conversation_turns import is_consultative_context_answer
         from assistant_core.qualification.livia import message_fills_pending_slot

@@ -1250,8 +1250,13 @@ class LiviaDecisionService:
             )
         from leads.services.commercial import is_ready_for_commercial_notification
 
+        from leads.services.commercial_notification import commercial_handoff_completed, mark_commercial_handoff_completed
+
         ready_for_notification = is_ready_for_commercial_notification(result.lead_draft)
+        if commercial_handoff_completed(lead=result.lead_draft):
+            ready_for_notification = False
         if ready_for_notification:
+            mark_commercial_handoff_completed(lead=result.lead_draft)
             reply = build_contextual_reply(intent=intent, missing_fields=[])
         structured_decision = self._build_collection_decision(
             intent=intent,

@@ -115,7 +115,7 @@ class WidgetTests(TestCase):
           getAttribute(name) { return this.attributes[name] || null; }
           addEventListener(name, callback) { this.listeners[name] = callback; }
           dispatchEvent(name, event) { this.listeners[name] && this.listeners[name](event || { preventDefault() {} }); }
-          focus() {}
+          focus() { this.focusCalls = (this.focusCalls || 0) + 1; }
           querySelector(selector) {
             const stack = [...this.children];
             while (stack.length) {
@@ -168,6 +168,10 @@ class WidgetTests(TestCase):
           const sandbox = { window: windowRef, document, fetch: fetchImpl, AbortController, URL, Promise, Error, String, Math, Date, setTimeout, clearTimeout, console: windowRef.console };
           vm.runInNewContext(source, sandbox);
           await new Promise((resolve) => setTimeout(resolve, 0));
+          const launcher = document.getElementById("livia-launcher");
+          if (launcher) {
+            launcher.dispatchEvent("click", { preventDefault() {} });
+          }
           const input = document.getElementById("livia-input");
           const send = document.getElementById("livia-send");
           const footer = document.getElementById("livia-footer");
@@ -193,6 +197,7 @@ class WidgetTests(TestCase):
           if (!messages.includes("Resposta da Lívia")) throw new Error("assistant reply was not rendered");
           if (success.input.disabled || success.send.disabled || success.send.textContent !== "Enviar") throw new Error("loading was not cleared on success");
           if (success.document.getElementById("livia-typing")) throw new Error("typing indicator remained after success");
+          if ((success.input.focusCalls || 0) < 2) throw new Error("input was not refocused after send");
 
           const failure = await runScenario(async (url) => {
             if (String(url).includes("/api/widget/config/")) return response(200, {});
@@ -260,7 +265,7 @@ class WidgetTests(TestCase):
           getAttribute(name) { return this.attributes[name] || null; }
           addEventListener(name, callback) { this.listeners[name] = callback; }
           dispatchEvent(name, event) { this.listeners[name] && this.listeners[name](event || { preventDefault() {} }); }
-          focus() {}
+          focus() { this.focusCalls = (this.focusCalls || 0) + 1; }
           querySelector(selector) {
             const stack = [...this.children];
             while (stack.length) {

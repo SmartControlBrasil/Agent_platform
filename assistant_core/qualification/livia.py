@@ -384,10 +384,12 @@ def is_valid_company(value) -> bool:
     cleaned = strip_repetition_noise(value)
     normalized = normalize_text(cleaned)
     from assistant_core.continuity_policy import is_operational_collection_reply
-    from assistant_core.conversation_turns import looks_like_environment_answer
+    from assistant_core.conversation_turns import looks_like_business_segment_description, looks_like_environment_answer
     from leads.services.commercial import is_collection_deferral_phrase
 
     if is_collection_deferral_phrase(cleaned) or is_operational_collection_reply(cleaned):
+        return False
+    if looks_like_business_segment_description(cleaned):
         return False
     if looks_like_environment_answer(normalized):
         return False
@@ -806,6 +808,10 @@ def _extract_name(text: str) -> str:
 
 
 def _extract_company(text: str) -> str:
+    from assistant_core.conversation_turns import looks_like_business_segment_description
+
+    if looks_like_business_segment_description(text):
+        return ""
     match = re.search(
         r"\b(?:da|de|do)\s+(?!um\b|uma\b|uns\b|umas\b|o\b|a\b)([A-ZÀ-Ý][A-Za-zÀ-ÿ0-9 .&'-]{1,60})",
         text,

@@ -13,6 +13,7 @@ CYCLE_SENT_KEY = "commercial_notification_sent_at"
 CYCLE_DRY_RUN_KEY = "commercial_notification_dry_run_at"
 LEAD_SENT_KEY = "lead_notification_sent_at"
 HANDOFF_SENT_KEY = "handoff_notification_sent_at"
+COMMERCIAL_HANDOFF_COMPLETE_KEY = "commercial_handoff_completed_at"
 
 
 def related_lead(*, lead=None, handoff=None) -> LeadDraft | None:
@@ -62,6 +63,28 @@ def _handoff_has_usable_contact(handoff) -> bool:
     phone = str(getattr(handoff, "visitor_phone", "") or "").strip()
     email = str(getattr(handoff, "visitor_email", "") or "").strip()
     return bool((phone and is_valid_phone(phone)) or (email and is_valid_email(email)))
+
+
+def commercial_handoff_completed(*, lead=None, handoff=None) -> bool:
+    seed = related_lead(lead=lead, handoff=handoff)
+    if seed is None:
+        return False
+    return bool((getattr(seed, "qualification_data", None) or {}).get(COMMERCIAL_HANDOFF_COMPLETE_KEY))
+
+
+def mark_commercial_handoff_completed(*, lead=None, handoff=None) -> None:
+    from assistant_core.consultative_policy import COLLECTION_ACTIVE_KEY, COLLECTION_PAUSED_KEY
+
+    seed = related_lead(lead=lead, handoff=handoff)
+    if seed is None:
+        return
+    data = dict(getattr(seed, "qualification_data", None) or {})
+    if data.get(COMMERCIAL_HANDOFF_COMPLETE_KEY):
+        return
+    data[COMMERCIAL_HANDOFF_COMPLETE_KEY] = timezone.now().isoformat()
+    data[COLLECTION_PAUSED_KEY] = False
+    seed.qualification_data = data
+    seed.save(update_fields=["qualification_data", "updated_at"])
 
 
 def cycle_already_notified(*, lead=None, handoff=None) -> bool:

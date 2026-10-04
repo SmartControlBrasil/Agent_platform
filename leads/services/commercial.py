@@ -144,6 +144,7 @@ OPERATIONAL_QUALIFICATION_KEYS = frozenset(
         "lead_notification_sent_at",
         "lead_notification_dry_run_at",
         "lead_notification_dry_run",
+        "commercial_handoff_completed_at",
     }
 )
 
@@ -314,7 +315,7 @@ class QualificationService:
             mark_name_deferred(lead)
 
         changed |= self._merge_common(lead, "name", snapshot.name, normalize_name, is_valid_name, invalid_fields)
-        changed |= self._merge_common(lead, "company", snapshot.company, normalize_name, is_valid_company, invalid_fields)
+        changed |= self._merge_company_from_snapshot(lead, snapshot.company, invalid_fields)
         changed |= self._merge_common(lead, "email", snapshot.email, normalize_email, is_valid_email, invalid_fields)
         changed |= self._merge_common(lead, "phone", snapshot.phone, normalize_phone, is_valid_phone, invalid_fields)
         changed |= self._merge_common(lead, "city", snapshot.city, normalize_city, is_valid_city, invalid_fields)
@@ -522,8 +523,12 @@ class QualificationService:
         """Lead completo com coleta comercial ativa e intenção válida — pronto para notificar."""
         if lead is None:
             return False
+        from leads.services.commercial_notification import COMMERCIAL_HANDOFF_COMPLETE_KEY, cycle_already_notified
+
+        if cycle_already_notified(lead=lead):
+            return False
         qd = dict(getattr(lead, "qualification_data", None) or {})
-        if not qd.get(COLLECTION_ACTIVE_KEY):
+        if not (qd.get(COLLECTION_ACTIVE_KEY) or qd.get(COMMERCIAL_HANDOFF_COMPLETE_KEY)):
             return False
         if not has_complete_commercial_collection(lead):
             return False
@@ -562,6 +567,14 @@ class QualificationService:
             _append_once(invalid_fields, field_name)
             return False
         return merge_field_value(lead, field_name, candidate, source=FIELD_SOURCE_EXPLICIT)
+
+    def _merge_company_from_snapshot(self, lead, value, invalid_fields) -> bool:
+        from assistant_core.conversation_turns import looks_like_business_segment_description
+
+        candidate = str(value or "").strip()
+        if not candidate or looks_like_business_segment_description(candidate):
+            return False
+        return self._merge_common(lead, "company", candidate, normalize_name, is_valid_company, invalid_fields)
 
     def _merge_custom_fields(self, lead, *, policy: QualificationPolicy, message: str) -> bool:
         changed = False
