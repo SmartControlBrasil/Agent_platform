@@ -87,10 +87,12 @@ class SmartControlRagCorpusTests(TestCase):
     def test_retrieval_topics_have_grounded_content(self):
         cases = [
             ("vocês fazem tráfego pago?", ("tráfego pago", "mídia paga")),
-            ("vocês trabalham com SEO?", ("seo", "documento dedicado")),
-            ("o que vocês fazem para presença digital no Google e website?", ("presença digital", "websites", "sistemas web")),
+            ("gostaria de saber sobre trafego pago", ("tráfego pago", "google ads", "seo")),
+            ("quais agentes de ia vcs tem?", ("liro", "hygibot", "connect bot")),
+            ("vocês trabalham com SEO?", ("seo", "presença digital")),
+            ("o que vocês fazem para presença digital no Google e website?", ("presença digital", "sistemas web")),
             ("vocês trabalham com ar-condicionado?", ("ar-condicionado", "refrigeração comercial")),
-            ("me fale sobre o Connect Bot", ("connect bot", "hostbot")),
+            ("me fale sobre o Connect Bot", ("connect bot", "duas telas")),
         ]
         for message, expected_tokens in cases:
             with self.subTest(message=message):
@@ -111,6 +113,33 @@ class SmartControlRagCorpusTests(TestCase):
         ar_condicionado = self._retrieve(conversation, "vocês instalam ar-condicionado?").lower()
         self.assertIn("refrigeração comercial", ar_condicionado)
         self.assertIn("ar-condicionado", ar_condicionado)
+
+    def test_llm_prompt_receives_trafego_pago_official_context_for_real_phrase(self):
+        conversation = Conversation.objects.create(tenant=self.tenant, session_id="llm-grounded-trafego")
+        ai_client = _FakeAIClient("Resposta grounded.")
+        service = OpenAIGroundedConversationService(ai_client=ai_client)
+        message = "gostaria de saber sobre trafego pago"
+        knowledge = self._retrieve(conversation, message)
+
+        result = service.generate(
+            tenant=self.tenant,
+            assistant_profile=self.profile,
+            message=message,
+            conversation=conversation,
+            discovery=analyze_message(message),
+            decision=LiviaReply(intent="technical_question", reply="fallback"),
+            knowledge_context=knowledge,
+            history=[],
+        )
+
+        self.assertTrue(result.used)
+        prompt_blob = "\n".join(chunk["content"] for chunk in ai_client.calls[0])
+        lowered = prompt_blob.lower()
+        self.assertIn("tráfego pago", lowered)
+        self.assertIn("google ads", lowered)
+        self.assertIn("seo", lowered)
+        self.assertIn("não prometer", lowered)
+        self.assertNotIn("não há, no corpus oficial atual, página específica", lowered)
 
     def test_llm_prompt_receives_retrieved_chunks_for_new_topics(self):
         conversation = Conversation.objects.create(tenant=self.tenant, session_id="llm-grounded-topics")
@@ -133,7 +162,7 @@ class SmartControlRagCorpusTests(TestCase):
         self.assertTrue(result.used)
         prompt_blob = "\n".join(chunk["content"] for chunk in ai_client.calls[0])
         self.assertIn("connect bot", prompt_blob.lower())
-        self.assertIn("hostbot", prompt_blob.lower())
+        self.assertIn("duas telas", prompt_blob.lower())
         self.assertIn("BASE DE CONHECIMENTO", prompt_blob)
 
     def test_consultative_then_budget_flow_keeps_commercial_actions_with_rag(self):

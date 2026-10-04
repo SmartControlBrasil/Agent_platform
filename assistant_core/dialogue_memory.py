@@ -69,7 +69,7 @@ DOMAIN_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("automation", ("automacao", "automação", "mitsubishi", "clp", "ihm")),
     ("maintenance", ("manutencao tecnica", "manutenção técnica", "tpm", "pecas", "peças", "suporte tecnico", "suporte técnico")),
     ("materials", ("bancada", "granito", "marmore", "mármore", "quartzito", "cooktop", "pia", "ilha", "nicho", "cuba", "escada", "gourmet", "cozinha", "banheiro", "lavabo", "medicao", "medição")),
-    ("robotics", ("robo", "robô", "robotica", "robótica", "limpeza", "xyron", "hygibot", "duno", "dune", "liro", "neobot", "escola", "educacional", "bncc")),
+    ("robotics", ("robo", "robô", "robotica", "robótica", "limpeza", "xyron", "hygibot", "duno", "dune", "liro", "neobot", "connect bot", "agentes de ia", "agente de ia", "solucoes de ia", "soluções de ia", "escola", "educacional", "bncc")),
 )
 
 TOPIC_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -82,7 +82,7 @@ TOPIC_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cleaning_robot", ("limpeza", "duno", "dune", "hygibot")),
     ("security_robot", ("seguranca", "segurança", "patrulha", "orbit", "patrol", "vigilancia", "vigilância")),
     ("websites", ("site", "website", "loja virtual", "ecommerce", "django", "python")),
-    ("robot_lineup", ("quais robos", "quais robôs", "quais modelos", "que robos", "que robôs", "linha xyron")),
+    ("robot_lineup", ("quais robos", "quais robôs", "quais modelos", "que robos", "que robôs", "linha xyron", "quais agentes", "agentes de ia", "agentes ia", "solucoes de ia", "soluções de ia")),
     ("industrial_automation", ("mitsubishi", "clp", "ihm", "automacao", "automação")),
 )
 

@@ -652,6 +652,134 @@ class CommercialCollectionStateTests(TestCase):
             1,
         )
 
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_generic_atendimento_starts_collection_with_name(self):
+        from assistant_core.services.conversation_decision import ConversationAction
+
+        conversation = self._conversation(session_id="generic-atendimento")
+        decision = self.service.generate_reply([], "ok gostaria de um atendimento", conversation=conversation)
+        lead = self._lead(conversation)
+
+        self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        self.assertEqual(decision.structured_decision.action, ConversationAction.ASK_NAME)
+        lowered = decision.reply.lower()
+        self.assertTrue(any(token in lowered for token in ("chamar", "nome")), decision.reply)
+        self.assertNotIn("registrei", lowered)
+        self.assertNotIn("encaminhei", lowered)
+        self.assertFalse(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).exists()
+        )
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_affirmative_after_assistant_offer_starts_collection(self):
+        from assistant_core.services.conversation_decision import ConversationAction
+
+        conversation = self._conversation(session_id="affirmative-offer")
+        history = [
+            {"role": "user", "content": "quais agentes de ia vcs tem?"},
+            {
+                "role": "assistant",
+                "content": "Posso te explicar as opções e, se quiser atendimento, encaminho para um especialista.",
+            },
+        ]
+
+        decision = self.service.generate_reply(history, "sim gostaria", conversation=conversation)
+        lead = self._lead(conversation)
+
+        self.assertTrue((lead.qualification_data or {}).get(COLLECTION_ACTIVE_KEY))
+        self.assertEqual(decision.structured_decision.action, ConversationAction.ASK_NAME)
+        lowered = decision.reply.lower()
+        self.assertTrue(any(token in lowered for token in ("chamar", "nome")), decision.reply)
+        self.assertNotIn("registrei", lowered)
+        self.assertNotIn("encaminhei", lowered)
+        self.assertFalse(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).exists()
+        )
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_generic_atendimento_complete_flow_and_no_duplicate_events(self):
+        from assistant_core.services.conversation_decision import ConversationAction
+
+        conversation = self._conversation(session_id="generic-atendimento-complete")
+        history: list[dict[str, str]] = []
+
+        def chat(msg: str):
+            decision = self.service.generate_reply(history, msg, conversation=conversation)
+            history.extend([{ "role": "user", "content": msg }, { "role": "assistant", "content": decision.reply }])
+            return decision
+
+        actions = [
+            chat("ok gostaria de um atendimento").structured_decision.action,
+            chat("Marcelo").structured_decision.action,
+            chat("11962196100").structured_decision.action,
+            chat("marcelo@example.com").structured_decision.action,
+            chat("Smart Control Brasil").structured_decision.action,
+        ]
+
+        lead = self._lead(conversation)
+        self.assertEqual(actions[0], ConversationAction.ASK_NAME)
+        self.assertEqual(actions[1], ConversationAction.ASK_PHONE)
+        self.assertEqual(actions[2], ConversationAction.ASK_EMAIL)
+        self.assertEqual(actions[3], ConversationAction.ASK_COMPANY)
+        self.assertEqual(actions[4], ConversationAction.COMPLETE_HANDOFF)
+        self.assertEqual(lead.name, "Marcelo")
+        self.assertEqual(lead.phone, "11962196100")
+        self.assertEqual(lead.email, "marcelo@example.com")
+        self.assertEqual(lead.company, "Smart Control Brasil")
+        self.assertEqual(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                aggregate_id=str(lead.pk),
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).count(),
+            1,
+        )
+        self.assertLessEqual(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                event_type=OutboxEvent.EventType.HANDOFF_CREATED,
+            ).count(),
+            1,
+        )
+
+    @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
+    def test_product_question_during_generic_atendimento_collection_resumes_next_field(self):
+        from assistant_core.services.conversation_decision import ConversationAction
+
+        conversation = self._conversation(session_id="generic-atendimento-product-question")
+        history: list[dict[str, str]] = []
+
+        def chat(msg: str, *, knowledge: str = ""):
+            decision = self.service.generate_reply(history, msg, conversation=conversation, knowledge_context=knowledge)
+            history.extend([{ "role": "user", "content": msg }, { "role": "assistant", "content": decision.reply }])
+            return decision
+
+        chat("ok gostaria de um atendimento")
+        kb = (
+            "[KNOWLEDGE_BASE]\nConteúdo:\n"
+            "A linha Xyron inclui LIRO, HygiBot, Connect Bot, Neo Bot, Waiter Bot e CareBot.\n"
+            "[/KNOWLEDGE_BASE]"
+        )
+        answer = chat("quais agentes de ia vcs tem?", knowledge=kb)
+        lead = self._lead(conversation)
+
+        self.assertEqual(answer.structured_decision.action, ConversationAction.ANSWER_AND_RESUME_COLLECTION)
+        self.assertEqual(self.qualification.promptable_fields(lead), ["name", "phone", "email", "company"])
+        self.assertTrue(any(token in answer.reply.lower() for token in ("chamar", "nome")), answer.reply)
+        self.assertFalse(
+            OutboxEvent.objects.filter(
+                tenant=self.tenant,
+                event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+            ).exists()
+        )
+
     @override_settings(LIVIA_AI_ENABLED=False, LIVIA_RAG_ENABLED=False)
     def test_thank_you_after_complete_handoff_does_not_repeat_or_reenqueue(self):
         from assistant_core.services.conversation_decision import ConversationAction

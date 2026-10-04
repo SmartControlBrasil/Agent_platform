@@ -46,6 +46,19 @@ def build_knowledge_context(tenant, message, service_area=None, limit=3, convers
     ).text
 
 
+def _looks_like_public_lineup_query(message: str) -> bool:
+    from assistant_core.conversation_turns import normalize_text
+
+    query = normalize_text(message)
+    return any(
+        token in query
+        for token in (
+            "quais robos", "quais robôs", "quais modelos", "linha xyron",
+            "quais agentes", "agentes de ia", "agentes ia", "solucoes de ia", "soluções de ia",
+        )
+    )
+
+
 def build_knowledge_context_result(
     tenant,
     message,
@@ -60,6 +73,33 @@ def build_knowledge_context_result(
     active_subject: dict | None = None,
     retrieval_query_original: str = "",
 ) -> KnowledgeContextResult:
+    if _looks_like_public_lineup_query(contextual_query or message):
+        keyword_text, keyword_meta = _build_keyword_context(
+            tenant=tenant,
+            message=contextual_query or message,
+            service_area=service_area,
+            limit=limit,
+            active_domain=active_domain or "robotics",
+            active_entity=active_entity,
+            active_application=active_application,
+        )
+        if keyword_text:
+            return KnowledgeContextResult(
+                text=keyword_text,
+                retrieval_status="keyword",
+                retrieval_hit=True,
+                result_count=keyword_meta.get("result_count", 0),
+                reason="public_lineup_keyword",
+                backend="keyword",
+                mode="keyword",
+                retrieval_query_original=retrieval_query_original or str(message or ""),
+                retrieval_query_contextual=str(contextual_query or message or ""),
+                policy_chunks_filtered=keyword_meta.get("policy_chunks_filtered", 0),
+                coherence_filtered_count=keyword_meta.get("coherence_filtered_count", 0),
+                entity_match=keyword_meta.get("entity_match", False),
+                domain_match=keyword_meta.get("domain_match", False),
+            )
+
     semantic = _build_semantic_context_result(
         tenant=tenant,
         message=message,

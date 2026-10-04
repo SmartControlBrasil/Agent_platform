@@ -302,7 +302,14 @@ def _dedupe_and_limit(
     entity_n = (active_entity or "").strip().lower()
     application = (active_application or "").strip().lower()
     query_n = normalize_text(str(query or contextual_query or ""))
-    wants_software = any(token in query_n for token in ("site", "website", "loja virtual", "ecommerce", "django", "python", "sistema web"))
+    wants_software = any(
+        token in query_n
+        for token in (
+            "site", "website", "loja virtual", "ecommerce", "django", "python", "sistema web",
+            "trafego", "tráfego", "google ads", "seo", "presenca digital", "presença digital",
+            "landing page", "landing pages", "marketing digital", "midia paga", "mídia paga",
+        )
+    )
     wants_school = any(token in query_n for token in ("escola", "educacional", "professor", "aluno", "liro"))
     from knowledge_base.rag.content_classification import infer_robotics_family, robotics_families_compatible
 
@@ -319,7 +326,13 @@ def _dedupe_and_limit(
         token in query_n for token in ("material", "pedra", "granito", "marmore", "quartzito")
     )
     wants_measurement = any(token in query_n for token in ("medicao", "medição", "medida", "fotos", "planta"))
-    wants_lineup = any(token in query_n for token in ("quais robos", "quais robôs", "quais modelos", "linha xyron"))
+    wants_lineup = any(
+        token in query_n
+        for token in (
+            "quais robos", "quais robôs", "quais modelos", "linha xyron",
+            "quais agentes", "agentes de ia", "agentes ia", "solucoes de ia", "soluções de ia",
+        )
+    )
     wants_automation = active_domain == "automation" or any(token in query_n for token in ("mitsubishi", "clp", "ihm", "automacao"))
     subject_doc_ids = {int(item) for item in (active_subject or {}).get("source_document_ids", []) if str(item).isdigit() or isinstance(item, int)}
     primary_subject_doc = next(iter((active_subject or {}).get("source_document_ids") or []), None)
@@ -396,7 +409,14 @@ def _dedupe_and_limit(
         if classification.product and entity_n and classification.product.lower() == entity_n:
             adjusted += 0.2
         if wants_software:
-            if any(token in blob_n for token in ("sistemas_python", "sistemas web", "loja virtual", "python", "django", "website")):
+            if any(
+                token in blob_n
+                for token in (
+                    "sistemas_python", "sistemas web", "loja virtual", "python", "django", "website",
+                    "10_marketing_digital", "trafego pago", "tráfego pago", "google ads", "seo",
+                    "presenca digital", "presença digital", "landing pages", "midia paga", "mídia paga",
+                )
+            ):
                 adjusted += 0.45
             if any(token in blob_n for token in ("hostbot", "recepcao", "recepção", "xyron")) and "web" not in blob_n:
                 adjusted -= 0.35
@@ -643,6 +663,51 @@ def _inject_primary_subject_candidates(
     base_score = max((score for _emb, score in scored), default=float(threshold))
     injected_score = base_score
     return [*scored, *((embedding, injected_score) for embedding in embeddings)]
+
+
+def _is_public_lineup_query(query: str) -> bool:
+    query_n = normalize_text(query)
+    return any(
+        token in query_n
+        for token in (
+            "quais robos", "quais robôs", "quais modelos", "linha xyron",
+            "quais agentes", "agentes de ia", "agentes ia", "solucoes de ia", "soluções de ia",
+        )
+    )
+
+
+def _inject_public_lineup_candidates(
+    *,
+    tenant,
+    scored: list[tuple[TenantRagChunkEmbedding, float]],
+    query: str,
+    contextual_query: str,
+    threshold: float,
+) -> list[tuple[TenantRagChunkEmbedding, float]]:
+    if tenant is None or not _is_public_lineup_query(" ".join([query or "", contextual_query or ""])):
+        return scored
+    present = {(embedding.manifest_id, embedding.chunk_id) for embedding, _score in scored}
+    embeddings = list(
+        TenantRagChunkEmbedding.objects.filter(
+            tenant=tenant,
+            status=TenantRagChunkEmbedding.Status.ACTIVE,
+            chunk__is_active=True,
+            chunk__status=TenantRagDocumentChunk.Status.ACTIVE,
+            manifest__is_active=True,
+            chunk__chunk_text__icontains="Produtos oficiais",
+        )
+        .select_related("chunk", "manifest")
+        .order_by("chunk__ordinal")[:2]
+    )
+    if not embeddings:
+        return scored
+    base_score = max((score for _emb, score in scored), default=float(threshold)) + 0.05
+    injected = [
+        (embedding, base_score)
+        for embedding in embeddings
+        if (embedding.manifest_id, embedding.chunk_id) not in present
+    ]
+    return [*scored, *injected]
 
 
 def retrieve_context(
@@ -930,6 +995,13 @@ def retrieve_context(
             tenant=tenant,
             scored=scored,
             active_subject=active_subject,
+            threshold=threshold,
+        )
+        scored = _inject_public_lineup_candidates(
+            tenant=tenant,
+            scored=scored,
+            query=query,
+            contextual_query=retrieval_query,
             threshold=threshold,
         )
         selected, selection_stats, selection_meta = _dedupe_and_limit(

@@ -1,17 +1,18 @@
-# Connect Bot — status documental na curadoria Xyron
+# Connect Bot — atendimento e interação Xyron
 
-Fontes usadas:
-- `01_xyron/lacunas_xyron.md`
-- `01_xyron/hostbot.md`
-- `01_xyron/robotica_xyron_visao_geral.md`
+Fonte principal: página oficial Smart Control Brasil `/xyron/connect-bot/`. Tema público: Connect Bot, atendimento, interação, recepção, eventos, comunicação visual e duas telas.
 
-## Situação atual no corpus oficial
-- Não foi encontrada, nesta curadoria, página oficial de produto com o nome "Connect Bot".
-- Sem fonte oficial específica, não há base para afirmar ficha técnica, funções, preço, autonomia ou casos detalhados de uso de "Connect Bot".
+## Situação no corpus oficial
+- O Connect Bot é uma solução pública da linha Xyron Robotics voltada a atendimento, interação, recepção, eventos e comunicação visual com visitantes.
+- A proposta é criar um ponto de presença para acolher, orientar e apresentar informações iniciais em ambientes compatíveis.
+- A página oficial cita uso em recepção, eventos, empresas, museus, galerias e bancos, conforme objetivo da experiência, fluxo de visitantes e conteúdo a apresentar.
+- O Connect Bot utiliza duas telas para ampliar comunicação visual e apresentação de conteúdo.
+- A IA deve ser descrita apenas no nível comprovado pelo material público: apoio à experiência interativa, sem detalhar modelos, reconhecimento, idiomas ou integrações não documentadas.
 
-## Produto documentado relacionado
-- O corpus atual documenta `HostBot` como host para recepção e eventos, com uso em comunicação com visitantes e presença de marca.
+## Diferença em relação ao Neo Bot
+- O Connect Bot enfatiza atendimento e interação, duas telas e comunicação visual para recepção e eventos.
+- O Neo Bot é apresentado como robô de recepção e atendimento, com diálogo multilíngue, IA e apoio à apresentação de produtos.
 
-## Regra de resposta baseada em evidência
-- Quando a pergunta for sobre Connect Bot, a resposta deve deixar claro que não há documentação oficial específica no corpus atual.
-- Se necessário, pode apresentar o HostBot como alternativa documentada para recepção/eventos, sem afirmar equivalência técnica entre os dois nomes.
+## Limites de resposta
+- Não afirmar preço, autonomia, garantia, sensores, integrações, reconhecimento facial, idiomas ou ficha técnica se a página oficial não trouxer esses detalhes.
+- Orientar avaliação conforme aplicação, ambiente, fluxo de pessoas, conteúdo, infraestrutura, responsáveis e critérios de experiência.

@@ -61,10 +61,20 @@ HUMAN_TRIGGERS = (
     "quero falar com especialista",
     "quero falar com vendedor",
     "quero falar com um vendedor",
+    "gostaria de falar com alguem",
+    "gostaria de falar com alguém",
+    "gostaria de falar com um especialista",
+    "gostaria de falar com especialista",
+    "gostaria de falar com vendedor",
+    "gostaria de falar com um vendedor",
     "quero atendimento",
     "quero um atendimento",
+    "gostaria de atendimento",
+    "gostaria de um atendimento",
     "quero atendimento humano",
+    "gostaria de atendimento humano",
     "quero contato comercial",
+    "gostaria de contato comercial",
     "falar com especialista",
     "falar com atendente",
     "falar com vendedor",
@@ -86,6 +96,34 @@ HUMAN_TRIGGERS = (
     "quero que alguém entre em contato",
     "quero contato",
     "preciso de contato",
+)
+
+AFFIRMATIVE_FOLLOWUP_MARKERS = (
+    "sim",
+    "sim gostaria",
+    "gostaria",
+    "quero",
+    "quero sim",
+    "pode ser",
+    "pode",
+    "ok pode",
+    "ok gostaria",
+    "certo",
+    "beleza",
+)
+
+COMMERCIAL_OFFER_CONTEXT_MARKERS = (
+    "atendimento",
+    "especialista",
+    "comercial",
+    "vendedor",
+    "equipe",
+    "contato",
+    "encaminh",
+    "registr",
+    "falar com",
+    "solicitar informacoes",
+    "solicitar informações",
 )
 
 PRICE_QUESTION_MARKERS = (
@@ -200,6 +238,21 @@ def detect_collection_trigger(text: str) -> CollectionTrigger:
 
 def is_explicit_collection_trigger(text: str) -> bool:
     return detect_collection_trigger(text) != CollectionTrigger.NONE
+
+
+def is_affirmative_commercial_followup(current_message: str, history=None) -> bool:
+    normalized = normalize_text(current_message)
+    if not normalized or len(normalized.split()) > 4:
+        return False
+    if normalized not in AFFIRMATIVE_FOLLOWUP_MARKERS:
+        return False
+    for item in reversed(list(history or [])[-8:]):
+        if str(item.get("role") or "") != "assistant":
+            continue
+        content = normalize_text(str(item.get("content") or ""))
+        if any(marker in content for marker in COMMERCIAL_OFFER_CONTEXT_MARKERS):
+            return True
+    return False
 
 
 def is_consultative_need_discovery(discovery=None, current_message: str = "") -> bool:
@@ -496,6 +549,9 @@ def decide_collection(
         return CollectionDecision(False, reason="contact_deferred_consultative")
 
     trigger = detect_collection_trigger(current_message)
+    contextual_handoff = is_affirmative_commercial_followup(current_message, history=history)
+    if contextual_handoff and trigger == CollectionTrigger.NONE:
+        trigger = CollectionTrigger.HUMAN
     from assistant_core.state import can_start_new_cycle
     from leads.services.commercial import resolve_lead_draft
     from leads.services.commercial_notification import commercial_handoff_completed
@@ -511,7 +567,8 @@ def decide_collection(
         from leads.services.commercial import QualificationService
 
         if trigger != CollectionTrigger.NONE:
-            return CollectionDecision(True, trigger=trigger, reason="collection_already_active")
+            reason = "affirmative_commercial_followup" if contextual_handoff else "collection_already_active"
+            return CollectionDecision(True, trigger=trigger, reason=reason)
         from leads.services.commercial import resolve_lead_draft
         active_lead = resolve_lead_draft(conversation, lead_draft)
         if (active_lead is not None and "need_summary" in QualificationService().missing_fields(active_lead)
@@ -547,7 +604,8 @@ def decide_collection(
             return CollectionDecision(False, reason="consultative_knowledge_during_collection")
         return CollectionDecision(True, trigger=CollectionTrigger.BUDGET, reason="collection_already_active")
     if trigger != CollectionTrigger.NONE:
-        return CollectionDecision(True, trigger=trigger, reason=f"explicit_{trigger.value}")
+        reason = "affirmative_commercial_followup" if contextual_handoff else f"explicit_{trigger.value}"
+        return CollectionDecision(True, trigger=trigger, reason=reason)
     # Visitor volunteered contact data together with commercial/need context.
     if discovery is not None and getattr(discovery, "has_contact_data", False):
         if getattr(discovery, "has_commercial_interest", False) or getattr(discovery, "has_quote_request", False):

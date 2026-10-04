@@ -48,7 +48,14 @@ DOMAIN_PATH_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("robotics", ("01_xyron", "xyron", "hygibot", "dune", "duno", "liro", "neobot", "orbit", "buddy", "robo", "robô")),
     ("automation", ("02_mitsubishi", "mitsubishi", "automacao", "automação", "clp", "ihm")),
     ("maintenance", ("03_manutencao", "manutencao", "manutenção")),
-    ("software_web", ("07_sistemas", "sistemas_python", "python", "loja virtual", "ecommerce")),
+    (
+        "software_web",
+        (
+            "07_sistemas", "sistemas_python", "python", "loja virtual", "ecommerce",
+            "10_marketing_digital", "marketing digital", "trafego", "tráfego",
+            "google ads", "seo", "presenca digital", "presença digital", "midia paga", "mídia paga",
+        ),
+    ),
     ("materials", ("bancada", "granito", "marmore", "cozinha", "pitondo")),
     ("policy", POLICY_PATH_MARKERS),
 )
