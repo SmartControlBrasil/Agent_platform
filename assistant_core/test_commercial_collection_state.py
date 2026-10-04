@@ -681,11 +681,11 @@ class CommercialCollectionStateTests(TestCase):
             event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
         ).count()
 
-        thanks = chat("muito obrigado")
+        thanks = chat("não muito obrigado")
         lead.refresh_from_db()
         self.assertTrue(commercial_handoff_completed(lead=lead))
-        if thanks.structured_decision is not None:
-            self.assertNotEqual(thanks.structured_decision.action, ConversationAction.COMPLETE_HANDOFF)
+        self.assertIsNotNone(thanks.structured_decision)
+        self.assertEqual(thanks.structured_decision.action, ConversationAction.ANSWER)
         self.assertEqual(
             OutboxEvent.objects.filter(
                 tenant=self.tenant,
@@ -697,3 +697,62 @@ class CommercialCollectionStateTests(TestCase):
         lowered = thanks.reply.lower()
         self.assertNotIn("seus dados foram registrados", lowered)
         self.assertNotIn("encaminhei sua solicitação", lowered)
+
+    @override_settings(
+        LIVIA_AI_ENABLED=False,
+        LIVIA_RAG_ENABLED=False,
+        LIVIA_LEAD_NOTIFICATIONS_ENABLED=True,
+        LIVIA_LEAD_NOTIFICATIONS_DRY_RUN=False,
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="no-reply@example.com",
+    )
+    def test_commercial_email_transcript_contains_full_real_flow(self):
+        from assistant_core.services.conversation_decision import ConversationAction
+
+        conversation = self._conversation(session_id="full-commercial-transcript")
+        history: list[dict[str, str]] = []
+
+        def chat(msg: str):
+            decision = self.service.generate_reply(history, msg, conversation=conversation)
+            Message.objects.create(conversation=conversation, role=Message.Role.USER, content=msg)
+            Message.objects.create(conversation=conversation, role=Message.Role.ASSISTANT, content=decision.reply)
+            history.extend(
+                [{"role": "user", "content": msg}, {"role": "assistant", "content": decision.reply}]
+            )
+            return decision
+
+        chat("preciso de um robo para carpinar grama")
+        chat("vai ser para minha chacara...")
+        chat("como ele funciona?")
+        chat("sim gostaria de uma cotação")
+        chat("Joaquim")
+        chat("1145454545")
+        chat("joca.teste@example.com")
+        final = chat("Chacara Sto Antonio")
+
+        lead = self._lead(conversation)
+        self.assertEqual(final.structured_decision.action, ConversationAction.COMPLETE_HANDOFF)
+        events = OutboxEvent.objects.filter(
+            tenant=self.tenant,
+            aggregate_id=str(lead.pk),
+            event_type=OutboxEvent.EventType.LEAD_QUALIFIED,
+        )
+        self.assertEqual(events.count(), 1)
+        mail.outbox = []
+        delivery = LeadQualifiedHandler().process(events.get())
+        self.assertEqual(delivery.status, "succeeded")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["comercial@smartcontrolbrasil.com.br"])
+        body = mail.outbox[0].body
+
+        self.assertIn("VISITANTE: preciso de um robo para carpinar grama", body)
+        self.assertIn("VISITANTE: Chacara Sto Antonio", body)
+        self.assertIn(f"LÍVIA: {final.reply}", body)
+        self.assertNotIn("Sem histórico registrado nesta conversa.", body)
+        self.assertNotIn("system prompt", body.lower())
+
+        thanks = chat("não muito obrigado")
+        self.assertIsNotNone(thanks.structured_decision)
+        self.assertEqual(thanks.structured_decision.action, ConversationAction.ANSWER)
+        self.assertEqual(events.count(), 1)
+        self.assertEqual(len(mail.outbox), 1)

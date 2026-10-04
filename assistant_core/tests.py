@@ -816,7 +816,10 @@ class ChatApiTests(TestCase):
         lead_draft.refresh_from_db()
         self.assertEqual(lead_draft.crm_external_id, first_external_id)
         self.assertEqual(OutboxEvent.objects.filter(event_type=OutboxEvent.EventType.LEAD_QUALIFIED, aggregate_id=str(lead_draft.pk)).count(), 1)
-        self.assertIn("já encaminhei", second_response.json()["reply"].lower())
+        second_body = second_response.json()
+        self.assertEqual(second_body.get("observability", {}).get("decision_action"), "ANSWER")
+        self.assertNotIn("já encaminhei", second_body["reply"].lower())
+        self.assertNotIn("registrei seus dados", second_body["reply"].lower())
 
     def test_chat_api_does_not_force_lead_on_ambiguous_message(self):
         payload = {

@@ -115,7 +115,10 @@ class WidgetTests(TestCase):
           getAttribute(name) { return this.attributes[name] || null; }
           addEventListener(name, callback) { this.listeners[name] = callback; }
           dispatchEvent(name, event) { this.listeners[name] && this.listeners[name](event || { preventDefault() {} }); }
-          focus() { this.focusCalls = (this.focusCalls || 0) + 1; }
+          focus() {
+            this.focusCalls = (this.focusCalls || 0) + 1;
+            this.ownerDocument.activeElement = this;
+          }
           querySelector(selector) {
             const stack = [...this.children];
             while (stack.length) {
@@ -135,7 +138,7 @@ class WidgetTests(TestCase):
         }
 
         function makeDocument() {
-          const documentRef = { byId: {}, readyState: "complete" };
+          const documentRef = { byId: {}, readyState: "complete", activeElement: null };
           documentRef.createElement = (tag) => new Element(tag, documentRef);
           documentRef.getElementById = (id) => documentRef.byId[id] || null;
           documentRef.addEventListener = () => {};
@@ -150,7 +153,7 @@ class WidgetTests(TestCase):
           return documentRef;
         }
 
-        async function runScenario(fetchImpl) {
+        async function runScenario(fetchImpl, mode) {
           const document = makeDocument();
           const fastSetTimeout = (callback, _ms) => setTimeout(callback, 0);
           const windowRef = {
@@ -163,9 +166,10 @@ class WidgetTests(TestCase):
             clearTimeout,
             AbortController,
             fetch: fetchImpl,
+            requestAnimationFrame: (callback) => setTimeout(callback, 0),
             console: { error() {}, log() {} }
           };
-          const sandbox = { window: windowRef, document, fetch: fetchImpl, AbortController, URL, Promise, Error, String, Math, Date, setTimeout, clearTimeout, console: windowRef.console };
+          const sandbox = { window: windowRef, document, fetch: fetchImpl, AbortController, URL, Promise, Error, String, Math, Date, setTimeout, clearTimeout, requestAnimationFrame: windowRef.requestAnimationFrame, console: windowRef.console };
           vm.runInNewContext(source, sandbox);
           await new Promise((resolve) => setTimeout(resolve, 0));
           const launcher = document.getElementById("livia-launcher");
@@ -176,8 +180,12 @@ class WidgetTests(TestCase):
           const send = document.getElementById("livia-send");
           const footer = document.getElementById("livia-footer");
           input.value = "Quero uma pia";
-          footer.dispatchEvent("submit", { preventDefault() {} });
-          await new Promise((resolve) => setTimeout(resolve, 35));
+          if (mode === "enter") {
+            input.dispatchEvent("keydown", { key: "Enter", shiftKey: false, preventDefault() {} });
+          } else {
+            footer.dispatchEvent("submit", { preventDefault() {} });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 45));
           return { document, input, send };
         }
 
@@ -196,8 +204,17 @@ class WidgetTests(TestCase):
           if (!chatUrl.includes("tenant=granimarmores-pitondo")) throw new Error("chat URL missing tenant query");
           if (!messages.includes("Resposta da Lívia")) throw new Error("assistant reply was not rendered");
           if (success.input.disabled || success.send.disabled || success.send.textContent !== "Enviar") throw new Error("loading was not cleared on success");
+          if (success.input.value !== "") throw new Error("input was not cleared after success");
           if (success.document.getElementById("livia-typing")) throw new Error("typing indicator remained after success");
-          if ((success.input.focusCalls || 0) < 2) throw new Error("input was not refocused after send");
+          if (success.document.activeElement !== success.input) throw new Error("input was not focused after async success");
+
+          const enterSuccess = await runScenario(async (url) => {
+            if (String(url).includes("/api/widget/config/")) return response(200, {});
+            return response(200, { reply: "Resposta via Enter" });
+          }, "enter");
+          if (enterSuccess.input.disabled || enterSuccess.send.disabled) throw new Error("loading was not cleared after enter send");
+          if (enterSuccess.input.value !== "") throw new Error("input was not cleared after enter send");
+          if (enterSuccess.document.activeElement !== enterSuccess.input) throw new Error("input was not focused after async enter send");
 
           const failure = await runScenario(async (url) => {
             if (String(url).includes("/api/widget/config/")) return response(200, {});
@@ -206,7 +223,9 @@ class WidgetTests(TestCase):
           const failureMessages = failure.document.getElementById("livia-messages").children.map((item) => item.textContent).join("\\n");
           if (!failureMessages.includes("Houve um problema ao conectar")) throw new Error("network fallback was not rendered");
           if (failure.input.disabled || failure.send.disabled || failure.send.textContent !== "Enviar") throw new Error("loading was not cleared on error");
+          if (failure.input.value !== "") throw new Error("input was not cleared after error");
           if (failure.document.getElementById("livia-typing")) throw new Error("typing indicator remained after error");
+          if (failure.document.activeElement !== failure.input) throw new Error("input was not focused after async error");
         })().catch((error) => { console.error(error && error.stack || error); process.exit(1); });
         """.replace("WIDGET_SOURCE", json.dumps(source))
         completed = subprocess.run(["node", "-e", runner], text=True, capture_output=True, timeout=5)

@@ -135,10 +135,28 @@ class LiviaDecisionService:
         if conversation is not None:
             from assistant_core.relational_collection import capture_passive_fields
             from leads.services.commercial import resolve_lead_draft
+            from leads.services.commercial_notification import commercial_handoff_completed
 
             passive_lead = resolve_lead_draft(conversation)
             if passive_lead is not None:
                 capture_passive_fields(lead=passive_lead, message=current_message, history=history)
+                if commercial_handoff_completed(lead=passive_lead) and not can_start_new_cycle(conversation, current_message):
+                    decision = LiviaReply(
+                        intent=intent,
+                        reply=DEFAULT_REPLY,
+                        structured_decision=ConversationDecision(
+                            action=ConversationAction.ANSWER,
+                            intent=intent,
+                            pending_fields=[],
+                            commercial_intent=False,
+                            collection_active=False,
+                            rag_required=bool(str(knowledge_context or "").strip()),
+                            should_finalize=False,
+                            known_fields=known_lead_fields(passive_lead),
+                            response_source="fallback",
+                        ),
+                    )
+                    return self._finalize_ai_response(decision, conversation, assistant_profile, discovery, current_message, history, knowledge_context)
             from assistant_core.continuity_policy import resolve_offer_response, DECLINE_REPLY
             from assistant_core.consultative_policy import is_explicit_collection_trigger
 
@@ -1252,16 +1270,22 @@ class LiviaDecisionService:
 
         from leads.services.commercial_notification import commercial_handoff_completed, mark_commercial_handoff_completed
 
+        handoff_completed = commercial_handoff_completed(lead=result.lead_draft)
         ready_for_notification = is_ready_for_commercial_notification(result.lead_draft)
-        if commercial_handoff_completed(lead=result.lead_draft):
+        if handoff_completed:
             ready_for_notification = False
+        pending_fields = result.missing_fields
         if ready_for_notification:
             mark_commercial_handoff_completed(lead=result.lead_draft)
             reply = build_contextual_reply(intent=intent, missing_fields=[])
+            pending_fields = []
+        elif handoff_completed:
+            reply = build_contextual_reply(intent="")
+            pending_fields = []
         structured_decision = self._build_collection_decision(
             intent=intent,
             lead_draft=result.lead_draft,
-            pending_fields=[] if ready_for_notification else result.missing_fields,
+            pending_fields=pending_fields,
             complete=ready_for_notification,
             rag_required=bool(str(knowledge_context or "").strip()),
         )

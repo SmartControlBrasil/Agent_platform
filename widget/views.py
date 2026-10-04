@@ -446,14 +446,23 @@ def widget_js(request):
         return;
       }
       const focusInput = function () {
+        if (!isOpen || !widgetEnabled || input.disabled) {
+          return;
+        }
         try {
-          input.focus();
+          input.focus({ preventScroll: true });
         } catch (error) {
-          /* ignore focus errors on unsupported browsers */
+          try {
+            input.focus();
+          } catch (fallbackError) {
+            /* ignore focus errors on unsupported browsers */
+          }
         }
       };
       if (typeof requestAnimationFrame === "function") {
-        requestAnimationFrame(focusInput);
+        requestAnimationFrame(function () {
+          requestAnimationFrame(focusInput);
+        });
       } else {
         setTimeout(focusInput, 0);
       }
