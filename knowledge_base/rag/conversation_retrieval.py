@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass, replace
 
@@ -208,6 +209,103 @@ class _SelectionStats:
     chunks_discarded_by_budget: int = 0
 
 
+_FACTUAL_QUERY_STOPWORDS = {
+    "qual", "quais", "quanto", "quantos", "sobre", "fale", "me", "para", "com", "sem",
+    "uma", "uma", "dos", "das", "que", "como", "ele", "ela", "isso", "essa", "esse",
+    "robo", "robô", "produto", "modelo", "estimada", "estimado", "funciona", "possui",
+    "tem", "ter", "pode", "saber", "mais", "info", "informacao", "informação", "little", "bot",
+}
+
+_FACTUAL_QUERY_PHRASES = (
+    ("tempo de carga", ("tempo", "carga")),
+    ("capacidade da bateria", ("capacidade", "bateria")),
+    ("bateria", ("bateria",)),
+    ("autonomia", ("autonomia",)),
+    ("garantia", ("garantia",)),
+    ("carregador", ("carregador",)),
+    ("wi fi", ("wi", "fi")),
+    ("wifi", ("wifi",)),
+    ("5 ghz", ("5", "ghz")),
+    ("2 4 ghz", ("2", "4", "ghz")),
+    ("peso", ("peso",)),
+    ("dimensoes", ("dimensoes",)),
+    ("dimensões", ("dimensoes",)),
+    ("memoria ram", ("memoria", "ram")),
+    ("memória ram", ("memoria", "ram")),
+    ("processador", ("processador",)),
+    ("carga", ("carga",)),
+    ("mah", ("mah",)),
+    ("ghz", ("ghz",)),
+)
+
+_LIMITATION_MARKERS = (
+    "nao documentado", "não documentado", "nao publicado", "não publicado",
+    "nao prometer", "não prometer", "nao informado", "não informado",
+    "sem avaliacao", "sem avaliação", "nao consta", "não consta",
+    "nao publicad", "não publicad", "confirmadas em documento tecnico",
+)
+
+
+def _informative_query_terms(value: str) -> set[str]:
+    normalized = normalize_text(value)
+    terms: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", normalized):
+        if token in _FACTUAL_QUERY_STOPWORDS:
+            continue
+        if len(token) < 3 and not token.isdigit():
+            continue
+        terms.add(token)
+    return terms
+
+
+def _direct_chunk_evidence_boost(*, query: str, contextual_query: str, chunk_text: str, excluded_terms: set[str] | None = None) -> float:
+    current_n = normalize_text(query)
+    contextual_n = normalize_text(contextual_query)
+    chunk_n = normalize_text(chunk_text)
+    if not current_n or not chunk_n:
+        return 0.0
+
+    excluded = set(excluded_terms or set())
+    current_terms = _informative_query_terms(query) - excluded
+    contextual_terms = (_informative_query_terms(contextual_query) - current_terms) - excluded
+    if not current_terms:
+        return 0.0
+
+    matched_current = {term for term in current_terms if term in chunk_n}
+    matched_contextual = {term for term in contextual_terms if term in chunk_n}
+    if not matched_current:
+        return 0.0
+
+    boost = min(0.75, len(matched_current) * 0.18)
+    boost += min(0.20, len(matched_contextual) * 0.04)
+
+    phrase_hits = 0
+    for phrase, required_terms in _FACTUAL_QUERY_PHRASES:
+        phrase_n = normalize_text(phrase)
+        current_has_phrase = phrase_n in current_n or all(term in current_terms for term in required_terms)
+        if not current_has_phrase:
+            continue
+        chunk_has_phrase = phrase_n in chunk_n or all(term in chunk_n for term in required_terms)
+        if chunk_has_phrase:
+            phrase_hits += 1
+    if phrase_hits:
+        boost += min(1.60, 0.55 * phrase_hits)
+
+    # Numeric/unit evidence is often the factual payload for specs. Keep it generic.
+    query_units = {term for term in current_terms if term.isdigit() or term in {"ghz", "mah", "meses", "horas", "kg", "cm", "gb", "ram"}}
+    if query_units and any(term in chunk_n for term in query_units):
+        boost += 0.25
+
+    if len(matched_current) >= 2 and phrase_hits:
+        boost += 0.35
+    return min(2.25, boost)
+
+
+def _has_limitation_marker(value: str) -> bool:
+    normalized = normalize_text(value)
+    return any(normalize_text(marker) in normalized for marker in _LIMITATION_MARKERS)
+
+
 def _tenant_has_usable_index(*, tenant: Tenant, config: EmbeddingConfig) -> bool:
     return TenantRagChunkEmbedding.objects.filter(
         tenant=tenant,
@@ -356,6 +454,16 @@ def _dedupe_and_limit(
     subject_method = str((active_subject or {}).get("match_method") or "")
     strong_subject_preference = subject_confidence >= 0.75 and subject_method in {"exact", "lexical", "application_family"}
     has_subject_candidate = bool(subject_doc_ids) and any(embedding.manifest_id in subject_doc_ids for embedding, _score, _b in boosted)
+    direct_evidence_by_chunk = {
+        chunk_id: _direct_chunk_evidence_boost(
+            query=query,
+            contextual_query=contextual_query,
+            chunk_text=str(chunk.chunk_text or ""),
+            excluded_terms=subject_aliases,
+        )
+        for chunk_id, chunk in chunks_by_id.items()
+    }
+    has_direct_evidence = any(score >= 0.75 for score in direct_evidence_by_chunk.values())
 
     for embedding, score, _ in boosted:
         chunk = chunks_by_id.get(embedding.chunk_id)
@@ -389,6 +497,10 @@ def _dedupe_and_limit(
                 adjusted -= 0.12
             elif has_subject_candidate and not comparative:
                 adjusted -= 0.08
+        direct_evidence_boost = direct_evidence_by_chunk.get(chunk.id, 0.0)
+        adjusted += direct_evidence_boost
+        if has_direct_evidence and direct_evidence_boost < 1.20 and _has_limitation_marker(text):
+            adjusted -= 0.65
         if doc_scope == "catalog_overview" and not wants_lineup:
             adjusted -= 0.45
         elif doc_scope == "product_dedicated" and not wants_lineup:
@@ -527,6 +639,15 @@ def _dedupe_and_limit(
             ):
                 coherence_filtered += 1
                 continue
+        if (
+            has_direct_evidence
+            and not comparative
+            and str(manifest_meta.get("document_scope") or "") == "catalog_overview"
+            and direct_evidence_by_chunk.get(chunk.id, 0.0) < 0.35
+            and not wants_lineup
+        ):
+            coherence_filtered += 1
+            continue
 
         text = str(chunk.chunk_text or "").strip()
         if not text:

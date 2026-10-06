@@ -70,6 +70,14 @@ Categoria: robótica educacional / interação
 
 ## Aplicação
 Robô interativo para aproximar crianças e jovens da tecnologia por meio de experiências educacionais.
+
+## Uso educacional
+Apoia atividades pedagogicas, apresentacoes em sala e experiencias introdutorias de tecnologia.
+A proposta comercial deve levantar objetivos, ambiente, quantidade de alunos e recursos esperados.
+O atendimento consultivo confirma escopo antes de detalhar configuracoes tecnicas ou disponibilidade.
+
+## Limites comerciais
+Observacao comercial: autonomia e especificacoes tecnicas nao publicadas devem ser confirmadas em documento tecnico atualizado.
 """
 
 
@@ -367,6 +375,8 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
             "Qual e a garantia do robo LIRO, da bateria e do carregador?"
         )
 
+        self.assertIn(self.manifests["liro_littlebot"].id, result.document_ids_considered)
+        self.assertEqual(result.chunks[0].document_id, self.manifests["liro_ficha_tecnica"].id)
         self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
         self.assertIn("12 meses", result.context_text)
         self.assertIn("6 meses", result.context_text)
@@ -379,6 +389,7 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
             "Qual e a capacidade da bateria e a autonomia estimada do LIRO?"
         )
 
+        self.assertEqual(result.chunks[0].document_id, self.manifests["liro_ficha_tecnica"].id)
         self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
         self.assertIn("6400 mAh", result.context_text)
         self.assertIn("ate 8 horas", result.context_text)
@@ -388,6 +399,7 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
 
         result = self._retrieve_with_legacy_liro_subject("O LIRO funciona em Wi-Fi 5 GHz?")
 
+        self.assertEqual(result.chunks[0].document_id, self.manifests["liro_requisitos_rede"].id)
         self.assertIn(self.manifests["liro_requisitos_rede"].id, result.document_ids_used)
         self.assertIn("5 GHz", result.context_text)
         self.assertIn("nao sao suportadas", result.context_text)
@@ -400,9 +412,32 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
             contextual_query="LIRO / Little Bot garantia bateria carregador",
         )
 
+        self.assertEqual(result.chunks[0].document_id, self.manifests["liro_ficha_tecnica"].id)
         self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
         self.assertIn("12 meses", result.context_text)
         self.assertNotEqual(result.document_ids_used, (self.manifests["liro_littlebot"].id,))
+
+    def test_generic_liro_question_can_still_use_commercial_summary_first(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject("Me fale sobre o LIRO")
+
+        self.assertEqual(result.chunks[0].document_id, self.manifests["liro_littlebot"].id)
+        self.assertIn("experiências educacionais", result.context_text)
+
+    def test_legacy_liro_subject_without_direct_evidence_does_not_force_specs(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject("O LIRO possui certificacao IP67?")
+        reply = synthesize_deterministic_reply(
+            result.context_text,
+            current_message="O LIRO possui certificacao IP67?",
+            active_domain="robotics",
+            active_application="educational_robotics",
+        )
+
+        self.assertNotIn("IP67", result.context_text)
+        self.assertIn("não encontrei", reply.lower())
 
     def test_legacy_liro_subject_keeps_cross_product_documents_out(self):
         self._seed_liro_with_new_technical_documents()
