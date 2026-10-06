@@ -73,6 +73,33 @@ Robô interativo para aproximar crianças e jovens da tecnologia por meio de exp
 """
 
 
+LIRO_TECHNICAL_SPECS = """
+# LIRO / Little Bot - ficha tecnica
+
+Nome oficial: LIRO / Little Bot
+Categoria: robotica educacional / interacao
+
+## Garantia
+Garantia do robo LIRO: 12 meses. Garantia da bateria: 6 meses. Garantia do carregador: 6 meses.
+
+## Bateria e autonomia
+Capacidade da bateria do LIRO: 6400 mAh. Autonomia estimada: ate 8 horas em uso educacional tipico.
+"""
+
+LIRO_NETWORK_REQUIREMENTS = """
+# LIRO / Little Bot - requisitos de rede
+
+Nome oficial: LIRO / Little Bot
+Categoria: robotica educacional / interacao
+
+## Wi-Fi
+O LIRO opera em redes Wi-Fi 2.4 GHz. Redes Wi-Fi 5 GHz nao sao suportadas pelo modulo de conectividade.
+
+## Operacao sem internet
+Sem internet, recursos locais permanecem disponiveis, mas sincronizacao em nuvem e atualizacoes ficam indisponiveis.
+"""
+
+
 @override_settings(
     LIVIA_RAG_ENABLED=True,
     LIVIA_RAG_DRY_RUN=False,
@@ -127,6 +154,38 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
         self._ingest(slug="hygibot_dune", title="Hygiibot Dune", content=HYGIBOT_DEDICATED)
         self._ingest(slug="orbit", title="Orbit Bot", content=ORBIT_DEDICATED)
         self._ingest(slug="liro_littlebot", title="LIRO Little Bot", content=LIRO_DEDICATED)
+
+
+    def _legacy_liro_subject(self) -> dict:
+        return {
+            "confidence": 0.93,
+            "entity_type": "product",
+            "match_method": "application_family",
+            "canonical_name": "LIRO / Little Bot",
+            "source_document_ids": [
+                self.manifests["liro_littlebot"].id,
+                self.manifests["robotica_xyron_visao_geral"].id,
+            ],
+        }
+
+    def _seed_liro_with_new_technical_documents(self):
+        self._seed_xyron_family()
+        self._ingest(slug="liro_ficha_tecnica", title="LIRO Ficha Tecnica", content=LIRO_TECHNICAL_SPECS)
+        self._ingest(slug="liro_requisitos_rede", title="LIRO Requisitos de Rede", content=LIRO_NETWORK_REQUIREMENTS)
+
+    def _retrieve_with_legacy_liro_subject(self, message: str, *, contextual_query: str | None = None):
+        active_subject = self._legacy_liro_subject()
+        return retrieve_context(
+            tenant=self.tenant,
+            query=message,
+            contextual_query=contextual_query or f"LIRO / Little Bot {message}",
+            active_subject=active_subject,
+            active_application="educational_robotics",
+            active_entity="LIRO",
+            active_domain="robotics",
+            provider=self.provider,
+            config=self.embedding_config,
+        )
 
     def _turn(self, message: str):
         self.memory = update_dialogue_memory_from_turn(
@@ -234,7 +293,8 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
             self.manifests["liro_littlebot"].id,
         )
         _reply, result = self._turn("preciso de robótica para escola")
-        self.assertEqual(result.document_ids_used[0], self.manifests["liro_littlebot"].id)
+        self.assertEqual(result.chunks[0].document_id, self.manifests["liro_littlebot"].id)
+        self.assertIn(self.manifests["liro_littlebot"].id, result.document_ids_used)
 
     def test_fictitious_new_product_without_code_change(self):
         overview = (
@@ -297,6 +357,64 @@ class RagDocumentSpecificityTests(RagTestDimensionMixin, TestCase):
         self.assertEqual(self.memory.active_knowledge_subject["source_document_ids"][0], hygibot_id)
         self.assertEqual(result.document_ids_used[0], hygibot_id)
         self.assertNotEqual(result.document_ids_used[0], overview_id)
+
+
+
+    def test_legacy_liro_subject_allows_new_warranty_document(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject(
+            "Qual e a garantia do robo LIRO, da bateria e do carregador?"
+        )
+
+        self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
+        self.assertIn("12 meses", result.context_text)
+        self.assertIn("6 meses", result.context_text)
+        self.assertNotEqual(result.document_ids_used, (self.manifests["liro_littlebot"].id,))
+
+    def test_legacy_liro_subject_allows_new_battery_document(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject(
+            "Qual e a capacidade da bateria e a autonomia estimada do LIRO?"
+        )
+
+        self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
+        self.assertIn("6400 mAh", result.context_text)
+        self.assertIn("ate 8 horas", result.context_text)
+
+    def test_legacy_liro_subject_allows_new_network_document(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject("O LIRO funciona em Wi-Fi 5 GHz?")
+
+        self.assertIn(self.manifests["liro_requisitos_rede"].id, result.document_ids_used)
+        self.assertIn("5 GHz", result.context_text)
+        self.assertIn("nao sao suportadas", result.context_text)
+
+    def test_short_followup_uses_liro_subject_without_stale_document_whitelist(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject(
+            "e a garantia?",
+            contextual_query="LIRO / Little Bot garantia bateria carregador",
+        )
+
+        self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
+        self.assertIn("12 meses", result.context_text)
+        self.assertNotEqual(result.document_ids_used, (self.manifests["liro_littlebot"].id,))
+
+    def test_legacy_liro_subject_keeps_cross_product_documents_out(self):
+        self._seed_liro_with_new_technical_documents()
+
+        result = self._retrieve_with_legacy_liro_subject(
+            "Qual e a capacidade da bateria e a autonomia estimada do LIRO?"
+        )
+
+        self.assertIn(self.manifests["liro_ficha_tecnica"].id, result.document_ids_used)
+        self.assertNotIn(self.manifests["hygibot_dune"].id, result.document_ids_used)
+        self.assertNotIn("HygiBot", result.context_text)
+        self.assertNotIn("Dune Bot", result.context_text)
 
     def test_pronoun_followup_keeps_hygibot_subject(self):
         self._seed_xyron_family()

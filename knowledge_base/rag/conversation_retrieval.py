@@ -326,6 +326,7 @@ def _dedupe_and_limit(
         token in query_n for token in ("material", "pedra", "granito", "marmore", "quartzito")
     )
     wants_measurement = any(token in query_n for token in ("medicao", "medição", "medida", "fotos", "planta"))
+    wants_network = any(token in query_n for token in ("wi-fi", "wifi", "5 ghz", "2.4 ghz", "internet", "rede", "conectividade"))
     wants_lineup = any(
         token in query_n
         for token in (
@@ -342,9 +343,18 @@ def _dedupe_and_limit(
         except (TypeError, ValueError):
             primary_subject_doc = None
     comparative = _is_comparative_query(query_n)
+    subject_names = [str((active_subject or {}).get("canonical_name") or "")]
+    if active_entity:
+        subject_names.append(str(active_entity))
+    subject_aliases = {
+        normalize_text(part)
+        for name in subject_names
+        for part in str(name or "").replace("/", "|").split("|")
+        if normalize_text(part)
+    }
     subject_confidence = float((active_subject or {}).get("confidence") or 0.0)
     subject_method = str((active_subject or {}).get("match_method") or "")
-    strong_subject_lock = subject_confidence >= 0.75 and subject_method in {"exact", "lexical", "application_family"}
+    strong_subject_preference = subject_confidence >= 0.75 and subject_method in {"exact", "lexical", "application_family"}
     has_subject_candidate = bool(subject_doc_ids) and any(embedding.manifest_id in subject_doc_ids for embedding, _score, _b in boosted)
 
     for embedding, score, _ in boosted:
@@ -375,10 +385,10 @@ def _dedupe_and_limit(
         if subject_doc_ids and chunk is not None:
             if chunk.manifest_id in subject_doc_ids:
                 adjusted += 0.75
-            elif has_subject_candidate and not comparative and strong_subject_lock:
-                adjusted -= 0.45
+            elif has_subject_candidate and not comparative and strong_subject_preference:
+                adjusted -= 0.12
             elif has_subject_candidate and not comparative:
-                adjusted -= 0.15
+                adjusted -= 0.08
         if doc_scope == "catalog_overview" and not wants_lineup:
             adjusted -= 0.45
         elif doc_scope == "product_dedicated" and not wants_lineup:
@@ -393,13 +403,13 @@ def _dedupe_and_limit(
             and chunk.manifest_id != primary_subject_doc
             and doc_scope == "catalog_overview"
         ):
-            adjusted -= 0.50
+            adjusted -= 0.25
         elif (
             primary_subject_doc
             and primary_subject_doc in subject_doc_ids
             and chunk.manifest_id != primary_subject_doc
         ):
-            adjusted -= 0.30
+            adjusted -= 0.08
         if entity_n and entity_n in blob:
             adjusted += 0.35
         if entity_n == "duno" and any(token in blob for token in ("dune", "hygibot", "limpeza")):
@@ -477,6 +487,8 @@ def _dedupe_and_limit(
                 adjusted -= 0.5
         if wants_measurement and any(token in blob_n for token in ("orcamento", "orçamento", "medidas", "fotos", "planta", "medicao", "medição")):
             adjusted += 0.4
+        if wants_network and any(token in blob_n for token in ("wi-fi", "wifi", "5 ghz", "2.4 ghz", "internet", "rede", "conectividade")):
+            adjusted += 0.55
         if wants_lineup and any(token in blob_n for token in ("visao geral", "visão geral", "produtos oficiais", "xyron", "liro", "hygibot")):
             adjusted += 0.4
         if wants_lineup and entity_n and entity_n in blob_n and "visao geral" not in blob_n and "visão geral" not in blob_n:
@@ -497,18 +509,24 @@ def _dedupe_and_limit(
         chunk = chunks_by_id.get(embedding.chunk_id)
         if chunk is None or chunk.tenant_id != embedding.tenant_id:
             continue
-        if (
-            subject_doc_ids
-            and has_subject_candidate
-            and not comparative
-            and strong_subject_lock
-            and primary_subject_doc
-            and primary_subject_doc in subject_doc_ids
-            and chunk.manifest_id != primary_subject_doc
-        ):
-            continue
-        if subject_doc_ids and has_subject_candidate and not comparative and strong_subject_lock and chunk.manifest_id not in subject_doc_ids:
-            continue
+        manifest_meta = dict(getattr(chunk.manifest, "document_metadata", None) or {})
+        manifest_entities = {
+            normalize_text(str(item))
+            for item in [
+                *list(manifest_meta.get("product_names") or []),
+                *list(manifest_meta.get("model_names") or []),
+                manifest_meta.get("document_title") or "",
+            ]
+            if normalize_text(str(item))
+        }
+        if subject_aliases and manifest_entities and not comparative:
+            if not any(
+                subject_alias in manifest_entity or manifest_entity in subject_alias
+                for subject_alias in subject_aliases
+                for manifest_entity in manifest_entities
+            ):
+                coherence_filtered += 1
+                continue
 
         text = str(chunk.chunk_text or "").strip()
         if not text:
