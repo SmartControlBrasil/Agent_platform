@@ -25,6 +25,13 @@
         <button type="submit" class="btn btn-primary">Tentar novamente</button>
       </form>
       {% endif %}
+      {% if can_redispatch %}
+      <form method="post" action="{% url 'operations_portal:prospecting_search_run_redispatch' search_run.id %}">
+        {% csrf_token %}
+        <input type="hidden" name="tenant" value="{{ active_tenant.pk }}">
+        <button type="submit" class="btn btn-outline-primary">Redisparar execução</button>
+      </form>
+      {% endif %}
       {% if can_cancel %}
       <form method="post" action="{% url 'operations_portal:prospecting_search_run_cancel' search_run.id %}">
         {% csrf_token %}
@@ -71,6 +78,14 @@
       </div>
     </div>
   </div>
+
+  {% if execution_waiting_claim %}
+  <div class="alert alert-info">Execução enviada e aguardando claim de um executor compatível.</div>
+  {% endif %}
+
+  {% if execution_is_expired %}
+  <div class="alert alert-warning">A tentativa atual expirou. Use retry para criar uma nova tentativa ou consulte o histórico antes de recuperar a pesquisa.</div>
+  {% endif %}
 
   {% if execution_error_message %}
   <div class="alert alert-danger">
@@ -146,6 +161,7 @@
         <div class="col-md-2"><div class="text-muted small">Executor</div><div>{{ execution.executor.name|default:"Aguardando executor" }}</div></div>
         <div class="col-md-3"><div class="text-muted small">Criada</div><div>{{ execution.created_at|date:"d/m/Y H:i:s" }}</div></div>
         <div class="col-md-3"><div class="text-muted small">Iniciada</div><div>{{ execution.started_at|date:"d/m/Y H:i:s"|default:"—" }}</div></div>
+        <div class="col-md-3"><div class="text-muted small">Expira em</div><div>{{ execution.expires_at|date:"d/m/Y H:i:s"|default:"—" }}</div></div>
         <div class="col-md-3"><div class="text-muted small">Concluída</div><div>{{ execution.completed_at|date:"d/m/Y H:i:s"|default:"—" }}</div></div>
       </div>
       {% if execution_summary %}

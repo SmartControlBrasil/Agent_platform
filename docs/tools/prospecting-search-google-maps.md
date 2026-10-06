@@ -81,6 +81,24 @@ Rules:
 - Stats are accepted only as non-negative integers. Critical rules are enforced from the validated payload, not trusted stats.
 - Invalid completion payloads mark the execution as `FAILED` with `invalid_tool_result`; the invalid payload is not stored as the official result.
 
+
+## Timeout and recovery
+
+SearchRun dispatches for this tool set `ToolExecution.expires_at` from `PROSPECTING_SEARCH_EXECUTION_TIMEOUT_MINUTES` (default: 30 minutes). Executor queue endpoints hide expired executions, and claim also rejects/marks expired executions defensively.
+
+Run the deterministic sweep from cron/systemd timer or manually:
+
+```bash
+python manage.py expire_tool_executions --tenant smart-control-brasil
+python manage.py expire_tool_executions --dry-run
+```
+
+When a Maps execution expires, the linked `SearchRun` is synchronized to a recoverable failed state. In Hando:
+
+- **Atualizar status** only synchronizes the current attempt state.
+- **Redisparar execução** reuses a non-terminal attempt already in `PENDING`/`DISPATCHED`; repeated submits are idempotent and do not create duplicate attempts.
+- **Tentar novamente** is used after `FAILED`/`EXPIRED`/`CANCELLED` and creates the next numbered attempt with a fresh idempotency key and timeout.
+
 ## Executor Failure Codes
 
 Executors should use these failure codes when reporting controlled failures:

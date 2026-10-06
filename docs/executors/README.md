@@ -22,3 +22,15 @@ Os **executors** são componentes de runtime separados (extensão Chrome, worker
 4. Configure a URL do Agent Platform na página de opções da extensão e conclua o pairing no popup.
 
 Credenciais `AgentExecutor` (`aep_`) permanecem em `chrome.storage.local` do perfil; não entram no Git.
+
+
+## Operational sweep for stale delegated executions
+
+Delegated Maps searches can expire if no executor claims them before `expires_at`. Operate the sweep outside Django (systemd timer/cron), for example:
+
+```bash
+cd /home/marcelo/projetos/Agent_platform
+python manage.py expire_tool_executions --tenant smart-control-brasil
+```
+
+Use `--dry-run` during validation. After the sweep, Hando shows the SearchRun as recoverable; operators can retry terminal expired attempts or redispatch a still non-terminal attempt without creating duplicate execution attempts.

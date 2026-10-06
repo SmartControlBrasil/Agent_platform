@@ -1048,6 +1048,30 @@ class ExecutorApiTests(ToolTestCase):
         expected = ToolExecution.objects.get(tenant=self.tenant, tool_definition=self.delegated_tool)
         self.assertEqual(ids, [str(expected.id)])
 
+    def test_executor_queue_hides_expired_and_keeps_valid_execution(self):
+        self.bind(tool=self.delegated_tool)
+        execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.external_search_probe",
+            input={"query": "expired"},
+            expires_at=timezone.now() - timezone.timedelta(minutes=1),
+        )
+        execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.external_search_probe",
+            input={"query": "valid"},
+            idempotency_key="valid-execution",
+            expires_at=timezone.now() + timezone.timedelta(minutes=5),
+        )
+        _, secret = self._executor_with_secret()
+
+        response = self.client.get("/api/v1/executors/tool-executions/", HTTP_AUTHORIZATION=f"AgentExecutor {secret}")
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item["id"] for item in response.json()["results"]]
+        expected = ToolExecution.objects.get(idempotency_key="valid-execution")
+        self.assertEqual(ids, [str(expected.id)])
+
     def test_executor_claim_complete_fail_security(self):
         self.bind(tool=self.delegated_tool)
         execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={})

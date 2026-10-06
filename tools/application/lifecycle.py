@@ -21,6 +21,7 @@ ACTION_EXECUTION_CLAIMED = "tool.execution.claimed"
 ACTION_EXECUTION_SUCCEEDED = "tool.execution.succeeded"
 ACTION_EXECUTION_FAILED = "tool.execution.failed"
 ACTION_EXECUTION_CANCELLED = "tool.execution.cancelled"
+ACTION_EXECUTION_EXPIRED = "tool.execution.expired"
 
 TERMINAL_STATUSES = {
     ToolExecution.Status.SUCCEEDED,
@@ -200,8 +201,10 @@ def fail_tool_execution(
 
 
 def expire_tool_execution(execution: ToolExecution, *, actor=None, request=None) -> ToolExecution:
+    if execution.status == ToolExecution.Status.EXPIRED:
+        return execution
     execution = transition_execution(execution, ToolExecution.Status.EXPIRED)
-    record_tool_execution_event(ACTION_EXECUTION_CANCELLED, execution, actor=actor, request=request)
+    record_tool_execution_event(ACTION_EXECUTION_EXPIRED, execution, actor=actor, request=request)
     return execution
 
 

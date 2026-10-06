@@ -71,6 +71,7 @@ from prospecting.application.review import (
 from prospecting.application.execution_recovery import (
     ProspectingExecutionRecoveryError,
     cancel_search_run,
+    redispatch_search_run,
     retry_search_run,
 )
 from prospecting.application.search_runs import (
@@ -628,6 +629,53 @@ class ProspectingSearchRunExecutionTests(TestCase):
         self.assertEqual(execution.request_payload["input"]["target_region"], "Barueri")
         self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
         self.assertEqual(execution.idempotency_key, build_search_run_attempt_idempotency_key(run=run, attempt_number=1))
+        self.assertIsNotNone(execution.expires_at)
+        self.assertTrue(timezone.is_aware(execution.expires_at))
+        self.assertGreater(execution.expires_at, timezone.now())
+
+    @override_settings(PROSPECTING_SEARCH_EXECUTION_TIMEOUT_MINUTES=7)
+    def test_search_dispatch_uses_configured_timeout(self):
+        before = timezone.now()
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        self.assertGreaterEqual(execution.expires_at, before + timedelta(minutes=6, seconds=55))
+        self.assertLessEqual(execution.expires_at, timezone.now() + timedelta(minutes=7, seconds=5))
+
+    def test_build_plan_tool_does_not_receive_search_timeout(self):
+        build_search_plan_for_manual_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+        )
+        execution = ToolExecution.objects.get(tool_definition=self.plan_tool)
+        self.assertIsNone(execution.expires_at)
+
+    def test_sync_expired_execution_marks_run_failed(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Encontrar hospitais para robótica",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        execution.status = ToolExecution.Status.EXPIRED
+        execution.error_code = "tool_execution_expired"
+        execution.error_message = "A execução expirou antes de claim."
+        execution.completed_at = timezone.now()
+        execution.save(update_fields=["status", "error_code", "error_message", "completed_at", "updated_at"])
+
+        synced = synchronize_search_run(search_run=run)
+
+        self.assertEqual(synced.status, SearchRun.Status.FAILED)
+        self.assertEqual(synced.error_code, "tool_execution_expired")
 
     def test_sync_succeeded_materializes_results_without_duplicates(self):
         run = create_and_dispatch_search_run(
@@ -867,6 +915,53 @@ class ProspectingExecutionRecoveryTests(TestCase):
         self.assertFalse(outcome.created_new_attempt)
         self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
 
+    def test_redispatch_dispatched_is_idempotent_and_does_not_duplicate_attempts(self):
+        run = self._dispatch_run()
+        first_execution_id = run.agent_platform_execution_id
+        first = redispatch_search_run(search_run=run)
+        second = redispatch_search_run(search_run=first.search_run)
+
+        self.assertFalse(first.transitioned_to_dispatched)
+        self.assertFalse(second.transitioned_to_dispatched)
+        self.assertEqual(first.attempt.tool_execution_id, first_execution_id)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+    def test_redispatch_pending_reuses_attempt_and_sets_timeout(self):
+        run = self._dispatch_run()
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        execution.status = ToolExecution.Status.PENDING
+        execution.expires_at = None
+        execution.save(update_fields=["status", "expires_at", "updated_at"])
+        run.status = SearchRun.Status.PENDING
+        run.save(update_fields=["status", "updated_at"])
+
+        outcome = redispatch_search_run(search_run=run)
+
+        execution.refresh_from_db()
+        self.assertTrue(outcome.transitioned_to_dispatched)
+        self.assertEqual(execution.status, ToolExecution.Status.DISPATCHED)
+        self.assertIsNotNone(execution.expires_at)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+    def test_expired_run_retry_creates_unique_attempt(self):
+        run = self._dispatch_run()
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        execution.status = ToolExecution.Status.EXPIRED
+        execution.error_code = "tool_execution_expired"
+        execution.save(update_fields=["status", "error_code", "updated_at"])
+        run = synchronize_search_run(search_run=run)
+
+        outcome = retry_search_run(search_run=run)
+
+        self.assertTrue(outcome.created_new_attempt)
+        self.assertEqual(outcome.attempt.attempt_number, 2)
+        self.assertNotEqual(outcome.attempt.tool_execution_id, execution.id)
+        self.assertEqual(
+            outcome.attempt.tool_execution.idempotency_key,
+            build_search_run_attempt_idempotency_key(run=run, attempt_number=2),
+        )
+        self.assertIsNotNone(outcome.attempt.tool_execution.expires_at)
+
     def test_retry_then_success_completes_run_and_sync_uses_current_attempt(self):
         run = self._fail_run(self._dispatch_run())
         first_execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
@@ -939,6 +1034,72 @@ class ProspectingExecutionRecoveryTests(TestCase):
         with self.assertRaises(Exception):
             retry_search_run(search_run=foreign)
         self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+    def test_expire_tool_executions_command_expires_due_and_syncs_runs_idempotently(self):
+        run = self._dispatch_run()
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        execution.expires_at = timezone.now() - timedelta(minutes=1)
+        execution.save(update_fields=["expires_at", "updated_at"])
+        valid = self._dispatch_run()
+        valid_execution = ToolExecution.objects.get(pk=valid.agent_platform_execution_id)
+        valid_execution.expires_at = timezone.now() + timedelta(minutes=5)
+        valid_execution.save(update_fields=["expires_at", "updated_at"])
+        terminal = self._fail_run(self._dispatch_run())
+        terminal_execution = ToolExecution.objects.get(pk=terminal.agent_platform_execution_id)
+        terminal_execution.expires_at = timezone.now() - timedelta(minutes=1)
+        terminal_execution.save(update_fields=["expires_at", "updated_at"])
+
+        out = StringIO()
+        call_command("expire_tool_executions", stdout=out)
+        call_command("expire_tool_executions", stdout=StringIO())
+
+        execution.refresh_from_db()
+        valid_execution.refresh_from_db()
+        terminal_execution.refresh_from_db()
+        run.refresh_from_db()
+        self.assertEqual(execution.status, ToolExecution.Status.EXPIRED)
+        self.assertEqual(run.status, SearchRun.Status.FAILED)
+        self.assertEqual(valid_execution.status, ToolExecution.Status.DISPATCHED)
+        self.assertEqual(terminal_execution.status, ToolExecution.Status.FAILED)
+        self.assertIn("expired=1", out.getvalue())
+
+    def test_expire_tool_executions_command_respects_tenant_scope_and_dry_run(self):
+        run = self._dispatch_run()
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        execution.expires_at = timezone.now() - timedelta(minutes=1)
+        execution.save(update_fields=["expires_at", "updated_at"])
+        foreign = SearchRun.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_installation=self.other_installation,
+            target_region="Curitiba",
+            queries=["escola curitiba"],
+            max_results=5,
+        )
+        foreign_execution = ToolExecution.objects.create(
+            tenant=self.other_tenant,
+            project=self.other_project,
+            agent_installation=self.other_installation,
+            tool_binding=AgentToolBinding.objects.get(tenant=self.other_tenant, tool_definition=self.maps_tool),
+            tool_definition=self.maps_tool,
+            execution_mode=ToolDefinition.ExecutionMode.DELEGATED,
+            status=ToolExecution.Status.DISPATCHED,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        SearchRunExecutionAttempt.objects.create(
+            tenant=self.other_tenant, search_run=foreign, tool_execution=foreign_execution, attempt_number=1
+        )
+
+        call_command("expire_tool_executions", tenant_slug=self.tenant.slug, dry_run=True, stdout=StringIO())
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, ToolExecution.Status.DISPATCHED)
+
+        call_command("expire_tool_executions", tenant_slug=self.tenant.slug, stdout=StringIO())
+
+        execution.refresh_from_db()
+        foreign_execution.refresh_from_db()
+        self.assertEqual(execution.status, ToolExecution.Status.EXPIRED)
+        self.assertEqual(foreign_execution.status, ToolExecution.Status.DISPATCHED)
 
 
 class ProspectingQualificationTests(TestCase):

@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
-from prospecting.application.search_runs import SEARCH_TOOL, build_search_run_attempt_idempotency_key
+from prospecting.application.search_runs import (
+    SEARCH_TOOL,
+    build_search_run_attempt_idempotency_key,
+    prospecting_search_execution_expires_at,
+)
 from prospecting.models import SearchRun, SearchRunExecutionAttempt
 from tools.application.execution import execute_tool
 from tools.application.lifecycle import (
@@ -64,6 +68,9 @@ def redispatch_search_run(*, search_run: SearchRun, actor=None, request=None) ->
         if execution.status == ToolExecution.Status.RUNNING:
             raise ProspectingExecutionRecoveryError("A tentativa atual já está em execução.")
         transitioned = False
+        if execution.status in {ToolExecution.Status.PENDING, ToolExecution.Status.DISPATCHED} and execution.expires_at is None:
+            execution.expires_at = prospecting_search_execution_expires_at()
+            execution.save(update_fields=["expires_at", "updated_at"])
         if execution.status == ToolExecution.Status.PENDING:
             transition_execution(execution, ToolExecution.Status.DISPATCHED)
             record_tool_execution_event(ACTION_EXECUTION_DISPATCHED, execution, actor=actor, request=request)
@@ -123,6 +130,7 @@ def retry_search_run(*, search_run: SearchRun, actor=None, request=None) -> Retr
                 "search_run_attempt": next_attempt_number,
                 "retry_from_execution_id": str(current_execution.id),
             },
+            expires_at=prospecting_search_execution_expires_at(),
         )
         execution_id = (tool_result.metadata or {}).get("tool_execution_id")
         if not execution_id:

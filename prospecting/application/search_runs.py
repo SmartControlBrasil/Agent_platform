@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import uuid
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 from agents.infrastructure.prospecting_configuration import ProspectingConfigurationResolver
 from agents.models import AgentInstallation
@@ -23,6 +25,15 @@ TERMINAL_TOOL_STATUSES = {
     ToolExecution.Status.CANCELLED,
     ToolExecution.Status.EXPIRED,
 }
+
+
+def prospecting_search_execution_timeout_minutes() -> int:
+    raw_value = int(getattr(settings, "PROSPECTING_SEARCH_EXECUTION_TIMEOUT_MINUTES", 30) or 30)
+    return max(1, raw_value)
+
+
+def prospecting_search_execution_expires_at():
+    return timezone.now() + timezone.timedelta(minutes=prospecting_search_execution_timeout_minutes())
 
 
 class ProspectingSearchRunError(ValidationError):
@@ -227,6 +238,7 @@ def _dispatch_search_attempt(*, run: SearchRun, attempt_number: int, actor=None,
             "search_run_attempt": attempt_number,
             "objective": run.objective,
         },
+        expires_at=prospecting_search_execution_expires_at(),
     )
     tool_execution_id = _uuid_from_metadata(tool_result.metadata.get("tool_execution_id"))
     if not tool_execution_id:

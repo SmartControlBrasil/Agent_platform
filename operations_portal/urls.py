@@ -47,6 +47,7 @@ urlpatterns = [
     path("prospeccao/pesquisas/<uuid:run_id>/", prospecting_views.prospecting_search_run_detail, name="prospecting_search_run_detail"),
     path("prospeccao/pesquisas/<uuid:run_id>/atualizar/", prospecting_views.prospecting_search_run_refresh, name="prospecting_search_run_refresh"),
     path("prospeccao/pesquisas/<uuid:run_id>/tentar-novamente/", prospecting_views.prospecting_search_run_retry, name="prospecting_search_run_retry"),
+    path("prospeccao/pesquisas/<uuid:run_id>/redisparar/", prospecting_views.prospecting_search_run_redispatch, name="prospecting_search_run_redispatch"),
     path("prospeccao/pesquisas/<uuid:run_id>/cancelar/", prospecting_views.prospecting_search_run_cancel, name="prospecting_search_run_cancel"),
     path(
         "prospeccao/pesquisas/<uuid:run_id>/resultados/acoes/",

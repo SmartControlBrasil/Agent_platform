@@ -81,6 +81,7 @@ from prospecting.application.qualification import qualify_prospect
 from prospecting.application.execution_recovery import (
     ProspectingExecutionRecoveryError,
     cancel_search_run,
+    redispatch_search_run,
     retry_search_run,
 )
 from prospecting.application.review import (
@@ -425,7 +426,7 @@ def _execution_error_message(execution):
     if code and code in EXECUTION_ERROR_MESSAGES:
         return EXECUTION_ERROR_MESSAGES[code]
     if execution.status == ToolExecution.Status.EXPIRED:
-        return "A execução expirou antes de ser processada."
+        return "A execução expirou antes de ser processada. Use retry para criar uma nova tentativa."
     if execution.status == ToolExecution.Status.CANCELLED:
         return "A pesquisa foi cancelada antes da conclusão."
     if execution.status == ToolExecution.Status.FAILED:
@@ -797,6 +798,13 @@ def prospecting_search_run_detail(request, run_id):
         and execution.status in {ToolExecution.Status.PENDING, ToolExecution.Status.DISPATCHED}
         and can_manage
     )
+    can_redispatch = bool(
+        execution
+        and execution.status in {ToolExecution.Status.PENDING, ToolExecution.Status.DISPATCHED}
+        and can_manage
+    )
+    execution_is_expired = bool(execution and execution.status == ToolExecution.Status.EXPIRED)
+    execution_waiting_claim = bool(execution and execution.status == ToolExecution.Status.DISPATCHED and execution.executor_id is None)
 
     context = {
         "active_section": "prospeccao",
@@ -815,6 +823,9 @@ def prospecting_search_run_detail(request, run_id):
         "show_no_executor_warning": show_no_executor_warning,
         "can_retry": can_retry,
         "can_cancel": can_cancel,
+        "can_redispatch": can_redispatch,
+        "execution_is_expired": execution_is_expired,
+        "execution_waiting_claim": execution_waiting_claim,
         "total_results": total_results,
         "unreviewed_count": unreviewed_count,
         "promoted_count": promoted_count,
@@ -842,6 +853,33 @@ def prospecting_search_run_refresh(request, run_id):
     except (ValidationError, ProspectingSearchRunError) as exc:
         messages.error(request, "; ".join(exc.messages))
         return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+    ui = _search_run_ui(synchronized.status)
+    messages.info(request, f"Status atualizado: {ui['label']}.")
+    return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+
+
+@login_required(login_url="/admin/login/")
+@require_POST
+def prospecting_search_run_redispatch(request, run_id):
+    access = resolve_portal_access(
+        request,
+        capability=CAPABILITY_COMMERCIAL_MANAGE,
+        allow_global=False,
+        require_tenant=True,
+    )
+    require_portal_capability(access, CAPABILITY_COMMERCIAL_MANAGE)
+    _ensure_posted_tenant_matches(access, request)
+    search_run = get_object_or_404(_search_run_queryset(access.tenant), pk=run_id)
+    try:
+        outcome = redispatch_search_run(search_run=search_run, actor=request.user, request=request)
+        synchronized = synchronize_search_run(search_run=outcome.search_run)
+    except (ValidationError, ProspectingSearchRunError, ProspectingExecutionRecoveryError) as exc:
+        messages.error(request, "; ".join(exc.messages))
+        return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
+    if outcome.transitioned_to_dispatched:
+        messages.success(request, "Execução redisparada para a fila do executor.")
+    else:
+        messages.info(request, "A execução atual já estava aguardando executor. Nenhuma tentativa duplicada foi criada.")
     ui = _search_run_ui(synchronized.status)
     messages.info(request, f"Status atualizado: {ui['label']}.")
     return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)

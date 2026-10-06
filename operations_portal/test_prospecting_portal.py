@@ -617,6 +617,86 @@ class ProspectingPortalTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
 
+    def test_redispatch_is_post_only_manager_only_and_idempotent(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Redispatch",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        url = reverse("operations_portal:prospecting_search_run_redispatch", args=[run.id])
+        self._login(self.viewer)
+        viewer = self.client.post(url, {"tenant": str(self.tenant.pk)})
+        self.assertEqual(viewer.status_code, 403)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+        self._login(self.admin)
+        self.assertEqual(self.client.get(url).status_code, 405)
+        first = self.client.post(url, {"tenant": str(self.tenant.pk)})
+        second = self.client.post(url, {"tenant": str(self.tenant.pk)})
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
+
+    def test_redispatch_cross_tenant_is_rejected(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Redispatch",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        self._login(self.other_admin)
+        response = self.client.post(
+            reverse("operations_portal:prospecting_search_run_redispatch", args=[run.id]),
+            {"tenant": str(self.other_tenant.pk)},
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+
+    def test_search_detail_shows_redispatch_only_for_waiting_execution(self):
+        self._login(self.admin)
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Aguardando",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+        self.assertContains(response, "Redisparar execução")
+        self.assertContains(response, "Execução enviada e aguardando claim")
+
+        failed = self._failed_operational_run()
+        failed_response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[failed.id]))
+        self.assertNotContains(failed_response, "Redisparar execução")
+        self.assertContains(failed_response, "Tentar novamente")
+
+    def test_expired_run_shows_retry_not_redispatch(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Expirada",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        execution.status = ToolExecution.Status.EXPIRED
+        execution.error_code = "tool_execution_expired"
+        execution.completed_at = timezone.now()
+        execution.save(update_fields=["status", "error_code", "completed_at", "updated_at"])
+        run = synchronize_search_run(search_run=run)
+
+        self._login(self.admin)
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+
+        self.assertContains(response, "Tentar novamente")
+        self.assertContains(response, "A tentativa atual expirou")
+        self.assertNotContains(response, "Redisparar execução")
+
     def test_dispatched_offline_executor_warning_and_cancel(self):
         run = create_and_dispatch_search_run(
             tenant=self.tenant,
@@ -655,8 +735,13 @@ class ProspectingPortalTests(TestCase):
             reverse("operations_portal:prospecting_search_run_cancel", args=[run.id]),
             {"tenant": str(self.other_tenant.pk)},
         )
+        redispatch = self.client.post(
+            reverse("operations_portal:prospecting_search_run_redispatch", args=[run.id]),
+            {"tenant": str(self.other_tenant.pk)},
+        )
         self.assertEqual(retry.status_code, 404)
         self.assertEqual(cancel.status_code, 404)
+        self.assertEqual(redispatch.status_code, 404)
         self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
 
     def test_online_executor_does_not_show_offline_warning(self):

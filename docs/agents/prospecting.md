@@ -33,7 +33,7 @@ Validation rules:
 The operational prospecting workflow lives in the same repository under the `prospecting` app and is exposed in the Hando portal (`/painel/prospeccao/...`), not in a parallel UI. This workflow includes:
 
 - `SearchRun` and `SearchResult` for discovery records;
-- `SearchRunExecutionAttempt` for explicit execution history (`retry` creates a new attempt; `redispatch` reuses a non-terminal `ToolExecution`);
+- `SearchRunExecutionAttempt` for explicit execution history (`retry` creates a new attempt after terminal failure/expiration/cancel; `redispatch` reuses a non-terminal `ToolExecution` without duplicating attempts);
 - explicit promotion `SearchResult -> Prospect`;
 - `ProspectSource` provenance history;
 - `ProspectEnrichment` manual observations;
@@ -93,11 +93,28 @@ Qualification statuses:
 
 Manual priority values: `UNSET`, `LOW`, `MEDIUM`, `HIGH`.
 
+## Executor recovery
+
+`prospecting.search_google_maps` is delegated to browser executors. Each SearchRun attempt receives an explicit `ToolExecution.expires_at` using `PROSPECTING_SEARCH_EXECUTION_TIMEOUT_MINUTES` (default: 30 minutes). This timeout is specific to Maps search attempts and does not change local tools or unrelated delegated tools.
+
+Expired executions are swept operationally with:
+
+```bash
+python manage.py expire_tool_executions --tenant smart-control-brasil
+```
+
+Useful options:
+
+- `--dry-run` shows candidates without changing state.
+- `--limit N` caps one sweep pass.
+
+The command transitions due non-terminal executions to `EXPIRED` through the ToolExecution lifecycle service and synchronizes linked `SearchRun` records. In Hando, an expired attempt appears as failed/recoverable: **Tentar novamente** creates a new attempt. **Redisparar execução** is for non-terminal attempts (`PENDING`/`DISPATCHED`) and reuses the same attempt; it does not create a new `SearchRunExecutionAttempt`.
+
 ## Current Limitations
 
 Still out of scope in the current platform phase:
 
-- Google Maps scraping or browser automation from this app;
+- Google Maps scraping implementation inside the Django app itself (the real browser implementation lives under `executors/chrome/`);
 - smart_sales runtime coupling;
 - AI/LLM scoring or autonomous qualification;
 - CRM pipeline management and outreach orchestration.
