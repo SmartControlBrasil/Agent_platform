@@ -118,12 +118,12 @@ def consume_pairing(*, pairing_id, pairing_code: str, request=None) -> IssuedExe
     if pairing.status != ToolExecutorPairingRequest.Status.APPROVED:
         raise ValidationError("Pairing is not approved.")
     with transaction.atomic():
-        pairing = ToolExecutorPairingRequest.objects.select_for_update().select_related("executor", "tenant").get(pk=pairing_id)
+        pairing = ToolExecutorPairingRequest.objects.select_for_update().get(pk=pairing_id)
         if pairing.status != ToolExecutorPairingRequest.Status.APPROVED:
             raise ValidationError("Pairing is not approved.")
         if not secrets.compare_digest(str(pairing.pairing_code), str(pairing_code or "")):
             raise ValidationError("Invalid pairing code.")
-        if pairing.executor is None:
+        if pairing.executor_id is None:
             raise ValidationError("Pairing does not have an executor.")
         issued = create_executor_credential(executor=pairing.executor, request=request)
         pairing.status = ToolExecutorPairingRequest.Status.CONSUMED
