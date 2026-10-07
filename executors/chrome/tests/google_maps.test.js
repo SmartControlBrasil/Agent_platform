@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import { parseHTML } from 'linkedom';
 import { ToolDispatcher } from '../src/tool_dispatcher.js';
 import { ToolSlugs } from '../src/constants.js';
 import { validateGoogleMapsInput } from '../src/tools/google_maps/input_contract.js';
@@ -21,6 +23,14 @@ function validPayload(overrides = {}) {
       max_results: 10,
       ...overrides,
     },
+  };
+}
+
+function mapsTab(id) {
+  return {
+    id,
+    status: 'complete',
+    url: 'https://www.google.com/maps/search/?api=1&query=test',
   };
 }
 
@@ -195,7 +205,7 @@ test('browser controller uses dedicated tab and closes it after success', async 
     tabs: {
       async create(options) { calls.push(['create', options]); return { id: 7 }; },
       async update(tabId, options) { calls.push(['update', tabId, options]); },
-      async get(tabId) { calls.push(['get', tabId]); return { id: tabId, status: 'complete' }; },
+      async get(tabId) { calls.push(['get', tabId]); return mapsTab(tabId); },
       async sendMessage(_tabId, message) {
         calls.push(['send', message.type]);
         if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true };
@@ -221,7 +231,7 @@ test('browser controller maps challenge and changed structure to controlled erro
     tabs: {
       async create() { return { id: 1 }; },
       async update() {},
-      async get() { return { id: 1, status: 'complete' }; },
+      async get() { return mapsTab(1); },
       async sendMessage(_tabId, message) {
         if (message.type === GoogleMapsMessages.WAIT_READY) return readyResponse;
         return { ok: true, businesses: [] };
@@ -232,7 +242,7 @@ test('browser controller maps challenge and changed structure to controlled erro
   });
   await assert.rejects(
     () => new GoogleMapsBrowserController(baseChrome({ ok: true, challenge: true })).withDedicatedTab((tab) => tab.search('q')),
-    (error) => error.code === 'google_challenge',
+    (error) => error.code === 'captcha_or_blocked',
   );
   await assert.rejects(
     () => new GoogleMapsBrowserController(baseChrome({ ok: false, code: 'page_structure_changed' })).withDedicatedTab((tab) => tab.search('q')),
@@ -246,7 +256,7 @@ test('browser controller waits through transient empty feed and then returns bus
     tabs: {
       async create() { return { id: 10 }; },
       async update() {},
-      async get() { return { id: 10, status: 'complete' }; },
+      async get() { return mapsTab(10); },
       async sendMessage(_tabId, message) {
         if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true };
         if (message.type === GoogleMapsMessages.COLLECT_FEED) {
@@ -266,12 +276,12 @@ test('browser controller waits through transient empty feed and then returns bus
   assert.equal(result.businesses.length, 1);
 });
 
-test('browser controller emits controlled error when feed never yields recognizable cards', async () => {
+test('browser controller emits controlled timeout when feed never yields recognizable cards', async () => {
   const chrome = {
     tabs: {
       async create() { return { id: 11 }; },
       async update() {},
-      async get() { return { id: 11, status: 'complete' }; },
+      async get() { return mapsTab(11); },
       async sendMessage(_tabId, message) {
         if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true };
         if (message.type === GoogleMapsMessages.COLLECT_FEED) return { ok: true, businesses: [], endOfResults: false };
@@ -284,10 +294,147 @@ test('browser controller emits controlled error when feed never yields recogniza
   await assert.rejects(
     () => new GoogleMapsBrowserController(chrome, { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
       .withDedicatedTab((tab) => tab.search('q', { maxResults: 5 })),
-    (error) => error.code === 'results_not_loaded',
+    (error) => error.code === 'results_timeout',
   );
 });
 
+
+
+test('browser controller treats legitimate zero results as completed empty result', async () => {
+  const chrome = {
+    tabs: {
+      async create() { return { id: 12 }; },
+      async update() {},
+      async get() { return mapsTab(12); },
+      async sendMessage(_tabId, message) {
+        if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true, noResults: true };
+        throw new Error(`unexpected message ${message.type}`);
+      },
+      async remove() {},
+    },
+    scripting: { async executeScript() {} },
+  };
+  const result = await new GoogleMapsBrowserController(chrome, { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
+    .withDedicatedTab((tab) => tab.search('sem resultados', { maxResults: 5 }));
+  assert.deepEqual(result, { businesses: [], found: 0 });
+});
+
+test('browser controller reports consent and blocked screens with specific errors', async () => {
+  const chromeFor = (ready) => ({
+    tabs: {
+      async create() { return { id: 13 }; },
+      async update() {},
+      async get() { return mapsTab(13); },
+      async sendMessage(_tabId, message) {
+        if (message.type === GoogleMapsMessages.WAIT_READY) return ready;
+        return { ok: true, businesses: [] };
+      },
+      async remove() {},
+    },
+    scripting: { async executeScript() {} },
+  });
+  await assert.rejects(
+    () => new GoogleMapsBrowserController(chromeFor({ ok: false, ready: false, code: 'consent_screen' }), { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
+      .withDedicatedTab((tab) => tab.search('q')),
+    (error) => error.code === 'consent_screen',
+  );
+  await assert.rejects(
+    () => new GoogleMapsBrowserController(chromeFor({ ok: false, ready: false, code: 'captcha_or_blocked' }), { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
+      .withDedicatedTab((tab) => tab.search('q')),
+    (error) => error.code === 'captcha_or_blocked',
+  );
+});
+
+test('content script does not treat map canvas role=main as loaded results feed', async () => {
+  const html = `
+    <html><body>
+      <div role="main" aria-label="Mapa"></div>
+    </body></html>`;
+  const { document } = parseHTML(html);
+  let listener;
+  const sandbox = {
+    globalThis: {},
+    document,
+    location: { href: 'https://www.google.com/maps/search/?query=x' },
+    Event,
+    URL,
+    console,
+    chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/dom_extraction.js', import.meta.url), 'utf8'), sandbox);
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/content_script.js', import.meta.url), 'utf8'), sandbox);
+  const send = (message) => new Promise((resolve) => listener(message, {}, resolve));
+
+  const ready = await send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: 40 });
+  assert.equal(ready.ready, false);
+  assert.equal(ready.code, 'results_timeout');
+  assert.equal(ready.diagnostics?.hasMapMain, true);
+  assert.equal(ready.diagnostics?.hasResultsFeed, false);
+});
+
+test('content script treats legitimate zero-results copy as completed empty state', async () => {
+  const html = `<html><body><div role="main">Nenhum resultado encontrado</div></body></html>`;
+  const { document } = parseHTML(html);
+  let listener;
+  const sandbox = {
+    globalThis: {},
+    document,
+    location: { href: 'https://www.google.com/maps/search/?query=x' },
+    Event,
+    URL,
+    console,
+    chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/dom_extraction.js', import.meta.url), 'utf8'), sandbox);
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/content_script.js', import.meta.url), 'utf8'), sandbox);
+  const send = (message) => new Promise((resolve) => listener(message, {}, resolve));
+  const ready = await send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: 50 });
+  assert.equal(ready.ready, true);
+  assert.equal(ready.noResults, true);
+});
+
+test('content script collects pt-BR semantic result cards without CSS class dependency', async () => {
+  const html = `
+    <html><body>
+      <div role="feed" aria-label="Resultados para automação industrial Carapicuíba">
+        <div role="article">
+          <a href="https://www.google.com/maps/place/Empresa+A/?cid=456" aria-label=""></a>
+          <div role="heading">Empresa A Automação</div>
+          <span>Endereço: Rua Central, 100 - Carapicuíba, SP</span>
+          <button aria-label="Telefone: (11) 4000-0000">Telefone</button>
+        </div>
+      </div>
+    </body></html>`;
+  const { document } = parseHTML(html);
+  let listener;
+  const sandbox = {
+    globalThis: {},
+    document,
+    location: { href: 'https://www.google.com/maps/search/?query=x' },
+    Event,
+    URL,
+    console,
+    chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/dom_extraction.js', import.meta.url), 'utf8'), sandbox);
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/content_script.js', import.meta.url), 'utf8'), sandbox);
+  const send = (message) => new Promise((resolve) => listener(message, {}, resolve));
+
+  const ready = await send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: 5 });
+  const collected = await send({ type: GoogleMapsMessages.COLLECT_FEED, sourceQuery: 'automação industrial Carapicuíba', limit: 5 });
+
+  assert.equal(ready.ready, true);
+  assert.equal(collected.ok, true);
+  assert.equal(collected.businesses.length, 1);
+  assert.equal(collected.businesses[0].name, 'Empresa A Automação');
+  assert.equal(collected.businesses[0].source_query, 'automação industrial Carapicuíba');
+});
 
 test('manifest grants only scoped google maps permissions and no global host access', () => {
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));

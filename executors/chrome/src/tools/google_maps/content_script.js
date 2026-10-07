@@ -10,13 +10,18 @@
   });
   const allowedMessages = new Set(Object.values(Messages));
   const selectors = Object.freeze({
-    feed: '[role="feed"], div[aria-label][role="main"]',
-    resultAnchors: 'a[href*="/maps/place/"], a[href*="/maps/search/"]',
+    resultsFeed: '[role="feed"]',
+    resultAnchors:
+      'a[href*="/maps/place/"], a[href*="/maps/search/"], a[href*="/maps?cid="], a[href*="/maps?ll="]',
     placePanel: '[role="main"]',
     websiteLinks: 'a[data-item-id="authority"], a[aria-label^="Website"], a[href^="http"]',
-    phoneButtons: 'button[data-item-id^="phone"], button[aria-label*="Phone"], button[aria-label*="Telefone"]',
+    phoneButtons:
+      'button[data-item-id^="phone"], button[aria-label*="Phone"], button[aria-label*="Telefone"]',
     noResultsText: 'No results found,Nenhum resultado encontrado',
-    challengeText: 'captcha,unusual traffic,not a robot,verifique se você não é um robô,tráfego incomum',
+    challengeText:
+      'captcha,unusual traffic,not a robot,verifique se você não é um robô,tráfego incomum',
+    consentText:
+      'before you continue,antes de continuar,accept all,aceitar tudo,rejeitar tudo',
   });
 
   if (globalThis.__agentExecutorGoogleMapsContentScript) return;
@@ -45,23 +50,30 @@
   async function waitReady(timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (detectChallenge(document)) return { ok: true, ready: false, challenge: true };
-      if (detectNoResults(document)) return { ok: true, ready: true, noResults: true };
-      if (findFeed(document) || findResultAnchors(document).length > 0) return { ok: true, ready: true };
+      if (detectChallenge(document)) return { ok: false, ready: false, code: 'captcha_or_blocked' };
+      if (detectConsent(document)) return { ok: false, ready: false, code: 'consent_screen' };
+      const loaded = detectResultsLoaded(document);
+      if (loaded.noResults) return { ok: true, ready: true, noResults: true };
+      if (loaded.ready) return { ok: true, ready: true, signal: loaded.signal };
       await sleep(250);
     }
-    return { ok: false, ready: false, code: 'page_structure_changed' };
+    const snapshot = snapshotLoadSignals(document);
+    return { ok: false, ready: false, code: 'results_timeout', diagnostics: snapshot };
   }
 
   function collectFeed(doc, sourceQuery, limit) {
-    if (detectChallenge(doc)) return { ok: true, challenge: true, businesses: [] };
+    if (detectChallenge(doc)) return { ok: false, code: 'captcha_or_blocked', businesses: [] };
+    if (detectConsent(doc)) return { ok: false, code: 'consent_screen', businesses: [] };
+    if (!detectResultsLoaded(doc).ready && !detectNoResults(doc)) {
+      return { ok: false, code: 'results_feed_not_found', businesses: [], diagnostics: snapshotLoadSignals(doc) };
+    }
     const anchors = findResultAnchors(doc);
     const businesses = anchors.slice(0, limit).map((anchor) => businessFromAnchor(anchor, sourceQuery)).filter(Boolean);
     return { ok: true, businesses, endOfResults: detectEndOfResults(doc) || businesses.length >= limit };
   }
 
   async function scrollFeed(doc, timeoutMs) {
-    const feed = findFeed(doc) || doc.scrollingElement || doc.documentElement;
+    const feed = findResultsFeed(doc) || doc.scrollingElement || doc.documentElement;
     const before = feed.scrollTop || 0;
     feed.scrollTop = before + Math.max(feed.clientHeight || 800, 600);
     feed.dispatchEvent?.(new Event('scroll', { bubbles: true }));
@@ -75,9 +87,10 @@
 
   function businessFromAnchor(anchor, sourceQuery) {
     const mapsUrl = normalizeMapsUrl(anchor.href);
-    const name = normalizeText(anchor.getAttribute('aria-label') || anchor.textContent || '');
+    const container = anchor.closest('[role="article"], [role="feed"] > div, div') || anchor.parentElement;
+    const heading = container?.querySelector?.('[role="heading"], h1, h2, h3');
+    const name = normalizeText(anchor.getAttribute('aria-label') || anchor.textContent || heading?.textContent || '');
     if (!mapsUrl || !name) return null;
-    const container = anchor.closest('[role="article"], div') || anchor.parentElement;
     const extract = domExtract();
     return {
       name,
@@ -143,11 +156,47 @@
     };
   }
 
-  function findFeed(doc) { return doc.querySelector(selectors.feed); }
-  function findResultAnchors(doc) { return Array.from(doc.querySelectorAll(selectors.resultAnchors)).filter((anchor) => normalizeMapsUrl(anchor.href)); }
+  function findResultsFeed(doc) {
+    return doc.querySelector(selectors.resultsFeed);
+  }
+
+  function findResultAnchors(doc) {
+    return Array.from(doc.querySelectorAll(selectors.resultAnchors)).filter((anchor) => normalizeMapsUrl(anchor.href));
+  }
+
+  function detectResultsLoaded(doc) {
+    if (detectNoResults(doc)) return { ready: true, noResults: true, signal: 'no_results_text' };
+    const anchors = findResultAnchors(doc);
+    if (anchors.length > 0) return { ready: true, signal: 'result_anchors', anchorCount: anchors.length };
+    const feed = findResultsFeed(doc);
+    if (feed) {
+      const feedAnchors = feed.querySelectorAll('a[href*="/maps/place/"]');
+      if (feedAnchors.length > 0) {
+        return { ready: true, signal: 'feed_place_anchors', anchorCount: feedAnchors.length };
+      }
+      if (feed.querySelector('[role="article"]')) {
+        return { ready: true, signal: 'feed_articles' };
+      }
+    }
+    return { ready: false, signal: 'awaiting_results' };
+  }
+
+  function snapshotLoadSignals(doc) {
+    const feed = findResultsFeed(doc);
+    return {
+      hasResultsFeed: Boolean(feed),
+      feedAriaLabel: normalizeText(feed?.getAttribute?.('aria-label') || '').slice(0, 120),
+      anchorCount: findResultAnchors(doc).length,
+      hasMapMain: Boolean(doc.querySelector('[role="main"]')),
+    };
+  }
   function detectChallenge(doc) {
     const text = normalizeText(doc.body?.innerText || doc.documentElement?.innerText || '').toLowerCase();
     return selectors.challengeText.split(',').some((needle) => text.includes(needle));
+  }
+  function detectConsent(doc) {
+    const text = normalizeText(doc.body?.innerText || doc.documentElement?.innerText || '').toLowerCase();
+    return selectors.consentText.split(',').some((needle) => text.includes(needle.toLowerCase()));
   }
   function detectNoResults(doc) {
     const text = normalizeText(doc.body?.innerText || '').toLowerCase();

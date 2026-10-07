@@ -14,7 +14,9 @@ export class GoogleMapsSearchHandler {
   async handle(requestPayload, execution = {}) {
     const startedAt = this.now();
     const input = validateGoogleMapsInput(requestPayload);
-    const controller = this.controller || new GoogleMapsBrowserController(this.chromeApi || globalThis.chrome);
+    const controller =
+      this.controller ||
+      new GoogleMapsBrowserController(this.chromeApi || globalThis.chrome, { logger: this.logger });
     const allBusinesses = [];
     let businessesFound = 0;
     let queriesExecuted = 0;

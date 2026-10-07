@@ -2,16 +2,19 @@ import { GoogleMapsMessages } from './protocol.js';
 import { buildGoogleMapsSearchUrl, isAllowedGoogleMapsUrl } from './url_builder.js';
 import { GoogleMapsToolError } from './errors.js';
 import { mergeBusiness } from './dedupe.js';
+import { createMapsDiagnostics } from './diagnostics.js';
 
 const DOM_EXTRACTION_FILE = 'src/tools/google_maps/dom_extraction.js';
 const CONTENT_SCRIPT_FILE = 'src/tools/google_maps/content_script.js';
 
 export class GoogleMapsBrowserController {
-  constructor(chromeApi, { navigationTimeoutMs = 30000, readyTimeoutMs = 20000, scrollTimeoutMs = 12000 } = {}) {
+  constructor(chromeApi, { navigationTimeoutMs = 30000, readyTimeoutMs = 30000, scrollTimeoutMs = 12000, logger = null } = {}) {
     this.chromeApi = chromeApi;
     this.navigationTimeoutMs = navigationTimeoutMs;
     this.readyTimeoutMs = readyTimeoutMs;
     this.scrollTimeoutMs = scrollTimeoutMs;
+    this.logger = logger;
+    this.diagnostics = createMapsDiagnostics(logger);
   }
 
   async withDedicatedTab(callback) {
@@ -39,13 +42,41 @@ export class GoogleMapsTabSession {
   async search(query, options = {}) {
     const url = buildGoogleMapsSearchUrl(query, options);
     if (!isAllowedGoogleMapsUrl(url)) throw new GoogleMapsToolError('handler_error', 'invalid_maps_url');
+    this.controller.diagnostics.stage('search_started', { queryLength: String(query || '').length, strategy: 'url_search' });
     await this.navigate(url);
+    await this.assertMapsTabOpened();
     await this.ensureContentScript();
     const ready = await this.send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: this.controller.readyTimeoutMs });
-    if (ready?.challenge) throw new GoogleMapsToolError('google_challenge', 'Google challenge detected.');
-    if (ready?.noResults) return { businesses: [], found: 0 };
-    if (!ready?.ready) throw new GoogleMapsToolError(ready?.code || 'page_structure_changed', 'Google Maps result feed was not found.');
+    if (ready?.challenge) throw new GoogleMapsToolError('captcha_or_blocked', 'Google challenge detected.');
+    if (ready?.noResults) {
+      this.controller.diagnostics.stage('search_no_results', { signal: ready?.signal || 'no_results_text' });
+      return { businesses: [], found: 0 };
+    }
+    if (!ready?.ready) {
+      this.controller.diagnostics.stage('search_wait_failed', {
+        code: ready?.code || 'results_feed_not_found',
+        signal: ready?.signal,
+        diagnostics: ready?.diagnostics,
+      });
+      throw new GoogleMapsToolError(ready?.code || 'results_feed_not_found', 'Google Maps result feed was not found.');
+    }
+    this.controller.diagnostics.stage('search_results_ready', { signal: ready?.signal || 'unknown' });
     return this.collectFeed(query, options.maxResults || 100, options);
+  }
+
+  async assertMapsTabOpened() {
+    const tab = await this.chromeApi.tabs.get(this.tabId);
+    const url = tab?.url || '';
+    this.controller.diagnostics.stage('tab_loaded', { url, tabStatus: tab?.status || '' });
+    if (!url || url === 'about:blank') {
+      throw new GoogleMapsToolError('maps_page_not_opened', 'Google Maps tab did not open.');
+    }
+    if (url.includes('consent.google.com')) {
+      throw new GoogleMapsToolError('consent_screen', 'Google consent screen detected.');
+    }
+    if (!isAllowedGoogleMapsUrl(url)) {
+      throw new GoogleMapsToolError('maps_page_not_opened', 'Tab URL is not an allowed Google Maps page.');
+    }
   }
 
   async navigate(url) {
@@ -77,8 +108,14 @@ export class GoogleMapsTabSession {
     let emptyRounds = 0;
     while (businesses.length < maxResults && staleRounds < 3 && emptyRounds < 8) {
       const response = await this.send({ type: GoogleMapsMessages.COLLECT_FEED, sourceQuery, limit: maxResults });
-      if (response?.challenge) throw new GoogleMapsToolError('google_challenge', 'Google challenge detected.');
-      if (!response?.ok) throw new GoogleMapsToolError(response?.code || 'page_structure_changed', 'Google Maps feed collection failed.');
+      if (response?.challenge) throw new GoogleMapsToolError('captcha_or_blocked', 'Google challenge detected.');
+      if (!response?.ok) {
+        this.controller.diagnostics.stage('collect_feed_failed', {
+          code: response?.code || 'results_feed_not_found',
+          diagnostics: response?.diagnostics,
+        });
+        throw new GoogleMapsToolError(response?.code || 'results_feed_not_found', 'Google Maps feed collection failed.');
+      }
       if (!Array.isArray(response.businesses) || response.businesses.length === 0) {
         if (response.endOfResults) break;
         emptyRounds += 1;
@@ -95,7 +132,8 @@ export class GoogleMapsTabSession {
       previousCount = businesses.length;
     }
     if (businesses.length === 0) {
-      throw new GoogleMapsToolError('results_not_loaded', 'Google Maps did not expose recognizable business cards in time.');
+      this.controller.diagnostics.stage('collect_feed_empty', { sourceQuery, maxResults, emptyRounds });
+      throw new GoogleMapsToolError('results_timeout', 'Google Maps did not expose recognizable business cards in time.');
     }
     return { businesses: businesses.slice(0, maxResults), found: businesses.length };
   }
