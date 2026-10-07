@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from urllib.parse import urlencode
 
@@ -124,6 +125,9 @@ ACTION_PROSPECT_WEBSITE_ENRICHED = "prospecting.enrichment.website_requested"
 BULK_WEBSITE_ENRICHMENT_LIMIT = 10
 SESSION_SEARCH_DRAFTS_KEY = "operations_portal_prospecting_drafts"
 SESSION_SEARCH_DRAFT_EXECUTIONS_KEY = "operations_portal_prospecting_draft_executions"
+logger = logging.getLogger(__name__)
+
+
 SEARCH_RUN_STATUS_UI = {
     SearchRun.Status.PENDING: {"label": "Preparando", "tone": "secondary"},
     SearchRun.Status.DISPATCHED: {"label": "Aguardando executor", "tone": "info"},
@@ -685,8 +689,16 @@ def prospecting_search_run_execute(request):
             draft=draft | {"draft_id": draft_id},
             review_form=review_form,
         )
-    _mark_draft_executed(request, draft_id=draft_id, search_run_id=search_run.id)
-    messages.success(request, "Pesquisa criada e enviada para execução.")
+    try:
+        _mark_draft_executed(request, draft_id=draft_id, search_run_id=search_run.id)
+    except Exception:
+        logger.exception(
+            "prospecting_search_run_execute_post_dispatch_failed",
+            extra={"search_run_id": str(search_run.id), "draft_id": str(draft_id)},
+        )
+        messages.warning(request, "Pesquisa criada e enviada, mas não foi possível marcar o plano como executado.")
+    else:
+        messages.success(request, "Pesquisa criada e enviada para execução.")
     return redirect("operations_portal:prospecting_search_run_detail", run_id=search_run.id)
 
 

@@ -122,9 +122,7 @@ def create_tool_execution(
 
 def claim_tool_execution(*, executor: ToolExecutor, execution: ToolExecution, actor=None, request=None) -> ToolExecution:
     with transaction.atomic():
-        execution = ToolExecution.objects.select_for_update().select_related(
-            "tenant", "project", "tool_definition", "executor"
-        ).get(pk=execution.pk)
+        execution = ToolExecution.objects.select_for_update().get(pk=execution.pk)
         executor = ToolExecutor.objects.select_for_update().select_related("tenant").get(pk=executor.pk)
         if execution.expires_at is not None and execution.expires_at <= timezone.now():
             transition_execution(execution, ToolExecution.Status.EXPIRED)
@@ -150,7 +148,7 @@ def complete_tool_execution(
 ) -> ToolExecution:
     result_validators = result_validators or build_default_result_validator_registry()
     with transaction.atomic():
-        execution = ToolExecution.objects.select_for_update().select_related("executor", "tenant", "tool_definition").get(pk=execution.pk)
+        execution = ToolExecution.objects.select_for_update().get(pk=execution.pk)
         executor = ToolExecutor.objects.get(pk=executor.pk)
         _validate_executor_owns_running_execution(executor=executor, execution=execution)
         try:
@@ -187,7 +185,7 @@ def fail_tool_execution(
     request=None,
 ) -> ToolExecution:
     with transaction.atomic():
-        execution = ToolExecution.objects.select_for_update().select_related("executor", "tenant").get(pk=execution.pk)
+        execution = ToolExecution.objects.select_for_update().get(pk=execution.pk)
         executor = ToolExecutor.objects.get(pk=executor.pk)
         _validate_executor_owns_running_execution(executor=executor, execution=execution)
         execution = transition_execution(

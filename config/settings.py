@@ -529,5 +529,6 @@ LOGGING = {
         "leads": {"handlers": ["console"], "level": "INFO"},
         "integrations": {"handlers": ["console"], "level": "INFO"},
         "tools": {"handlers": ["console"], "level": "INFO"},
+        "operations_portal": {"handlers": ["console"], "level": "INFO"},
     },
 }

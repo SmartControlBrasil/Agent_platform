@@ -1116,6 +1116,10 @@ class ExecutorApiTests(ToolTestCase):
             f"/api/v1/executors/tool-executions/{execution.id}/claim/",
             HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}",
         )
+        duplicate_claim = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/claim/",
+            HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}",
+        )
         wrong_complete = self.client.post(
             f"/api/v1/executors/tool-executions/{execution.id}/complete/",
             data=json.dumps({"result": {"bad": True}}),
@@ -1130,6 +1134,7 @@ class ExecutorApiTests(ToolTestCase):
         )
 
         self.assertEqual(claim.status_code, 200)
+        self.assertEqual(duplicate_claim.status_code, 400)
         self.assertEqual(wrong_complete.status_code, 400)
         self.assertEqual(complete.status_code, 200)
         self.assertEqual(complete.json()["status"], ToolExecution.Status.SUCCEEDED)

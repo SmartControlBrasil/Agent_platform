@@ -235,6 +235,9 @@ def claim_execution(request, execution_id):
         return JsonResponse({"error": "not_found"}, status=404)
     except ValidationError as exc:
         return JsonResponse({"error": "claim_rejected", "details": exc.messages}, status=400)
+    except Exception:
+        logger.exception("executor_tool_execution_claim_failed", extra={"tool_execution_id": str(execution_id)})
+        raise
     return JsonResponse(_execution_payload(execution))
 
 
