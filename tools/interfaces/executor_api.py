@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
@@ -23,6 +24,8 @@ from tools.application.lifecycle import (
     fail_tool_execution,
 )
 from tools.models import ToolExecution, ToolExecutor, ToolExecutorCapability, ToolExecutorPairingRequest
+
+logger = logging.getLogger(__name__)
 
 
 def _json_body(request):
@@ -147,6 +150,9 @@ def pairing_consume(request, pairing_id):
         return JsonResponse({"error": "not_found"}, status=404)
     except ValidationError as exc:
         return JsonResponse({"error": "pairing_consume_rejected", "details": exc.messages}, status=400)
+    except Exception:
+        _log_pairing_consume_exception(pairing_id)
+        raise
     return JsonResponse(
         {
             "credential": issued.secret,
@@ -155,6 +161,25 @@ def pairing_consume(request, pairing_id):
             "executor": _executor_payload(issued.credential.executor, credential_id=str(issued.credential.id)),
         }
     )
+
+
+def _log_pairing_consume_exception(pairing_id):
+    context = {"pairing_id": str(pairing_id)}
+    try:
+        pairing = ToolExecutorPairingRequest.objects.select_related("executor", "tenant").get(pk=pairing_id)
+        context.update(
+            {
+                "pairing_status": pairing.status,
+                "tenant_id": pairing.tenant_id,
+                "executor_id": str(pairing.executor_id or ""),
+                "expires_at": pairing.expires_at.isoformat(),
+            }
+        )
+    except ToolExecutorPairingRequest.DoesNotExist:
+        context["pairing_status"] = "not_found"
+    except Exception as context_error:
+        context["context_error"] = context_error.__class__.__name__
+    logger.exception("executor_pairing_consume_failed", extra=context)
 
 
 @require_http_methods(["GET"])

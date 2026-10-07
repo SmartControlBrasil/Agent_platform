@@ -11,6 +11,7 @@ from audit.models import AuditEvent
 from projects.models import Project
 from tenants.models import Tenant, TenantMembership
 from tools.application.execution import ToolExecutionError, execute_tool
+from tools.application.executor_pairing_claims import claim_pairing_for_tenant
 from tools.application.client_identity import (
     ServiceClientAuthenticationError,
     authenticate_service_client_credential,
@@ -1023,6 +1024,38 @@ class ExecutorApiTests(ToolTestCase):
             heartbeat.json()["executor"]["capabilities"][0]["slug"], "prospecting.external_search_probe"
         )
         self.assertIsNotNone(ToolExecutor.objects.get(pk=me.json()["executor"]["id"]).last_seen_at)
+
+    def test_pairing_api_consumes_pairing_approved_by_hando_claim(self):
+        request_response = self.client.post(
+            "/api/v1/executors/pairing/request/",
+            data=json.dumps({"requested_name": "Hando Extension", "executor_type": "BROWSER_EXTENSION"}),
+            content_type="application/json",
+        )
+        pairing = ToolExecutorPairingRequest.objects.get(pk=request_response.json()["id"])
+
+        claim_result = claim_pairing_for_tenant(pairing_code=pairing.pairing_code, tenant=self.tenant)
+        consume_response = self.client.post(
+            f"/api/v1/executors/pairing/{pairing.id}/consume/",
+            data=json.dumps({"pairing_code": pairing.pairing_code}),
+            content_type="application/json",
+        )
+        second_consume = self.client.post(
+            f"/api/v1/executors/pairing/{pairing.id}/consume/",
+            data=json.dumps({"pairing_code": pairing.pairing_code}),
+            content_type="application/json",
+        )
+
+        pairing.refresh_from_db()
+        credential = ToolExecutorCredential.objects.get(executor=claim_result.pairing.executor)
+        body = consume_response.json()
+        self.assertEqual(consume_response.status_code, 200)
+        self.assertEqual(second_consume.status_code, 400)
+        self.assertEqual(pairing.status, ToolExecutorPairingRequest.Status.CONSUMED)
+        self.assertEqual(body["credential_prefix"], credential.credential_prefix)
+        self.assertEqual(body["credential_id"], str(credential.id))
+        self.assertEqual(body["executor"]["tenant_id"], self.tenant.id)
+        self.assertEqual(body["executor"]["capabilities"][0]["slug"], "prospecting.search_google_maps")
+        self.assertFalse(ToolExecutorCredential.objects.filter(secret_hash=body["credential"]).exists())
 
     def test_executor_queue_filters_by_tenant_capability_and_status(self):
         self.bind(tool=self.delegated_tool)

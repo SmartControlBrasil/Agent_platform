@@ -528,5 +528,6 @@ LOGGING = {
         "assistant_core": {"handlers": ["console"], "level": "INFO"},
         "leads": {"handlers": ["console"], "level": "INFO"},
         "integrations": {"handlers": ["console"], "level": "INFO"},
+        "tools": {"handlers": ["console"], "level": "INFO"},
     },
 }
