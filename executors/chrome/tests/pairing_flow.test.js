@@ -28,3 +28,26 @@ test('consume approved pairing refuses local double consume guard', async () => 
   await setState({ platformBaseUrl: 'https://agents.example.com', pairing: { id: 'p', pairingCode: 'CODE', consumed: true }, state: ExecutorState.PAIRING }, chrome);
   await assert.rejects(() => consumeApprovedPairing({ chromeApi: chrome, fetchImpl: async () => jsonResponse({}) }), /already_consumed/);
 });
+
+test('consume approved pairing remains retryable when backend consume fails', async () => {
+  const chrome = createChromeMock();
+  await setState({
+    platformBaseUrl: 'https://agents.example.com',
+    pairing: { id: 'p', pairingCode: 'CODE', consumed: false },
+    state: ExecutorState.PAIRING,
+  }, chrome);
+  const fetchImpl = createFetchMock((url) => {
+    if (url.endsWith('/consume/')) return jsonResponse({ error: 'server_error' }, 500);
+    throw new Error('unexpected_url');
+  });
+
+  await assert.rejects(() => consumeApprovedPairing({ chromeApi: chrome, fetchImpl }), /server_error/);
+
+  const state = await getState(chrome);
+  assert.equal(state.state, ExecutorState.PAIRING);
+  assert.equal(state.pairing.consumed, false);
+  assert.equal(state.pairing.status, 'APPROVED');
+  assert.equal(state.lastErrorCode, 'server_error');
+  assert.equal(await new CredentialStore(chrome).getCredential(), '');
+});
+

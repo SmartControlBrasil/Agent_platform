@@ -41,9 +41,14 @@ export async function consumeApprovedPairing({ chromeApi, fetchImpl = globalThis
   const state = await getState(chromeApi);
   if (!state.pairing?.id || !state.pairing?.pairingCode) throw new Error('pairing_not_ready');
   if (state.pairing.consumed) throw new Error('pairing_already_consumed');
-  await setState({ pairing: { ...state.pairing, consumed: true } }, chromeApi);
   const client = new AgentPlatformClient({ baseUrl: state.platformBaseUrl, fetchImpl });
-  const consumed = await client.consumePairing(state.pairing.id, state.pairing.pairingCode);
+  let consumed;
+  try {
+    consumed = await client.consumePairing(state.pairing.id, state.pairing.pairingCode);
+  } catch (error) {
+    await setState({ pairing: { ...state.pairing, status: 'APPROVED', consumed: false }, state: ExecutorState.PAIRING, lastErrorCode: error?.code || error?.message || 'pairing_consume_failed' }, chromeApi);
+    throw error;
+  }
   await new CredentialStore(chromeApi).setCredential(consumed.credential);
   await setState({ state: ExecutorState.PAIRED, pairing: null, executor: consumed.executor, lastErrorCode: '' }, chromeApi);
   return consumed;
