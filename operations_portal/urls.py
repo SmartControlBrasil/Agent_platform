@@ -3,6 +3,7 @@ from django.urls import path
 from . import (
     analytics_views,
     commercial_views,
+    executor_views,
     integration_views,
     knowledge_base_views,
     notification_views,
@@ -196,6 +197,8 @@ urlpatterns = [
     path("tenants/", views.tenant_list, name="tenant_list"),
     path("tenants/novo/", views.tenant_create, name="tenant_create"),
     path("tenants/<int:pk>/", views.tenant_detail, name="tenant_detail"),
+    path("configuracoes/executores/", executor_views.executor_management, name="executor_management"),
+    path("configuracoes/executores/parear/", executor_views.executor_pairing_claim, name="executor_pairing_claim"),
     path("configuracoes/", views.settings_view, name="settings"),
     path("integracoes/", integration_views.integrations_dashboard, name="integrations"),
     path("integracoes/outbox/<int:pk>/", integration_views.outbox_event_detail, name="outbox_event_detail"),

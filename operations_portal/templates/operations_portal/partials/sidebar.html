@@ -99,6 +99,11 @@
             <i data-feather="settings"></i><span> Configuração · Tenants </span>
           </a>
         </li>
+        <li class="{% if active_section == 'executores' %}menuitem-active{% endif %}">
+          <a href="{% url 'operations_portal:executor_management' %}" class="tp-link {% if active_section == 'executores' %}active{% endif %}">
+            <i data-feather="cpu"></i><span> Executores </span>
+          </a>
+        </li>
         {% endif %}
         <li class="{% if active_section == 'tenants' %}menuitem-active{% endif %}">
           <a href="{% url 'operations_portal:tenant_list' %}" class="tp-link {% if active_section == 'tenants' %}active{% endif %}">

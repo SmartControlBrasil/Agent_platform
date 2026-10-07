@@ -172,6 +172,17 @@ class AssistantSettingsProfileForm(AssistantProfilePortalForm):
 
 
 
+class ExecutorPairingClaimForm(forms.Form):
+    pairing_code = forms.CharField(
+        label="Código de pareamento",
+        max_length=32,
+        widget=forms.TextInput(attrs={"class": "form-control", "placeholder": "94PU-A366-PR", "autocomplete": "off"}),
+    )
+
+    def clean_pairing_code(self):
+        value = str(self.cleaned_data.get("pairing_code") or "").strip().upper()
+        return "".join(char for char in value if char.isalnum())
+
 class TenantAllowedOriginsPortalForm(forms.Form):
     origins = forms.CharField(
         required=False,

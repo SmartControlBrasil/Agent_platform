@@ -1,0 +1,101 @@
+{% extends "operations_portal/base.html" %}
+
+{% block title %}Executores · Hando{% endblock %}
+
+{% block page_content %}
+<div class="row align-items-center mb-3">
+  <div class="col">
+    <h1 class="h3 mb-1">Executores</h1>
+    <p class="text-muted mb-0">Gestão limitada ao tenant ativo{% if active_tenant %}: {{ active_tenant.name }}{% endif %}.</p>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-12 col-xl-8">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="h5 mb-0">Executores deste tenant</h2>
+      </div>
+      <div class="card-body p-0">
+        {% if executors %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Tipo</th>
+                <th>Status</th>
+                <th>Capabilities</th>
+                <th>Última execução</th>
+                <th>Public ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in executors %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ row.executor.name }}</div>
+                  <div class="text-muted small">
+                    {% if row.executor.last_seen_at %}Heartbeat {{ row.executor.last_seen_at|timesince }} atrás{% else %}Sem heartbeat{% endif %}
+                  </div>
+                </td>
+                <td>{{ row.executor.get_executor_type_display }}</td>
+                <td>
+                  <span class="badge {% if row.presence.status == 'online' %}bg-success{% elif row.presence.status == 'recent' %}bg-info{% elif row.presence.status == 'inactive' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">
+                    {{ row.presence.label }}
+                  </span>
+                </td>
+                <td>
+                  {% if row.capabilities %}
+                    {% for tool in row.capabilities %}
+                      <span class="badge bg-light text-dark border">{{ tool.name }}</span>
+                    {% endfor %}
+                  {% else %}
+                    <span class="text-muted">Nenhuma</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.last_execution %}
+                    <div>{{ row.last_execution.tool_definition.name }}</div>
+                    <div class="text-muted small">{{ row.last_execution.get_status_display }} · {{ row.last_execution.created_at|timesince }} atrás</div>
+                  {% else %}
+                    <span class="text-muted">Sem execuções</span>
+                  {% endif %}
+                </td>
+                <td><code>{{ row.executor.public_id }}</code></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="p-4 text-muted">Nenhum executor vinculado a este tenant.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-xl-4">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="h5 mb-0">Parear novo executor</h2>
+      </div>
+      <div class="card-body">
+        {% if can_manage_executors %}
+        <form method="post" action="{% url 'operations_portal:executor_pairing_claim' %}">
+          {% csrf_token %}
+          <div class="mb-3">
+            <label class="form-label" for="{{ pairing_form.pairing_code.id_for_label }}">{{ pairing_form.pairing_code.label }}</label>
+            {{ pairing_form.pairing_code }}
+          </div>
+          <button type="submit" class="btn btn-primary">Vincular executor</button>
+        </form>
+        <p class="text-muted small mt-3 mb-0">Códigos pendentes não são listados no Hando. Use o código exibido fisicamente pela extensão.</p>
+        {% else %}
+        <p class="text-muted mb-0">Somente gestores e administradores do tenant podem vincular executores.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
