@@ -1112,6 +1112,9 @@ class ExecutorApiTests(ToolTestCase):
         owner, owner_secret = self._executor_with_secret(public_id="owner-auth")
         _, other_secret = self._executor_with_secret(public_id="other-auth")
 
+        self.assertIsNone(execution.executor_id)
+        self.assertEqual(owner.tenant_id, self.tenant.id)
+
         claim = self.client.post(
             f"/api/v1/executors/tool-executions/{execution.id}/claim/",
             HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}",
