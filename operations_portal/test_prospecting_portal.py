@@ -329,6 +329,11 @@ class ProspectingPortalTests(TestCase):
         self.assertEqual(run.target_region, "Barueri")
         self.assertEqual(len(run.queries), 2)
         self.assertEqual(str(run.id), execute_response.url.rstrip("/").split("/")[-1])
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+        attempt = SearchRunExecutionAttempt.objects.get(search_run=run)
+        self.assertEqual(attempt.attempt_number, 1)
+        self.assertEqual(ToolExecution.objects.filter(pk=attempt.tool_execution_id).count(), 1)
+        self.assertEqual(ToolExecution.objects.get(pk=attempt.tool_execution_id).status, ToolExecution.Status.DISPATCHED)
 
         retry_response = self.client.post(
             execute_url,
@@ -340,6 +345,8 @@ class ProspectingPortalTests(TestCase):
         )
         self.assertEqual(retry_response.status_code, 302)
         self.assertEqual(SearchRun.objects.filter(objective="Encontrar hospitais para apresentar robôs").count(), 1)
+        self.assertEqual(SearchRunExecutionAttempt.objects.filter(search_run=run).count(), 1)
+        self.assertEqual(ToolExecution.objects.filter(search_run_attempt__search_run=run).count(), 1)
 
     def test_cross_tenant_project_is_rejected_on_new_search(self):
         self._login(self.admin)
@@ -374,6 +381,9 @@ class ProspectingPortalTests(TestCase):
             },
         )
         draft_id = next(iter(self.client.session.get("operations_portal_prospecting_drafts", {}).keys()))
+        search_run_count = SearchRun.objects.count()
+        attempt_count = SearchRunExecutionAttempt.objects.count()
+        execution_count = ToolExecution.objects.count()
 
         response = self.client.post(
             execute_url,
@@ -385,6 +395,9 @@ class ProspectingPortalTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Selecione pelo menos uma query válida")
+        self.assertEqual(SearchRun.objects.count(), search_run_count)
+        self.assertEqual(SearchRunExecutionAttempt.objects.count(), attempt_count)
+        self.assertEqual(ToolExecution.objects.count(), execution_count)
 
     def test_search_run_detail_shows_review_counters(self):
         self._login(self.admin)

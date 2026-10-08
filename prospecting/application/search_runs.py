@@ -135,7 +135,7 @@ def create_and_dispatch_search_run(
 
 def synchronize_search_run(*, search_run: SearchRun) -> SearchRun:
     with transaction.atomic():
-        run = SearchRun.objects.select_for_update().select_related("tenant", "project", "agent_installation").get(pk=search_run.pk)
+        run = SearchRun.objects.select_for_update().get(pk=search_run.pk)
         attempt = _latest_attempt_for_run(run)
         if attempt is None:
             attempt = _ensure_attempt_tracking_for_legacy_run(run)
@@ -190,7 +190,7 @@ def synchronize_search_run(*, search_run: SearchRun) -> SearchRun:
 
 def dispatch_search_run_attempt(*, search_run: SearchRun, attempt_number: int, actor=None, request=None) -> SearchRun:
     with transaction.atomic():
-        run = SearchRun.objects.select_for_update().select_related("tenant", "project", "agent_installation").get(pk=search_run.pk)
+        run = SearchRun.objects.select_for_update().get(pk=search_run.pk)
         return _dispatch_search_attempt(run=run, attempt_number=attempt_number, actor=actor, request=request)
 
 
