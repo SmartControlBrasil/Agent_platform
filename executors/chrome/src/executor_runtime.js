@@ -61,6 +61,7 @@ export async function claimAndExecute({ client, execution, dispatcher, chromeApi
     return { id: execution.id, status: 'completed' };
   } catch (error) {
     const code = safeErrorCode(error);
+    logExecutionFailure(execution.id, code, error?.diagnostics);
     await client.failToolExecution(execution.id, { error_code: code, error_message: 'Tool execution failed.', diagnostics: error?.diagnostics });
     await setState({ lastExecutionId: execution.id, lastExecutionStatus: 'FAILED', lastErrorCode: code }, chromeApi);
     return { id: execution.id, status: 'failed' };
@@ -86,8 +87,40 @@ function createProgressReporter(client, executionId) {
         ...progress,
         last_activity_at: new Date().toISOString(),
       });
-    } catch {
-      // Progress updates are observability-only and must not fail execution.
+    } catch (error) {
+      console.warn('executor.progress_failed', {
+        execution_id: String(executionId || '').slice(0, 80),
+        stage: safeLogText(progress?.stage, 80),
+        error_code: safeErrorCode(error),
+        http_status: Number.isFinite(error?.status) ? error.status : undefined,
+        message: safeLogText(error?.message, 160),
+      });
     }
   };
+}
+
+
+function logExecutionFailure(executionId, errorCode, diagnostics = null) {
+  const safeDiagnostics = diagnostics && typeof diagnostics === 'object' ? diagnostics : {};
+  console.warn('executor.execution_failed', {
+    execution_id: String(executionId || '').slice(0, 80),
+    error_code: safeLogText(errorCode, 80),
+    has_diagnostics: Object.keys(safeDiagnostics).length > 0,
+    diagnostics_stage: safeLogText(safeDiagnostics.stage, 80),
+    diagnostics_feed_found: safeDiagnostics.feed_found ?? safeDiagnostics.hasResultsFeed,
+    diagnostics_article_count: safeNumber(safeDiagnostics.article_count ?? safeDiagnostics.articleCount),
+    diagnostics_place_anchor_count: safeNumber(safeDiagnostics.place_anchor_count ?? safeDiagnostics.placeAnchorCount),
+  });
+}
+
+function safeLogText(value, limit) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (/aep_[A-Za-z0-9_\-]+|authorization|cookie|credential|secret|token/i.test(text)) return '[sanitized]';
+  return text.slice(0, limit);
+}
+
+function safeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
 }
