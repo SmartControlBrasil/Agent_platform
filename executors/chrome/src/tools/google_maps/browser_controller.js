@@ -2,29 +2,34 @@ import { GoogleMapsMessages } from './protocol.js';
 import { buildGoogleMapsSearchUrl, isAllowedGoogleMapsUrl } from './url_builder.js';
 import { GoogleMapsToolError } from './errors.js';
 import { mergeBusiness } from './dedupe.js';
-import { createMapsDiagnostics } from './diagnostics.js';
+import { createMapsDiagnostics, summarizeMapsUrl } from './diagnostics.js';
 
 const DOM_EXTRACTION_FILE = 'src/tools/google_maps/dom_extraction.js';
 const CONTENT_SCRIPT_FILE = 'src/tools/google_maps/content_script.js';
 
 export class GoogleMapsBrowserController {
-  constructor(chromeApi, { navigationTimeoutMs = 30000, readyTimeoutMs = 30000, scrollTimeoutMs = 12000, logger = null } = {}) {
+  constructor(chromeApi, { navigationTimeoutMs = 30000, readyTimeoutMs = 30000, scrollTimeoutMs = 12000, logger = null, keepTabOpenOnError = false } = {}) {
     this.chromeApi = chromeApi;
     this.navigationTimeoutMs = navigationTimeoutMs;
     this.readyTimeoutMs = readyTimeoutMs;
     this.scrollTimeoutMs = scrollTimeoutMs;
     this.logger = logger;
+    this.keepTabOpenOnError = keepTabOpenOnError;
     this.diagnostics = createMapsDiagnostics(logger);
   }
 
   async withDedicatedTab(callback) {
     let tab;
+    let failed = false;
     try {
       tab = await this.chromeApi.tabs.create({ url: 'about:blank', active: false });
       if (!tab?.id) throw new GoogleMapsToolError('handler_error', 'tab_create_failed');
       return await callback(new GoogleMapsTabSession(this.chromeApi, tab.id, this));
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      if (tab?.id) {
+      if (tab?.id && !(failed && this.keepTabOpenOnError)) {
         try { await this.chromeApi.tabs.remove(tab.id); } catch {}
       }
     }
@@ -42,7 +47,11 @@ export class GoogleMapsTabSession {
   async search(query, options = {}) {
     const url = buildGoogleMapsSearchUrl(query, options);
     if (!isAllowedGoogleMapsUrl(url)) throw new GoogleMapsToolError('handler_error', 'invalid_maps_url');
-    this.controller.diagnostics.stage('search_started', { queryLength: String(query || '').length, strategy: 'url_search' });
+    this.controller.diagnostics.stage('search_started', {
+      queryLength: String(query || '').length,
+      strategy: 'url_search',
+      requestedUrl: summarizeMapsUrl(url),
+    });
     await this.navigate(url);
     await this.assertMapsTabOpened();
     await this.ensureContentScript();
@@ -117,6 +126,9 @@ export class GoogleMapsTabSession {
         throw new GoogleMapsToolError(response?.code || 'results_feed_not_found', 'Google Maps feed collection failed.');
       }
       if (!Array.isArray(response.businesses) || response.businesses.length === 0) {
+        if (response.diagnostics) {
+          this.controller.diagnostics.stage('collect_feed_empty_round', { diagnostics: response.diagnostics, emptyRounds });
+        }
         if (response.endOfResults) break;
         emptyRounds += 1;
         await this.send({ type: GoogleMapsMessages.SCROLL, timeoutMs: this.controller.scrollTimeoutMs });
@@ -132,7 +144,7 @@ export class GoogleMapsTabSession {
       previousCount = businesses.length;
     }
     if (businesses.length === 0) {
-      this.controller.diagnostics.stage('collect_feed_empty', { sourceQuery, maxResults, emptyRounds });
+      this.controller.diagnostics.stage('collect_feed_empty', { sourceQueryLength: String(sourceQuery || '').length, maxResults, emptyRounds });
       throw new GoogleMapsToolError('results_timeout', 'Google Maps did not expose recognizable business cards in time.');
     }
     return { businesses: businesses.slice(0, maxResults), found: businesses.length };

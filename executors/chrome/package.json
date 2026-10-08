@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Chrome Manifest V3 tool executor for Agent Platform.",
   "scripts": {
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "debug:google-maps": "node scripts/run_google_maps_handler.js"
   },
   "engines": {
     "node": ">=20"

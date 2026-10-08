@@ -345,6 +345,30 @@ test('browser controller reports consent and blocked screens with specific error
   );
 });
 
+
+test('browser controller can keep Maps tab open after local debug failure', async () => {
+  const calls = [];
+  const chrome = {
+    tabs: {
+      async create() { calls.push(['create']); return { id: 14 }; },
+      async update() {},
+      async get() { return mapsTab(14); },
+      async sendMessage(_tabId, message) {
+        if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: false, ready: false, code: 'results_timeout' };
+        return { ok: true };
+      },
+      async remove(tabId) { calls.push(['remove', tabId]); },
+    },
+    scripting: { async executeScript() {} },
+  };
+  await assert.rejects(
+    () => new GoogleMapsBrowserController(chrome, { navigationTimeoutMs: 10, readyTimeoutMs: 10, keepTabOpenOnError: true })
+      .withDedicatedTab((tab) => tab.search('acougue itapevi sp')),
+    (error) => error.code === 'results_timeout',
+  );
+  assert.deepEqual(calls, [['create']]);
+});
+
 test('content script does not treat map canvas role=main as loaded results feed', async () => {
   const html = `
     <html><body>
@@ -395,6 +419,82 @@ test('content script treats legitimate zero-results copy as completed empty stat
   const ready = await send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: 50 });
   assert.equal(ready.ready, true);
   assert.equal(ready.noResults, true);
+});
+
+
+test('content script collects article results without role feed when place anchors exist', async () => {
+  const html = `
+    <html><head><title>Google Maps</title></head><body>
+      <div role="main">
+        <div role="article">
+          <a href="https://www.google.com/maps/place/Acougue+Itapevi/?cid=789" aria-label="Açougue Itapevi"></a>
+          <div role="heading">Açougue Itapevi</div>
+          <span>Endereço: Rua Um, 10 - Itapevi, SP</span>
+        </div>
+      </div>
+    </body></html>`;
+  const { document } = parseHTML(html);
+  let listener;
+  const sandbox = {
+    globalThis: {},
+    document,
+    location: { href: 'https://www.google.com/maps/search/?api=1&query=acougue+itapevi+sp&hl=pt-BR' },
+    Event,
+    URL,
+    console,
+    chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/dom_extraction.js', import.meta.url), 'utf8'), sandbox);
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/content_script.js', import.meta.url), 'utf8'), sandbox);
+  const send = (message) => new Promise((resolve) => listener(message, {}, resolve));
+
+  const ready = await send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: 5 });
+  const collected = await send({ type: GoogleMapsMessages.COLLECT_FEED, sourceQuery: 'acougue itapevi sp', limit: 5 });
+
+  assert.equal(ready.ready, true);
+  assert.equal(ready.signal, 'result_anchors');
+  assert.equal(ready.diagnostics.pathname, '/maps/search/');
+  assert.equal(ready.diagnostics.search, 'api&query:18&hl:pt-BR');
+  assert.equal(ready.diagnostics.hasSearchInput, false);
+  assert.equal(collected.ok, true);
+  assert.equal(collected.businesses[0].name, 'Açougue Itapevi');
+});
+
+test('content script distinguishes visible articles without place links from timeout', async () => {
+  const html = `
+    <html><body>
+      <div role="main">
+        <div role="article"><div role="heading">Açougue Sem Link</div></div>
+      </div>
+    </body></html>`;
+  const { document } = parseHTML(html);
+  let listener;
+  const sandbox = {
+    globalThis: {},
+    document,
+    location: { href: 'https://www.google.com/maps/search/?api=1&query=acougue+itapevi+sp&hl=pt-BR' },
+    Event,
+    URL,
+    console,
+    chrome: { runtime: { onMessage: { addListener(fn) { listener = fn; } } } },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/dom_extraction.js', import.meta.url), 'utf8'), sandbox);
+  vm.runInNewContext(readFileSync(new URL('../src/tools/google_maps/content_script.js', import.meta.url), 'utf8'), sandbox);
+  const send = (message) => new Promise((resolve) => listener(message, {}, resolve));
+
+  const ready = await send({ type: GoogleMapsMessages.WAIT_READY, timeoutMs: 5 });
+  const collected = await send({ type: GoogleMapsMessages.COLLECT_FEED, sourceQuery: 'acougue itapevi sp', limit: 5 });
+
+  assert.equal(ready.ready, true);
+  assert.equal(ready.signal, 'articles_without_feed');
+  assert.equal(collected.ok, false);
+  assert.equal(collected.code, 'result_cards_without_place_links');
+  assert.equal(collected.diagnostics.articleCount, 1);
+  assert.equal(collected.diagnostics.placeAnchorCount, 0);
 });
 
 test('content script collects pt-BR semantic result cards without CSS class dependency', async () => {

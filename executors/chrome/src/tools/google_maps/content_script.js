@@ -53,8 +53,8 @@
       if (detectChallenge(document)) return { ok: false, ready: false, code: 'captcha_or_blocked' };
       if (detectConsent(document)) return { ok: false, ready: false, code: 'consent_screen' };
       const loaded = detectResultsLoaded(document);
-      if (loaded.noResults) return { ok: true, ready: true, noResults: true };
-      if (loaded.ready) return { ok: true, ready: true, signal: loaded.signal };
+      if (loaded.noResults) return { ok: true, ready: true, noResults: true, signal: loaded.signal, diagnostics: loaded.diagnostics };
+      if (loaded.ready) return { ok: true, ready: true, signal: loaded.signal, diagnostics: loaded.diagnostics };
       await sleep(250);
     }
     const snapshot = snapshotLoadSignals(document);
@@ -64,12 +64,16 @@
   function collectFeed(doc, sourceQuery, limit) {
     if (detectChallenge(doc)) return { ok: false, code: 'captcha_or_blocked', businesses: [] };
     if (detectConsent(doc)) return { ok: false, code: 'consent_screen', businesses: [] };
-    if (!detectResultsLoaded(doc).ready && !detectNoResults(doc)) {
+    const loaded = detectResultsLoaded(doc);
+    if (!loaded.ready && !detectNoResults(doc)) {
       return { ok: false, code: 'results_feed_not_found', businesses: [], diagnostics: snapshotLoadSignals(doc) };
     }
     const anchors = findResultAnchors(doc);
     const businesses = anchors.slice(0, limit).map((anchor) => businessFromAnchor(anchor, sourceQuery)).filter(Boolean);
-    return { ok: true, businesses, endOfResults: detectEndOfResults(doc) || businesses.length >= limit };
+    if (businesses.length === 0 && snapshotLoadSignals(doc).articleCount > 0) {
+      return { ok: false, code: 'result_cards_without_place_links', businesses: [], diagnostics: snapshotLoadSignals(doc) };
+    }
+    return { ok: true, businesses, diagnostics: snapshotLoadSignals(doc), endOfResults: detectEndOfResults(doc) || businesses.length >= limit };
   }
 
   async function scrollFeed(doc, timeoutMs) {
@@ -164,31 +168,69 @@
     return Array.from(doc.querySelectorAll(selectors.resultAnchors)).filter((anchor) => normalizeMapsUrl(anchor.href));
   }
 
+  function findResultArticles(doc) {
+    return Array.from(doc.querySelectorAll('[role="article"]'));
+  }
+
+  function findSearchInput(doc) {
+    return doc.querySelector('input[aria-label*="Search"], input[aria-label*="Pesquisar"], input[role="combobox"], input[name="q"]');
+  }
+
   function detectResultsLoaded(doc) {
-    if (detectNoResults(doc)) return { ready: true, noResults: true, signal: 'no_results_text' };
+    const diagnostics = snapshotLoadSignals(doc);
+    if (detectNoResults(doc)) return { ready: true, noResults: true, signal: 'no_results_text', diagnostics };
     const anchors = findResultAnchors(doc);
-    if (anchors.length > 0) return { ready: true, signal: 'result_anchors', anchorCount: anchors.length };
+    if (anchors.length > 0) return { ready: true, signal: 'result_anchors', anchorCount: anchors.length, diagnostics };
     const feed = findResultsFeed(doc);
     if (feed) {
       const feedAnchors = feed.querySelectorAll('a[href*="/maps/place/"]');
       if (feedAnchors.length > 0) {
-        return { ready: true, signal: 'feed_place_anchors', anchorCount: feedAnchors.length };
+        return { ready: true, signal: 'feed_place_anchors', anchorCount: feedAnchors.length, diagnostics };
       }
       if (feed.querySelector('[role="article"]')) {
-        return { ready: true, signal: 'feed_articles' };
+        return { ready: true, signal: 'feed_articles', diagnostics };
       }
     }
-    return { ready: false, signal: 'awaiting_results' };
+    if (findResultArticles(doc).length > 0) return { ready: true, signal: 'articles_without_feed', diagnostics };
+    return { ready: false, signal: 'awaiting_results', diagnostics };
   }
 
   function snapshotLoadSignals(doc) {
     const feed = findResultsFeed(doc);
+    const input = findSearchInput(doc);
+    const loc = safeLocationSummary();
     return {
+      readyState: String(doc.readyState || '').slice(0, 32),
+      pathname: loc.pathname,
+      search: loc.search,
+      title: normalizeText(doc.title || '').slice(0, 120),
       hasResultsFeed: Boolean(feed),
       feedAriaLabel: normalizeText(feed?.getAttribute?.('aria-label') || '').slice(0, 120),
-      anchorCount: findResultAnchors(doc).length,
+      placeAnchorCount: findResultAnchors(doc).length,
+      articleCount: findResultArticles(doc).length,
+      hasArticle: findResultArticles(doc).length > 0,
       hasMapMain: Boolean(doc.querySelector('[role="main"]')),
+      hasSearchInput: Boolean(input),
+      searchInputAriaLabel: normalizeText(input?.getAttribute?.('aria-label') || '').slice(0, 80),
+      hasNoResultsText: detectNoResults(doc),
+      hasConsentText: detectConsent(doc),
+      hasChallengeText: detectChallenge(doc),
     };
+  }
+
+  function safeLocationSummary() {
+    try {
+      const url = new URL(location.href);
+      const query = url.searchParams.get('query') || url.searchParams.get('q') || '';
+      const params = [];
+      if (url.searchParams.has('api')) params.push('api');
+      if (url.searchParams.has('query')) params.push(`query:${query.length}`);
+      if (url.searchParams.has('q')) params.push(`q:${query.length}`);
+      if (url.searchParams.has('hl')) params.push(`hl:${String(url.searchParams.get('hl') || '').slice(0, 16)}`);
+      return { pathname: url.pathname.slice(0, 120), search: params.join('&') };
+    } catch {
+      return { pathname: '', search: 'invalid_url' };
+    }
   }
   function detectChallenge(doc) {
     const text = normalizeText(doc.body?.innerText || doc.documentElement?.innerText || '').toLowerCase();
