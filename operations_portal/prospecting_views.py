@@ -470,6 +470,64 @@ def _ensure_attempt_tracking(search_run):
     return search_run.execution_attempts.select_related("tool_execution", "tool_execution__executor").order_by("attempt_number")
 
 
+
+def _execution_metadata_view(execution):
+    payload = execution.result_payload if execution and isinstance(execution.result_payload, dict) else {}
+    progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+    diagnostics = payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else {}
+    return {
+        "progress": _format_execution_progress(progress),
+        "diagnostics": _format_execution_diagnostics(diagnostics),
+    }
+
+
+def _format_execution_progress(progress):
+    if not progress:
+        return None
+    return {
+        "stage": progress.get("stage") or "—",
+        "current_query": progress.get("current_query") or "—",
+        "detected_results": progress.get("detected_results", "—"),
+        "processed_results": progress.get("processed_results", "—"),
+        "last_activity_at": progress.get("last_activity_at") or "—",
+    }
+
+
+def _format_execution_diagnostics(diagnostics):
+    if not diagnostics:
+        return []
+    labels = (
+        ("stage", "Etapa"),
+        ("current_query", "Query atual"),
+        ("pathname", "Pathname"),
+        ("search", "Parâmetros URL"),
+        ("feed_found", "Feed encontrado"),
+        ("article_count", "role=article"),
+        ("place_anchor_count", "Links de place"),
+        ("zero_results", "Sem resultados"),
+        ("consent_screen", "Consentimento"),
+        ("captcha_or_blocked", "Captcha/bloqueio"),
+        ("detected_results", "Resultados detectados"),
+        ("processed_results", "Resultados processados"),
+        ("last_activity_at", "Última atividade"),
+    )
+    rows = []
+    for key, label in labels:
+        if key in diagnostics:
+            rows.append({"label": label, "value": _display_diagnostic_value(diagnostics[key])})
+    return rows
+
+
+def _display_diagnostic_value(value):
+    if value is True:
+        return "Sim"
+    if value is False:
+        return "Não"
+    if value in (None, ""):
+        return "—"
+    return value
+
+
 def _compatible_executor_snapshot(search_run, execution):
     if execution is None:
         return []
@@ -772,6 +830,7 @@ def prospecting_search_run_detail(request, run_id):
     execution = current_attempt.tool_execution if current_attempt else None
     execution_summary = summarize_tool_execution(execution) if execution is not None else None
     execution_error_message = _execution_error_message(execution)
+    execution_metadata = _execution_metadata_view(execution)
     attempts_view = []
     for attempt in attempts:
         attempt_execution = attempt.tool_execution
@@ -828,6 +887,8 @@ def prospecting_search_run_detail(request, run_id):
         "execution": execution,
         "execution_summary": execution_summary,
         "execution_error_message": execution_error_message,
+        "execution_progress": execution_metadata["progress"],
+        "execution_diagnostics": execution_metadata["diagnostics"],
         "attempts": attempts_view,
         "current_attempt_number": current_attempt.attempt_number if current_attempt else None,
         "compatible_executors": compatible_executors,

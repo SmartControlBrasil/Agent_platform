@@ -4,11 +4,12 @@ import { normalizeBusiness } from './normalization.js';
 import { GoogleMapsBrowserController } from './browser_controller.js';
 
 export class GoogleMapsSearchHandler {
-  constructor({ controller = null, chromeApi = null, now = () => Date.now(), logger = console } = {}) {
+  constructor({ controller = null, chromeApi = null, now = () => Date.now(), logger = console, progressReporter = null } = {}) {
     this.controller = controller;
     this.chromeApi = chromeApi;
     this.now = now;
     this.logger = logger;
+    this.progressReporter = progressReporter;
   }
 
   async handle(requestPayload, execution = {}) {
@@ -26,10 +27,28 @@ export class GoogleMapsSearchHandler {
       for (const [index, query] of input.queries.entries()) {
         if (allBusinesses.length >= input.max_results) break;
         this.safeLog('info', 'google_maps.query_started', { executionId: execution.id, queryIndex: index });
+        await this.reportProgress({
+          stage: 'opening_google_maps',
+          current_query: query,
+          detected_results: businessesFound,
+          processed_results: allBusinesses.length,
+        });
         const remaining = input.max_results - allBusinesses.length;
+        await this.reportProgress({
+          stage: 'detecting_results',
+          current_query: query,
+          detected_results: businessesFound,
+          processed_results: allBusinesses.length,
+        });
         const result = await tab.search(query, { locale: input.locale, maxResults: remaining });
         queriesExecuted += 1;
         businessesFound += result.found || result.businesses?.length || 0;
+        await this.reportProgress({
+          stage: 'collecting_results',
+          current_query: query,
+          detected_results: businessesFound,
+          processed_results: allBusinesses.length,
+        });
         for (const raw of result.businesses || []) {
           const normalized = normalizeBusiness(raw, query);
           if (normalized) allBusinesses.push(normalized);
@@ -37,6 +56,12 @@ export class GoogleMapsSearchHandler {
         const deduped = dedupeBusinesses(allBusinesses, input.max_results);
         duplicatesRemoved += deduped.duplicatesRemoved;
         allBusinesses.splice(0, allBusinesses.length, ...deduped.businesses);
+        await this.reportProgress({
+          stage: 'query_completed',
+          current_query: query,
+          detected_results: businessesFound,
+          processed_results: allBusinesses.length,
+        });
         this.safeLog('info', 'google_maps.query_completed', { executionId: execution.id, queryIndex: index, resultCount: allBusinesses.length });
       }
     });
@@ -57,6 +82,11 @@ export class GoogleMapsSearchHandler {
         duration_ms: durationMs,
       },
     };
+  }
+
+  async reportProgress(progress) {
+    if (!this.progressReporter) return;
+    await this.progressReporter(progress);
   }
 
   safeLog(level, message, metadata = {}) {

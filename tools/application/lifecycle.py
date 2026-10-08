@@ -20,6 +20,7 @@ ACTION_EXECUTION_DISPATCHED = "tool.execution.dispatched"
 ACTION_EXECUTION_CLAIMED = "tool.execution.claimed"
 ACTION_EXECUTION_SUCCEEDED = "tool.execution.succeeded"
 ACTION_EXECUTION_FAILED = "tool.execution.failed"
+ACTION_EXECUTION_PROGRESS = "tool.execution.progress"
 ACTION_EXECUTION_CANCELLED = "tool.execution.cancelled"
 ACTION_EXECUTION_EXPIRED = "tool.execution.expired"
 
@@ -38,6 +39,66 @@ VALID_TRANSITIONS = {
     ToolExecution.Status.FAILED: set(),
     ToolExecution.Status.CANCELLED: set(),
     ToolExecution.Status.EXPIRED: set(),
+}
+
+SAFE_DIAGNOSTIC_KEYS = {
+    "stage",
+    "current_query",
+    "query",
+    "query_index",
+    "pathname",
+    "search",
+    "feed_found",
+    "has_results_feed",
+    "hasResultsFeed",
+    "article_count",
+    "articleCount",
+    "place_anchor_count",
+    "placeAnchorCount",
+    "zero_results",
+    "has_no_results_text",
+    "hasNoResultsText",
+    "consent_screen",
+    "has_consent_text",
+    "hasConsentText",
+    "captcha_or_blocked",
+    "has_challenge_text",
+    "hasChallengeText",
+    "detected_results",
+    "processed_results",
+    "last_activity_at",
+    "ready_state",
+    "readyState",
+    "has_map_main",
+    "hasMapMain",
+    "has_search_input",
+    "hasSearchInput",
+    "search_input_aria_label",
+    "searchInputAriaLabel",
+    "signal",
+    "code",
+}
+
+PROGRESS_KEYS = {
+    "stage",
+    "current_query",
+    "detected_results",
+    "processed_results",
+    "last_activity_at",
+}
+
+KEY_ALIASES = {
+    "query": "current_query",
+    "hasResultsFeed": "feed_found",
+    "articleCount": "article_count",
+    "placeAnchorCount": "place_anchor_count",
+    "hasNoResultsText": "zero_results",
+    "hasConsentText": "consent_screen",
+    "hasChallengeText": "captcha_or_blocked",
+    "readyState": "ready_state",
+    "hasMapMain": "has_map_main",
+    "hasSearchInput": "has_search_input",
+    "searchInputAriaLabel": "search_input_aria_label",
 }
 
 
@@ -181,6 +242,7 @@ def fail_tool_execution(
     execution: ToolExecution,
     error_code: str,
     error_message: str = "",
+    diagnostics: dict[str, Any] | None = None,
     actor=None,
     request=None,
 ) -> ToolExecution:
@@ -188,14 +250,116 @@ def fail_tool_execution(
         execution = ToolExecution.objects.select_for_update().get(pk=execution.pk)
         executor = ToolExecutor.objects.get(pk=executor.pk)
         _validate_executor_owns_running_execution(executor=executor, execution=execution)
+        result_payload = _merge_execution_metadata(execution.result_payload, diagnostics=diagnostics)
         execution = transition_execution(
             execution,
             ToolExecution.Status.FAILED,
+            result_payload=result_payload,
             error_code=error_code,
             error_message=error_message,
         )
     record_tool_execution_event(ACTION_EXECUTION_FAILED, execution, actor=actor, request=request)
     return execution
+
+
+def record_tool_execution_progress(
+    *,
+    executor: ToolExecutor,
+    execution: ToolExecution,
+    progress: dict[str, Any] | None = None,
+    actor=None,
+    request=None,
+) -> ToolExecution:
+    with transaction.atomic():
+        execution = ToolExecution.objects.select_for_update().get(pk=execution.pk)
+        executor = ToolExecutor.objects.get(pk=executor.pk)
+        _validate_executor_owns_running_execution(executor=executor, execution=execution)
+        execution.result_payload = _merge_execution_metadata(execution.result_payload, progress=progress)
+        execution.save(update_fields=["result_payload", "updated_at"])
+    record_tool_execution_event(ACTION_EXECUTION_PROGRESS, execution, actor=actor, request=request)
+    return execution
+
+
+def _merge_execution_metadata(
+    result_payload: dict[str, Any] | None,
+    *,
+    diagnostics: dict[str, Any] | None = None,
+    progress: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(result_payload or {}) if isinstance(result_payload, dict) else {}
+    sanitized_progress = sanitize_execution_progress(progress)
+    if sanitized_progress:
+        payload["progress"] = sanitized_progress
+    sanitized_diagnostics = sanitize_execution_diagnostics(diagnostics)
+    if sanitized_diagnostics:
+        payload["diagnostics"] = sanitized_diagnostics
+        if "progress" not in payload:
+            derived_progress = sanitize_execution_progress(sanitized_diagnostics)
+            if derived_progress:
+                payload["progress"] = derived_progress
+    return payload
+
+
+def sanitize_execution_progress(value: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    sanitized = {}
+    for key in PROGRESS_KEYS:
+        normalized = _normalize_diagnostic_value(key, value.get(key))
+        if normalized is not None:
+            sanitized[key] = normalized
+    if "last_activity_at" not in sanitized:
+        sanitized["last_activity_at"] = timezone.now().isoformat()
+    return sanitized
+
+
+def sanitize_execution_diagnostics(value: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    sanitized = {}
+    for key, raw_value in value.items():
+        if key == "diagnostics" and isinstance(raw_value, dict):
+            nested = sanitize_execution_diagnostics(raw_value)
+            sanitized.update(nested)
+            continue
+        if key not in SAFE_DIAGNOSTIC_KEYS:
+            continue
+        normalized_key = KEY_ALIASES.get(key, key)
+        normalized = _normalize_diagnostic_value(normalized_key, raw_value)
+        if normalized is not None:
+            sanitized[normalized_key] = normalized
+    if "last_activity_at" not in sanitized:
+        sanitized["last_activity_at"] = timezone.now().isoformat()
+    return sanitized
+
+
+def _normalize_diagnostic_value(key: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if key in {"detected_results", "processed_results", "article_count", "place_anchor_count", "query_index"}:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, (int, float)):
+        return value
+    text = " ".join(str(value or "").split())
+    if not text:
+        return None
+    limits = {
+        "current_query": 180,
+        "pathname": 160,
+        "search": 160,
+        "search_input_aria_label": 120,
+        "last_activity_at": 80,
+        "stage": 80,
+        "signal": 80,
+        "code": 80,
+        "ready_state": 40,
+    }
+    return sanitize_error_text(text, limits.get(key, 120))
 
 
 def expire_tool_execution(execution: ToolExecution, *, actor=None, request=None) -> ToolExecution:

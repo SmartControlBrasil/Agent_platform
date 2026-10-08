@@ -1143,6 +1143,110 @@ class ExecutorApiTests(ToolTestCase):
         self.assertEqual(complete.json()["status"], ToolExecution.Status.SUCCEEDED)
         self.assertEqual(ToolExecution.objects.get(pk=execution.pk).executor_id, owner.id)
 
+    def test_executor_fail_persists_safe_diagnostics_and_old_fail_still_works(self):
+        self.bind(tool=self.delegated_tool)
+        execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={"query": "maps"})
+        execution = ToolExecution.objects.get(tool_definition=self.delegated_tool)
+        _, secret = self._executor_with_secret(public_id="diag-owner")
+        self.client.post(f"/api/v1/executors/tool-executions/{execution.id}/claim/", HTTP_AUTHORIZATION=f"AgentExecutor {secret}", REMOTE_ADDR="10.20.0.1")
+
+        response = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/fail/",
+            data=json.dumps(
+                {
+                    "error_code": "results_timeout",
+                    "error_message": "Tool execution failed.",
+                    "diagnostics": {
+                        "stage": "collect_feed_empty",
+                        "current_query": "hospitais Barueri",
+                        "pathname": "/maps/search/",
+                        "hasResultsFeed": False,
+                        "articleCount": 4,
+                        "placeAnchorCount": 0,
+                        "hasChallengeText": False,
+                        "cookie": "must-not-persist",
+                    },
+                }
+            ),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {secret}", REMOTE_ADDR="10.20.0.1",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        execution.refresh_from_db()
+        diagnostics = execution.result_payload["diagnostics"]
+        self.assertEqual(diagnostics["stage"], "collect_feed_empty")
+        self.assertEqual(diagnostics["current_query"], "hospitais Barueri")
+        self.assertEqual(diagnostics["feed_found"], False)
+        self.assertEqual(diagnostics["article_count"], 4)
+        self.assertEqual(diagnostics["place_anchor_count"], 0)
+        self.assertNotIn("cookie", diagnostics)
+
+        execute_tool(
+            installation=self.installation,
+            tool_slug="prospecting.external_search_probe",
+            input={"query": "old"},
+            idempotency_key="old-fail-contract",
+        )
+        old_execution = ToolExecution.objects.get(idempotency_key="old-fail-contract")
+        _, old_secret = self._executor_with_secret(public_id="old-fail-owner")
+        self.client.post(f"/api/v1/executors/tool-executions/{old_execution.id}/claim/", HTTP_AUTHORIZATION=f"AgentExecutor {old_secret}", REMOTE_ADDR="10.20.0.2")
+        old_response = self.client.post(
+            f"/api/v1/executors/tool-executions/{old_execution.id}/fail/",
+            data=json.dumps({"error_code": "executor_failed", "error_message": "failed"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {old_secret}", REMOTE_ADDR="10.20.0.2",
+        )
+
+        self.assertEqual(old_response.status_code, 200)
+        old_execution.refresh_from_db()
+        self.assertEqual(old_execution.status, ToolExecution.Status.FAILED)
+
+    def test_executor_progress_update_persists_and_preserves_isolation(self):
+        self.bind(tool=self.delegated_tool)
+        execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={"query": "maps"})
+        execution = ToolExecution.objects.get(tool_definition=self.delegated_tool)
+        _, owner_secret = self._executor_with_secret(public_id="progress-owner")
+        _, other_secret = self._executor_with_secret(public_id="progress-other")
+        self.client.post(f"/api/v1/executors/tool-executions/{execution.id}/claim/", HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}", REMOTE_ADDR="10.20.0.3")
+
+        response = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/progress/",
+            data=json.dumps({"progress": {"stage": "detecting_results", "current_query": "hospitais", "detected_results": 3, "processed_results": 1}}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}", REMOTE_ADDR="10.20.0.3",
+        )
+        wrong_executor = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/progress/",
+            data=json.dumps({"progress": {"stage": "wrong"}}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {other_secret}", REMOTE_ADDR="10.20.0.4",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(wrong_executor.status_code, 400)
+        execution.refresh_from_db()
+        progress = execution.result_payload["progress"]
+        self.assertEqual(progress["stage"], "detecting_results")
+        self.assertEqual(progress["current_query"], "hospitais")
+        self.assertEqual(progress["detected_results"], 3)
+        self.assertEqual(progress["processed_results"], 1)
+
+        self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/fail/",
+            data=json.dumps({"error_code": "executor_failed"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}", REMOTE_ADDR="10.20.0.3",
+        )
+        terminal = self.client.post(
+            f"/api/v1/executors/tool-executions/{execution.id}/progress/",
+            data=json.dumps({"progress": {"stage": "after_terminal"}}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"AgentExecutor {owner_secret}", REMOTE_ADDR="10.20.0.3",
+        )
+
+        self.assertEqual(terminal.status_code, 400)
+
     def test_executor_without_capability_inactive_and_invalid_credential_are_blocked(self):
         self.bind(tool=self.delegated_tool)
         execute_tool(installation=self.installation, tool_slug="prospecting.external_search_probe", input={})

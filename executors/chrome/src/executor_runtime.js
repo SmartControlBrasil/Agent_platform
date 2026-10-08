@@ -32,7 +32,7 @@ export async function pollAndRunJobs({ state, chromeApi, fetchImpl, dispatcher =
     await setState({ lastPollAt: new Date().toISOString(), lastErrorCode: '' }, chromeApi);
     const handled = [];
     for (const execution of queue) {
-      const result = await claimAndExecute({ client, execution, dispatcher: dispatcher || new ToolDispatcher(defaultRegistryWithChrome(chromeApi)), chromeApi });
+      const result = await claimAndExecute({ client, execution, dispatcher, chromeApi });
       handled.push(result);
     }
     return handled;
@@ -52,13 +52,16 @@ export async function claimAndExecute({ client, execution, dispatcher, chromeApi
   }
 
   try {
-    const result = await dispatcher.execute(execution);
+    const progressReporter = createProgressReporter(client, execution.id);
+    const activeDispatcher = dispatcher || new ToolDispatcher(defaultRegistryWithChrome(chromeApi, progressReporter));
+    await progressReporter({ stage: 'executor_started', processed_results: 0 });
+    const result = await activeDispatcher.execute(execution);
     const completed = await client.completeToolExecution(execution.id, result);
     await setState({ lastExecutionId: execution.id, lastExecutionStatus: completed.status || 'SUCCEEDED', lastErrorCode: '' }, chromeApi);
     return { id: execution.id, status: 'completed' };
   } catch (error) {
     const code = safeErrorCode(error);
-    await client.failToolExecution(execution.id, { error_code: code, error_message: 'Tool execution failed.' });
+    await client.failToolExecution(execution.id, { error_code: code, error_message: 'Tool execution failed.', diagnostics: error?.diagnostics });
     await setState({ lastExecutionId: execution.id, lastExecutionStatus: 'FAILED', lastErrorCode: code }, chromeApi);
     return { id: execution.id, status: 'failed' };
   }
@@ -72,6 +75,19 @@ export async function handleAuthOrError(error, chromeApi) {
   }
 }
 
-function defaultRegistryWithChrome(chromeApi) {
-  return defaultRegistry({ chromeApi });
+function defaultRegistryWithChrome(chromeApi, progressReporter = null) {
+  return defaultRegistry({ chromeApi, progressReporter });
+}
+
+function createProgressReporter(client, executionId) {
+  return async (progress = {}) => {
+    try {
+      await client.progressToolExecution(executionId, {
+        ...progress,
+        last_activity_at: new Date().toISOString(),
+      });
+    } catch {
+      // Progress updates are observability-only and must not fail execution.
+    }
+  };
 }

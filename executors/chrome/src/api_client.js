@@ -69,6 +69,14 @@ export class AgentPlatformClient {
     });
   }
 
+  progressToolExecution(id, progress) {
+    return this.#request(`/api/v1/executors/tool-executions/${encodeURIComponent(id)}/progress/`, {
+      method: 'POST',
+      auth: true,
+      body: { progress },
+    });
+  }
+
   failToolExecution(id, error) {
     return this.#request(`/api/v1/executors/tool-executions/${encodeURIComponent(id)}/fail/`, {
       method: 'POST',
@@ -76,6 +84,7 @@ export class AgentPlatformClient {
       body: {
         error_code: error?.error_code || error?.code || 'handler_error',
         error_message: error?.error_message || error?.message || '',
+        diagnostics: error?.diagnostics || undefined,
       },
     });
   }

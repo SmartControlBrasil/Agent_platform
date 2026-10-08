@@ -41,7 +41,7 @@ from prospecting.models import (
 )
 from audit.models import AuditEvent
 from tenants.models import Tenant, TenantMembership
-from tools.application.lifecycle import claim_tool_execution, fail_tool_execution
+from tools.application.lifecycle import claim_tool_execution, fail_tool_execution, record_tool_execution_progress
 from tools.models import AgentToolBinding, ToolDefinition, ToolExecution, ToolExecutor, ToolExecutorCapability
 
 
@@ -585,6 +585,59 @@ class ProspectingPortalTests(TestCase):
         self.assertContains(response, "Tentativa 1")
         self.assertNotContains(response, "aep_")
         self.assertNotContains(response, "Authorization")
+
+    def test_search_run_detail_shows_execution_progress_and_diagnostics(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Diagnóstico DOM",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = self._maps_executor(f"diag-{execution.id}")
+        claim_tool_execution(executor=executor, execution=execution)
+        record_tool_execution_progress(
+            executor=executor,
+            execution=execution,
+            progress={
+                "stage": "detecting_results",
+                "current_query": "hospitais Barueri",
+                "detected_results": 4,
+                "processed_results": 1,
+                "last_activity_at": "2026-10-08T10:00:00Z",
+            },
+        )
+        fail_tool_execution(
+            executor=executor,
+            execution=execution,
+            error_code="results_timeout",
+            error_message="feed vazio",
+            diagnostics={
+                "stage": "collect_feed_empty",
+                "current_query": "hospitais Barueri",
+                "pathname": "/maps/search/",
+                "hasResultsFeed": False,
+                "articleCount": 3,
+                "placeAnchorCount": 0,
+                "hasChallengeText": False,
+            },
+        )
+        run = synchronize_search_run(search_run=run)
+        self._login(self.admin)
+
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Etapa")
+        self.assertContains(response, "collect_feed_empty")
+        self.assertContains(response, "Query atual")
+        self.assertContains(response, "hospitais Barueri")
+        self.assertContains(response, "Feed encontrado")
+        self.assertContains(response, "role=article")
+        self.assertContains(response, "Links de place")
+        self.assertContains(response, "Captcha/bloqueio")
+        self.assertNotContains(response, "cookie")
 
     def test_completed_and_running_do_not_show_retry(self):
         self._login(self.admin)

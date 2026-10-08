@@ -164,6 +164,24 @@
         <div class="col-md-3"><div class="text-muted small">Expira em</div><div>{{ execution.expires_at|date:"d/m/Y H:i:s"|default:"—" }}</div></div>
         <div class="col-md-3"><div class="text-muted small">Concluída</div><div>{{ execution.completed_at|date:"d/m/Y H:i:s"|default:"—" }}</div></div>
       </div>
+      {% if execution_progress %}
+      <hr>
+      <div class="row g-3">
+        <div class="col-md-3"><div class="text-muted small">Etapa</div><div class="fw-semibold">{{ execution_progress.stage }}</div></div>
+        <div class="col-md-3"><div class="text-muted small">Query atual</div><div>{{ execution_progress.current_query }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Detectados</div><div>{{ execution_progress.detected_results }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Processados</div><div>{{ execution_progress.processed_results }}</div></div>
+        <div class="col-md-2"><div class="text-muted small">Última atividade</div><div>{{ execution_progress.last_activity_at }}</div></div>
+      </div>
+      {% endif %}
+      {% if execution_diagnostics %}
+      <hr>
+      <div class="row g-3">
+        {% for item in execution_diagnostics %}
+        <div class="col-md-3"><div class="text-muted small">{{ item.label }}</div><div>{{ item.value }}</div></div>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% if execution_summary %}
       <hr>
       <div class="row g-3">

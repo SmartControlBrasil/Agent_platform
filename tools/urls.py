@@ -14,6 +14,7 @@ urlpatterns = [
     path("executors/tool-executions/", executor_api.execution_queue, name="executor_execution_queue"),
     path("executors/tool-executions/<uuid:execution_id>/claim/", executor_api.claim_execution, name="executor_claim_execution"),
     path("executors/tool-executions/<uuid:execution_id>/complete/", executor_api.complete_execution, name="executor_complete_execution"),
+    path("executors/tool-executions/<uuid:execution_id>/progress/", executor_api.progress_execution, name="executor_progress_execution"),
     path("executors/tool-executions/<uuid:execution_id>/fail/", executor_api.fail_execution, name="executor_fail_execution"),
     path("clients/me/", client_api.me, name="client_me"),
     path("clients/agent-installations/<uuid:installation_id>/execute/", client_api.execute_agent_installation, name="client_execute_agent"),

@@ -22,6 +22,7 @@ from tools.application.lifecycle import (
     claim_tool_execution,
     complete_tool_execution,
     fail_tool_execution,
+    record_tool_execution_progress,
 )
 from tools.models import ToolExecution, ToolExecutor, ToolExecutorCapability, ToolExecutorPairingRequest
 
@@ -262,6 +263,29 @@ def complete_execution(request, execution_id):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+def progress_execution(request, execution_id):
+    principal = _principal(request)
+    if isinstance(principal, JsonResponse):
+        return principal
+    try:
+        payload = _json_body(request)
+        execution = _execution_for_principal(execution_id, principal)
+        progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else payload
+        execution = record_tool_execution_progress(
+            executor=principal.executor,
+            execution=execution,
+            progress=progress,
+            request=request,
+        )
+    except ToolExecution.DoesNotExist:
+        return JsonResponse({"error": "not_found"}, status=404)
+    except ValidationError as exc:
+        return JsonResponse({"error": "progress_rejected", "details": exc.messages}, status=400)
+    return JsonResponse(_execution_payload(execution))
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
 def fail_execution(request, execution_id):
     principal = _principal(request)
     if isinstance(principal, JsonResponse):
@@ -274,6 +298,7 @@ def fail_execution(request, execution_id):
             execution=execution,
             error_code=payload.get("error_code") or "executor_failed",
             error_message=payload.get("error_message") or "",
+            diagnostics=payload.get("diagnostics") if isinstance(payload.get("diagnostics"), dict) else None,
             request=request,
         )
     except ToolExecution.DoesNotExist:
