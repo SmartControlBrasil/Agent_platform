@@ -277,6 +277,12 @@ test('browser controller waits through transient empty feed and then returns bus
 });
 
 test('browser controller emits controlled timeout when feed never yields recognizable cards', async () => {
+  const diagnostics = {
+    hasResultsFeed: true,
+    articleCount: 4,
+    placeAnchorCount: 0,
+    hasChallengeText: false,
+  };
   const chrome = {
     tabs: {
       async create() { return { id: 11 }; },
@@ -284,7 +290,7 @@ test('browser controller emits controlled timeout when feed never yields recogni
       async get() { return mapsTab(11); },
       async sendMessage(_tabId, message) {
         if (message.type === GoogleMapsMessages.WAIT_READY) return { ok: true, ready: true };
-        if (message.type === GoogleMapsMessages.COLLECT_FEED) return { ok: true, businesses: [], endOfResults: false };
+        if (message.type === GoogleMapsMessages.COLLECT_FEED) return { ok: true, businesses: [], endOfResults: false, diagnostics };
         return { ok: true };
       },
       async remove() {},
@@ -294,7 +300,16 @@ test('browser controller emits controlled timeout when feed never yields recogni
   await assert.rejects(
     () => new GoogleMapsBrowserController(chrome, { navigationTimeoutMs: 10, readyTimeoutMs: 10 })
       .withDedicatedTab((tab) => tab.search('q', { maxResults: 5 })),
-    (error) => error.code === 'results_timeout',
+    (error) => {
+      assert.equal(error.code, 'results_timeout');
+      assert.equal(error.diagnostics.stage, 'collect_feed_empty');
+      assert.equal(error.diagnostics.hasResultsFeed, true);
+      assert.equal(error.diagnostics.articleCount, 4);
+      assert.equal(error.diagnostics.placeAnchorCount, 0);
+      assert.equal(error.diagnostics.processed_results, 0);
+      assert.equal(error.diagnostics.empty_rounds, 8);
+      return true;
+    },
   );
 });
 

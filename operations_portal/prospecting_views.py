@@ -601,6 +601,16 @@ def _render_search_run_create(request, *, access, form, draft=None, review_form=
     return render(request, "operations_portal/prospecting/search_run_create.html", context)
 
 
+def _sync_search_run_for_display(search_run):
+    if search_run.status in {SearchRun.Status.COMPLETED, SearchRun.Status.FAILED, SearchRun.Status.CANCELLED}:
+        return search_run
+    try:
+        return synchronize_search_run(search_run=search_run)
+    except (ValidationError, ProspectingSearchRunError):
+        logger.exception("prospecting_search_run_display_sync_failed", extra={"search_run_id": str(search_run.id)})
+        return search_run
+
+
 @login_required(login_url="/admin/login/")
 def prospecting_search_run_list(request):
     access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
@@ -622,8 +632,11 @@ def prospecting_search_run_list(request):
                 | Q(objective__icontains=query)
             )
     page_obj = Paginator(queryset.order_by("-created_at"), 25).get_page(request.GET.get("page") or 1)
-    for run in page_obj.object_list:
+    page_obj.object_list = list(page_obj.object_list)
+    for index, run in enumerate(page_obj.object_list):
+        run = _sync_search_run_for_display(run)
         _enrich_run_ui(run)
+        page_obj.object_list[index] = run
     context = {
         "active_section": "prospeccao",
         "form": form,
@@ -764,6 +777,7 @@ def prospecting_search_run_execute(request):
 def prospecting_search_run_detail(request, run_id):
     access = resolve_portal_access(request, capability=CAPABILITY_COMMERCIAL_VIEW, allow_global=True)
     search_run = get_object_or_404(_search_run_queryset(access.tenant), pk=run_id)
+    search_run = _sync_search_run_for_display(search_run)
     _enrich_run_ui(search_run)
     results_qs = _build_search_result_queryset(search_run)
     filter_form = SearchResultFilterForm(request.GET or None)

@@ -639,6 +639,66 @@ class ProspectingPortalTests(TestCase):
         self.assertContains(response, "Captcha/bloqueio")
         self.assertNotContains(response, "cookie")
 
+    def test_search_run_detail_syncs_failed_execution_before_rendering(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Falha pendente de sync",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = self._maps_executor(f"sync-{execution.id}")
+        claim_tool_execution(executor=executor, execution=execution)
+        fail_tool_execution(
+            executor=executor,
+            execution=execution,
+            error_code="results_timeout",
+            error_message="feed vazio",
+            diagnostics={
+                "stage": "collect_feed_empty",
+                "hasResultsFeed": True,
+                "articleCount": 4,
+                "placeAnchorCount": 0,
+            },
+        )
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
+        self._login(self.admin)
+
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_detail", args=[run.id]))
+
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.FAILED)
+        self.assertContains(response, "Tentar novamente")
+        self.assertContains(response, "collect_feed_empty")
+        self.assertContains(response, "role=article")
+        self.assertNotContains(response, "Redisparar execução")
+
+    def test_search_run_list_syncs_failed_execution_before_rendering(self):
+        run = create_and_dispatch_search_run(
+            tenant=self.tenant,
+            project=self.project,
+            objective="Falha na lista",
+            target_region="Barueri",
+            selected_queries=["hospitais Barueri"],
+        )
+        execution = ToolExecution.objects.get(pk=run.agent_platform_execution_id)
+        executor = self._maps_executor(f"list-sync-{execution.id}")
+        claim_tool_execution(executor=executor, execution=execution)
+        fail_tool_execution(executor=executor, execution=execution, error_code="results_timeout", error_message="feed vazio")
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.DISPATCHED)
+        self._login(self.admin)
+
+        response = self.client.get(reverse("operations_portal:prospecting_search_run_list"))
+
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SearchRun.Status.FAILED)
+        self.assertContains(response, "Falhou")
+
     def test_completed_and_running_do_not_show_retry(self):
         self._login(self.admin)
         completed = create_and_dispatch_search_run(

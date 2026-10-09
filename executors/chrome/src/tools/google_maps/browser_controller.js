@@ -115,6 +115,7 @@ export class GoogleMapsTabSession {
     let staleRounds = 0;
     let previousCount = 0;
     let emptyRounds = 0;
+    let lastDiagnostics = null;
     while (businesses.length < maxResults && staleRounds < 3 && emptyRounds < 8) {
       const response = await this.send({ type: GoogleMapsMessages.COLLECT_FEED, sourceQuery, limit: maxResults });
       if (response?.challenge) throw new GoogleMapsToolError('captcha_or_blocked', 'Google challenge detected.', diagnosticsFor('captcha_or_blocked', sourceQuery, response?.diagnostics));
@@ -127,6 +128,7 @@ export class GoogleMapsTabSession {
       }
       if (!Array.isArray(response.businesses) || response.businesses.length === 0) {
         if (response.diagnostics) {
+          lastDiagnostics = response.diagnostics;
           this.controller.diagnostics.stage('collect_feed_empty_round', { diagnostics: response.diagnostics, emptyRounds });
         }
         if (response.endOfResults) break;
@@ -144,8 +146,8 @@ export class GoogleMapsTabSession {
       previousCount = businesses.length;
     }
     if (businesses.length === 0) {
-      this.controller.diagnostics.stage('collect_feed_empty', { sourceQueryLength: String(sourceQuery || '').length, maxResults, emptyRounds });
-      throw new GoogleMapsToolError('results_timeout', 'Google Maps did not expose recognizable business cards in time.', diagnosticsFor('collect_feed_empty', sourceQuery, null, { processed_results: businesses.length }));
+      this.controller.diagnostics.stage('collect_feed_empty', { sourceQueryLength: String(sourceQuery || '').length, maxResults, emptyRounds, diagnostics: lastDiagnostics });
+      throw new GoogleMapsToolError('results_timeout', 'Google Maps did not expose recognizable business cards in time.', diagnosticsFor('collect_feed_empty', sourceQuery, lastDiagnostics, { processed_results: businesses.length, empty_rounds: emptyRounds }));
     }
     return { businesses: businesses.slice(0, maxResults), found: businesses.length };
   }
