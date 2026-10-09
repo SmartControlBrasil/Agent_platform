@@ -22,6 +22,10 @@ export function joinUrl(baseUrl, path) {
   return `${normalizeBaseUrl(baseUrl)}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+export function platformPanelUrl(baseUrl) {
+  return joinUrl(baseUrl, '/painel/');
+}
+
 export function originPermissionPattern(baseUrl) {
   const parsed = new URL(normalizeBaseUrl(baseUrl));
   return `${parsed.origin}/*`;

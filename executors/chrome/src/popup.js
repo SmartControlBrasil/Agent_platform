@@ -4,6 +4,7 @@ import { ExecutorState } from './constants.js';
 import { startPairing } from './pairing_flow.js';
 import { formatCapabilities } from './capabilities.js';
 import { getState, resetOperationalState } from './state.js';
+import { platformPanelUrl } from './url.js';
 
 const chromeApi = getChromeApi();
 
@@ -41,7 +42,7 @@ document.querySelector('#pair').addEventListener('click', async () => { await st
 document.querySelector('#disconnect').addEventListener('click', async () => { await new CredentialStore(chromeApi).clearCredential(); await resetOperationalState(chromeApi); await render(); });
 document.querySelector('#open-platform').addEventListener('click', async () => {
   const state = await getState(chromeApi);
-  if (state.platformBaseUrl) chromeApi.tabs?.create?.({ url: state.platformBaseUrl });
+  if (state.platformBaseUrl) chromeApi.tabs?.create?.({ url: platformPanelUrl(state.platformBaseUrl) });
 });
 
 render();
